@@ -9,8 +9,8 @@
 
 namespace sugar {
 
-    // Generic adapter that applies a vector->vector transform to the output
-    // of a base indicator. This is the "composition layer".
+    // Generic adapter that applies a vector->vector transform to the output of a base indicator
+    // "composition layer"
 
     class MapIndicator final : public Indicator {
     public:

@@ -14,7 +14,7 @@ namespace sugar {
 																													// returns vector of doubles, accepts CandleSeries by const ref,
 																													// Note: override keyword appears only in the class (header), not here
 
-		const auto v = series.closes();																			// extract closing data from series, store in v
+		const auto& v = series.closes();																		// extract closing data from series, store in v
 		std::vector<double> out(v.size(), qnan());																// call vector constructor, reserve v.size() elements, fill with quiet_NaN
 		const std::size_t n = n_;																				// local copy of private data member n_
 		if (n == 0 || v.empty()) return out;																	// guard: empty series param exit early (prevents undefined math)

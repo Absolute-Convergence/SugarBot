@@ -18,7 +18,7 @@ namespace sugar {
 																										// returns vector of doubles, Override of Indicator::compute; const must match the header declaration.
 																										// Note: override keyword appears only in the class (header), not here.
 
-		const auto v = series.closes();																// Copy closes by value (safe, cheap with RVO); keep local view read-only
+		const auto& v = series.closes();															// Copy closes by value (safe, cheap with RVO); keep local view read-only
 		std::vector<double> out(v.size(), qnan());													// vector count–value constructor: (make a vector of v.size() elements, each initialized to the value qnan()),
 																										// pre-size output to input length; seed all positions with NaN (warm-up gaps)
 
