@@ -85,4 +85,4 @@ main.cpp
 
 
 ## License
-MIT
+All Rights Reserved
