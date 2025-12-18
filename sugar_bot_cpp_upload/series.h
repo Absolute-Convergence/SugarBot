@@ -22,9 +22,16 @@ namespace sugar {
 			}
 		}
 																								
-		const std::vector<Candle>& rows() const { return rows_; }								// CandleSeries member function to return a read only const ref to data member 'rows_'
+		const std::vector<Candle>& rows() const { 
+			return rows_; }																		// CandleSeries member function to return a read only const ref to data member 'rows_'
 
-		std::size_t size() const { return rows_.size(); }										// CandleSeries member function to return a size_t copy of vector::rows_.size() by value, will not mutate (const)
+		const std::vector<double>& volumes() const noexcept {
+			return volumes_;
+		}
+
+		std::size_t size() const { 
+			return rows_.size();																// CandleSeries member function to return a size_t copy of vector::rows_.size() by value, will not mutate (const)
+		}										
 
 		// return cached closes by const reference
 		const std::vector<double>& closes() const noexcept {
@@ -37,6 +44,7 @@ namespace sugar {
 	private:																					
 		std::vector<Candle> rows_;																// CandleSeries (only) Data member
 		std::vector<double> closes_;															// cached close prices
+		std::vector<double> volumes_;
 	};
 
 

@@ -3,7 +3,7 @@
 
 namespace sugar {
 
-	class RSAIndicator final : public Indicator {
+	class RSIIndicator final : public Indicator {
 	public: 
 
 
