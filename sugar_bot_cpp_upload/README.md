@@ -5,9 +5,10 @@ Reads financial `.csv` candle data, computes indicator signals, backtests strate
 
 ## Quick Start
 1. Build with preferred C++17+ compiler.
-2. Run:
+2. Open terminal in folder with x64-Release.
+3. Run:
    ```bash
-   ./sugar_bot_cpp path/to/FILE_NAME.csv
+   ./sugar_bot path/to/FILE_NAME.csv
    ```
 
 ## Layout 
