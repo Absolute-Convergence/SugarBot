@@ -49,7 +49,7 @@ namespace sugar {
         constexpr std::size_t K = 5;
 
         std::size_t displayCounter = fasts.size();
-        std::cerr << "Working now...\n";
+        std::cerr << "\nWorking now...\n\n";
 
         for (auto f : fasts) {
             if (displayCounter > 0) {
@@ -106,11 +106,11 @@ namespace sugar {
         }
         std::reverse(topk.begin(), topk.end()); // best first
 
-        std::cerr << "\nTop " << K << " combos:\n";
+        std::cerr << "\n\nTop " << K << " combos:\n";
         for (const auto& row : topk) {
             const auto& [f, s, rlen, th] = row.p;
 
-            std::cerr << "  score=" << row.score
+            std::cerr << "  \nscore=" << row.score
                 << " | fast=" << f << " slow=" << s
                 << " roc=" << rlen << " thresh=" << th << "\n";
 

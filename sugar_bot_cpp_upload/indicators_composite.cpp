@@ -7,4 +7,11 @@ namespace sugar {
         return fn_(base_vals);
     }
 
+    // BinaryMapIndicator implementation
+    std::vector<double>
+        BinaryMapIndicator::compute(const CandleSeries& series) const {
+        auto lhs_vals = lhs_->compute(series);
+        auto rhs_vals = rhs_->compute(series);
+        return fn_(lhs_vals, rhs_vals);
+    }
 } // namespace sugar

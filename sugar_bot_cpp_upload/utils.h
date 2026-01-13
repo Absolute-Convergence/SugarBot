@@ -1,6 +1,12 @@
 #pragma once
 #include <string_view>
 #include <cstdint>
+#include <vector>
+#include <string>
+#include <cstddef>
+#include <sstream>
+#include <string>
+
 
 namespace sugar {
 
@@ -30,5 +36,24 @@ namespace sugar {
         int& yyyymmdd,
         int& seconds_since_mid,
         int& tz_offset_minutes);
+
+    // Inclusive integer range: [start, stop] step>0
+    std::vector<std::size_t> make_range(std::size_t start, std::size_t stop, std::size_t step);
+
+    // Inclusive double range with tiny epsilon to avoid FP miss on the last point
+    std::vector<double> make_drange(double start, double stop, double step);
+
+    // Helper: parse "min max step" from a line, with type T (size_t or double)
+    template <typename T>
+    bool parse_triple_line(const std::string& line, T& a, T& b, T& c) {
+        std::istringstream iss(line);
+        return static_cast<bool>(iss >> a >> b >> c);
+    }
+
+    // Trim leading/trailing whitespace (in-place)
+    void trim_in_place(std::string& s);
+
+    // Strip wrapping quotes and trim whitespace
+    std::string strip_wrapping_quotes(std::string s);
 
 } // namespace sugar

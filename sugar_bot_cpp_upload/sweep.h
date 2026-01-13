@@ -3,7 +3,7 @@
 #include <vector>
 #include "series.h"
 #include "metrics.h"
-#include "strategy_diff_cross.h"   // <-- add this
+#include "strategy_diff_cross.h"   
 
 namespace sugar {
 
@@ -15,12 +15,12 @@ namespace sugar {
         RocSmaParams   params;
     };
 
-    // NEW: add a mode parameter with default LongOnly
+    // add a mode parameter with default LongOnly
     SweepResult sweep_roc_sma(const CandleSeries& data,
         const std::vector<std::size_t>& fasts,
         const std::vector<std::size_t>& slows,
         const std::vector<std::size_t>& rocs,
         const std::vector<double>& threshes,
-        DiffCrossStrategy::Mode         mode = DiffCrossStrategy::Mode::LongOnly);
+        DiffCrossStrategy::Mode mode = DiffCrossStrategy::Mode::LongOnly);
 
 } // namespace sugar

@@ -2,10 +2,14 @@
 #include <functional>
 #include <utility>
 #include <vector>
+#include <limits>
+#include <cmath>
+#include <algorithm>
 #include "indicator.h"
 #include "indicators_roc.h"
 #include "indicators_sma.h"
 #include "indicators_ema.h"
+#include "indicators_zscore.h"
 
 namespace sugar {
 
@@ -157,9 +161,14 @@ namespace sugar {
     }
 
     // Percent-from-MA convenience
-    inline IndicatorPtr map_percent_from_ma(IndicatorPtr ma) {
+    inline IndicatorPtr map_ratio_of_ma(IndicatorPtr ma) {
         auto price = std::make_shared<CloseIndicator>();
         return map_ratio(std::move(price), std::move(ma));
     }
+
+    //inline IndicatorPtr map_zscore_ema(std::size_t n) {
+    //    return std::make_shared<ZScoreIndicator>(n);
+    //}
+
 
 } // namespace sugar

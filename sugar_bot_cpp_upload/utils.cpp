@@ -1,6 +1,10 @@
 #include "utils.h"
 #include <charconv>
 #include <limits>
+#include <vector>
+#include <cstddef>
+#include <algorithm>
+#include <cctype>
 
 namespace sugar {
 
@@ -155,5 +159,52 @@ namespace sugar {
 
         return false;
     }
+
+    std::vector<std::size_t> make_range(std::size_t start, std::size_t stop, std::size_t step) {
+        std::vector<std::size_t> v;
+        if (step == 0 || start > stop) return v;
+        v.reserve((stop - start) / step + 1);
+        for (std::size_t x = start; x <= stop; x += step) v.push_back(x);
+        return v;
+    }
+
+    std::vector<double> make_drange(double start, double stop, double step) {
+        std::vector<double> v;
+        if (step <= 0 || start > stop) return v;
+        for (double x = start; x <= stop + 1e-12; x += step) v.push_back(x);
+        return v;
+    }
+
+    void trim_in_place(std::string& s) {
+        auto not_space = [](unsigned char ch) {
+            return !std::isspace(ch);
+            };
+
+        s.erase(
+            s.begin(),
+            std::find_if(s.begin(), s.end(), not_space)
+        );
+
+        s.erase(
+            std::find_if(s.rbegin(), s.rend(), not_space).base(),
+            s.end()
+        );
+    }
+
+    std::string strip_wrapping_quotes(std::string s) {
+        trim_in_place(s);
+
+        if (s.size() >= 2) {
+            const char a = s.front();
+            const char b = s.back();
+
+            if ((a == '"' && b == '"') || (a == '\'' && b == '\'')) {
+                s = s.substr(1, s.size() - 2);
+                trim_in_place(s);
+            }
+        }
+        return s;
+    }
+
 
 } // namespace sugar

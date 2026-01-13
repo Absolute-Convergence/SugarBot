@@ -68,7 +68,17 @@ namespace sugar {
             c.high = std::stod(cols[2]);                                                                        // store high
             c.low = std::stod(cols[3]);                                                                         // store low
             c.close = std::stod(cols[4]);                                                                       // store close
-            c.volume = (cols.size() >= 6) ? std::stod(cols[5]) : 0.0;                                           // if the column count is ≥ 6, parse cols[5], else set 0.0
+            if (cols.size() >= 6 && !cols[5].empty()) {                                                         // if the column count is ≥ 6, parse cols[5], else set 0.0
+                try {
+                    c.volume = std::stod(cols[5]);
+                }
+                catch (...) {
+                    c.volume = 0.0;
+                }
+            }
+            else {
+                c.volume = 0.0;
+            }                                           
 
             rows.push_back(c);                                                                                  // store each candle object in rows
         }
