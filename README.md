@@ -278,7 +278,7 @@ Overview:
 
 
 Repo Structure (logical grouping):
-
+```
 app/
  └─ main.cpp
 
@@ -327,6 +327,7 @@ main.cpp
  │    └─ BacktestResult + Metrics
  └─ Sweep Engine
       └─ Top-K ranking, coarse→fine search, optional train/validate split
+```
 
 
 Implemented Strategies (templates):
