@@ -23,7 +23,7 @@ No use, redistribution, or modification is permitted without explicit authorizat
 
 ---
 
-###Introduction:
+### Introduction:
 
 ## What SugarBot does (high level)
 
