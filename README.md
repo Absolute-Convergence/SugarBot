@@ -264,7 +264,7 @@ Tip: main.cpp also contains a debug/validation harness used to verify indicator 
 propagation on real CSV data.
 
 
-Overview:
+# Overview:
 | Layer                 | Role                                                         | Example / Notes                                                |
 | :-------------------- | :----------------------------------------------------------- | :------------------------------------------------------------- |
 | **Data Layer**        | Loads and owns historical market candles.                    | `Candle`, `CandleSeries`, `load_candles_csv()`                 |
@@ -277,7 +277,7 @@ Overview:
 | **Metrics**           | Reporting boundary for results and summaries.                | `BacktestResult`, `metrics.*`                                  |
 
 
-Repo Structure (logical grouping):
+# Structure (logical grouping):
 ```
 app/
  └─ main.cpp
@@ -330,14 +330,14 @@ main.cpp
 ```
 
 
-Implemented Strategies (templates):
+# Implemented Strategies (templates):
 | Strategy Template            | Description                                                                 |
 | :-------------------------- | :-------------------------------------------------------------------------- |
 | `GatedDiffCross`            | Canonical reference template: gating + thresholds + composition + clean separation. |
 | `DonchianBreakout`          | Concrete example: single-indicator breakout implemented through Plan/Executor.      |
 
 
-Implemented Indicators:
+# Implemented Indicators:
 | Indicator / Component              | Description                                                          |
 | :-------------------------------- | :------------------------------------------------------------------- |
 | `SMA`                             | Simple Moving Average                                                |
@@ -351,9 +351,11 @@ Implemented Indicators:
 | `Composite Numeric`               | Functional composition tools for numeric indicator graphs            |
 | `Composite Bool`                  | Comparators/gates for boolean signal graphs                          |
 
-Notes:
+# Notes:
 - Indicators are designed to be composed (graphs) rather than extended via deep subclass trees.
 - Warm-up behavior and NaN propagation are explicit to prevent silent alignment bugs common in TA stacks.
+
+
 
 
 License:
