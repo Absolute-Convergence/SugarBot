@@ -1,64 +1,75 @@
 ﻿#include "indicators_ema.h"
-#include <numeric> 
-#include <limits>
-#include <cmath>
 
+#include <cstddef>
+#include <limits>
+#include <numeric>
+#include <span>
+#include <vector>
+#include <cmath>
 
 namespace sugar {
 
-	
-	static inline double qnan() { return std::numeric_limits<double>::quiet_NaN(); }							// file-local helper returning quiet NaN sentinel (marks "not yet defined" values).
-																													// static = internal linkage; inline optional here
+    namespace {
 
-	std::vector<double> EMAIndicator::compute(const CandleSeries& series) const {								// Override of Indicator::compute; trailing const must match header declaration,
-																													// returns vector of doubles, accepts CandleSeries by const ref,
-																													// Note: override keyword appears only in the class (header), not here
+        inline double qnan() {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
 
-		const auto& v = series.closes();																		// extract closing data from series, store in v
-		std::vector<double> out(v.size(), qnan());																// call vector constructor, reserve v.size() elements, fill with quiet_NaN
-		const std::size_t n = n_;																				// local copy of private data member n_
-		if (n == 0 || v.empty()) return out;																	// guard: empty series param exit early (prevents undefined math)
+        // Single-kernel truth: EMA over a close series.
+        // - Output is aligned to input (same size).
+        // - Warm-up: first (n-1) entries are NaN; index (n-1) is the SMA seed; EMA continues from there.
+        std::vector<double> ema_kernel(std::span<const double> close, std::size_t n) {
+            std::vector<double> out(close.size(), qnan());
+            if (n == 0 || close.size() < n) {
+                return out;
+            }
 
+            const double alpha = 2.0 / (static_cast<double>(n) + 1.0);
 
-		const double alpha = 2.0 / (static_cast<double>(n) + 1.0);												// alpha -> α = 2/(n+1)​, gives the decay rate; bigger n -> more smoothing
-																														// Formula: EMA_t = α * x_t + (1-α) * EMA_{t-1}
-																														// x_t is the close price at index t
-																														// equivalent to exponentially weighted sum over past closes
+            // Best-effort: reset + reseed across non-finite gaps.
+            std::size_t run = 0;
+            long double sum = 0.0L;
+            bool seeded = false;
 
-		// normal case: series length>= n (it usually is) -> compute SMA seed, then roll EMA
-		if (v.size() >= n) {																					
-			double seed = 0.0;																					// seed = average of first n closes, stored at index n-1
-			for (std::size_t i = 0; i < n; ++i) seed += v[i];													// sum through n - 1 terms in the Candle Series (v)
-			seed /= static_cast<double>(n);																		// generate the first valid value for the EMA, store in seed 
-			out[n - 1] = seed;																					// initialize the first valid EMA value in out[n - 1]
-			for (std::size_t i = n; i < v.size(); ++i)															// loop through the rest of v
-				out[i] = alpha * v[i] + (1.0 - alpha) * out[i - 1];												// Recurrence: out[i] = α*v[i] + (1-α)*out[i-1] for i >= n to end
-		}
-																												// short series fallback 
-		else {																									
-			out[0] = v[0];																						// seed EMA with first close, then apply recurrence for remaining bars
-			for (std::size_t i = 1; i < v.size(); ++i)															// iterate for all the data given
-				out[i] = alpha * v[i] + (1.0 - alpha) * out[i - 1];												// generates a usable "best effort" EMA without an SMA seed,
-																													// Note: this is an edge case usually only done in broad parameter sweeps. 
-		}
-		return out;																								// return index-aligned EMA; NaNs mark warm-up region where no seed yet exists
-	}
+            for (std::size_t i = 0; i < close.size(); ++i) {
+                const double x = close[i];
 
-	std::vector<double> ema_over_series(const std::vector<double>& v, std::size_t n) {							// 
-		std::vector<double> out(v.size(), qnan());																// 
-		if (n == 0 || v.size() < n) return out;																	// 
+                if (!std::isfinite(x)) {
+                    run = 0;
+                    sum = 0.0L;
+                    seeded = false;
+                    continue; // out[i] remains NaN
+                }
 
-		const double alpha = 2.0 / (static_cast<double>(n) + 1.0);												// 
+                if (!seeded) {
+                    sum += static_cast<long double>(x);
+                    ++run;
 
-		double seed_sum = std::accumulate(v.begin(), v.begin() + n, 0.0);										//
-		double seed = seed_sum / static_cast<double>(n);														//
-		out[n - 1] = seed;																						//
+                    if (run == n) {
+                        out[i] = static_cast<double>(sum / static_cast<long double>(n)); // SMA seed
+                        seeded = true;
+                    }
+                }
+                else {
+                    out[i] = alpha * x + (1.0 - alpha) * out[i - 1];
+                }
+            }
+            return out;
+        }   // namespace
+    }
 
-		// Continue EMA from index n
-		for (std::size_t i = n; i < v.size(); ++i) {															// 
-			out[i] = alpha * v[i] + (1.0 - alpha) * out[i - 1];													// 
-		}
-		return out;																								// 
-	}
+    std::vector<double> EMAIndicator::compute(const CandleSeries& series) const {
+        // CandleSeries path forwards into the SeriesView kernel.
+        return compute(SeriesView::from_series(series));
+    }
+
+    std::vector<double> EMAIndicator::compute(const SeriesView& view) const {
+        // EMA only depends on close, so this works for both full OHLCV views and close-only views.
+        return ema_kernel(view.close(), n_);
+    }
+
+    std::vector<double> ema_over_series(const std::vector<double>& v, std::size_t n) {
+        return ema_kernel(std::span<const double>(v.data(), v.size()), n);
+    }
 
 } // namespace sugar
