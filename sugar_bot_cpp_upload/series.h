@@ -1,51 +1,37 @@
 #pragma once
+
 #include <vector>
+#include <cstddef>
 #include "candle.h"
-#include <span>
 
+namespace sugar {
 
-namespace sugar {																				
-																								// adding more to namespace::sugar
-																								
-	class CandleSeries {																		// stores the data loaded from load_candles_csv
-	public:																						// accessors
-		CandleSeries() = default;																// set constructor to default
+    class CandleSeries {
+    public:
+        explicit CandleSeries(std::vector<Candle> rows);
 
-		// parameter for Pass By Value class object initialization (member initializer list) moves into 'rows'
-		explicit CandleSeries(std::vector<Candle> rows)
-			: rows_(std::move(rows))															// initialize rows_ by moving the passed vector in
-		{
-			// constructor body, ie: can now use rows_
-			closes_.reserve(rows_.size());														// reserves vector with rows_.size() elements
-			for (const auto& c : rows_) {														// 
-				closes_.push_back(c.close);														//
-			}
-		}
-																								
-		const std::vector<Candle>& rows() const { 
-			return rows_; }																		// CandleSeries member function to return a read only const ref to data member 'rows_'
+        // --- existing API ---
+        const std::vector<Candle>& rows() const { return rows_; }
+        std::size_t size() const { return rows_.size(); }
+        const Candle& operator[](std::size_t i) const { return rows_[i]; }
 
-		const std::vector<double>& volumes() const noexcept {
-			return volumes_;
-		}
+        // --- cached SoA accessors ---
+        const std::vector<double>& opens() const { return opens_; }
+        const std::vector<double>& highs() const { return highs_; }
+        const std::vector<double>& lows() const { return lows_; }
+        const std::vector<double>& closes() const { return closes_; }
+        const std::vector<double>& volumes() const { return volumes_; }
 
-		std::size_t size() const { 
-			return rows_.size();																// CandleSeries member function to return a size_t copy of vector::rows_.size() by value, will not mutate (const)
-		}										
+    private:
+        // AoS source of truth
+        std::vector<Candle> rows_;
 
-		// return cached closes by const reference
-		const std::vector<double>& closes() const noexcept {
-			return closes_;
-		}
-
-		const Candle& operator[](std::size_t i) const { return rows_[i]; }						// overload the [] operator to return an indexed candle value.
-
-
-	private:																					
-		std::vector<Candle> rows_;																// CandleSeries (only) Data member
-		std::vector<double> closes_;															// cached close prices
-		std::vector<double> volumes_;
-	};
-
+        // Cached SoA columns (aligned by index)
+        std::vector<double> opens_;
+        std::vector<double> highs_;
+        std::vector<double> lows_;
+        std::vector<double> closes_;
+        std::vector<double> volumes_;
+    };
 
 } // namespace sugar

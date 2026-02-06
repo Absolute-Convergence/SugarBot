@@ -1,16 +1,18 @@
 #pragma once
-#include "strategy.h"
 
+#include "strategy_plan.h"   // new StrategyPlan + ExecSettings
+#include "series.h"
+#include "metrics.h"
 
 namespace sugar {
 
+    class Backtester {
+    public:
 
-	class Backtester {																//
-	public:																			//
-		BacktestResult run(IStrategy& strategy, const CandleSeries& data) {			//
-			return strategy.run(data);												//
-		}
-	};
-
+        // New universal-plug path: StrategyPlan + FSM executor.
+        BacktestResult run(const StrategyPlan& plan,
+                           const CandleSeries& data,
+                           const ExecSettings& settings = {});
+    };
 
 } // namespace sugar

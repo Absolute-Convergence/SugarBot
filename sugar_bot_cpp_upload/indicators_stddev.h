@@ -12,7 +12,13 @@ namespace sugar {
     class StdDevIndicator final : public Indicator {
     public:
         explicit StdDevIndicator(std::size_t period) : n_(period) {}
+
+        // CandleSeries contract (required): forwards into the SeriesView kernel.
         std::vector<double> compute(const CandleSeries& series) const override;
+
+        // SeriesView-first implementation (single-kernel truth). Supports close-only views.
+        std::vector<double> compute(const SeriesView& view) const override;
+
         std::size_t period() const { return n_; }
     private:
         std::size_t n_{};
@@ -28,7 +34,13 @@ namespace sugar {
     class StdDevEMAIndicator final : public Indicator {
     public:
         explicit StdDevEMAIndicator(std::size_t period) : n_(period) {}
+
+        // CandleSeries contract (required): forwards into the SeriesView kernel.
         std::vector<double> compute(const CandleSeries& series) const override;
+
+        // SeriesView-first implementation (single-kernel truth). Supports close-only views.
+        std::vector<double> compute(const SeriesView& view) const override;
+
         std::size_t period() const { return n_; }
     private:
         std::size_t n_{};
