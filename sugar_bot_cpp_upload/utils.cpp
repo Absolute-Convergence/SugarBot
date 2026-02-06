@@ -46,44 +46,46 @@ namespace sugar {
 
     // ---- public API ----------------------------------------------------------
 
-    int parse_yyyymmdd(std::string_view s) {
+    std::optional<int> parse_yyyymmdd(std::string_view s) {
         // 1) "YYYYMMDD"
         if (s.size() == 8) {
             int v = -1;
-            if (parse_int(s, v)) return v;
+            if (parse_int(s, v) && v > 0) return v;
         }
 
         // 2) "YYYY-MM-DD"
         if (s.size() == 10 && s[4] == '-' && s[7] == '-') {
-            return try_parse_yyyy_mm_dd(s);
+            const int v = try_parse_yyyy_mm_dd(s);
+            return (v > 0) ? std::optional<int>(v) : std::nullopt;
         }
 
         // 3) "YYYY/MM/DD"
         if (s.size() == 10 && s[4] == '/' && s[7] == '/') {
             int y = -1, m = -1, d = -1;
-            if (!parse_4(s.substr(0, 4), y)) return -1;
-            if (!parse_2(s.substr(5, 2), m)) return -1;
-            if (!parse_2(s.substr(8, 2), d)) return -1;
-            return pack_date(y, m, d);
+            if (!parse_4(s.substr(0, 4), y)) return std::nullopt;
+            if (!parse_2(s.substr(5, 2), m)) return std::nullopt;
+            if (!parse_2(s.substr(8, 2), d)) return std::nullopt;
+            const int v = pack_date(y, m, d);
+            return (v > 0) ? std::optional<int>(v) : std::nullopt;
         }
 
         // 4) "MM/DD/YYYY"
         if (s.size() == 10 && s[2] == '/' && s[5] == '/') {
             int m = -1, d = -1, y = -1;
-            if (!parse_2(s.substr(0, 2), m)) return -1;
-            if (!parse_2(s.substr(3, 2), d)) return -1;
-            if (!parse_4(s.substr(6, 4), y)) return -1;
-            return pack_date(y, m, d);
+            if (!parse_2(s.substr(0, 2), m)) return std::nullopt;
+            if (!parse_2(s.substr(3, 2), d)) return std::nullopt;
+            if (!parse_4(s.substr(6, 4), y)) return std::nullopt;
+            const int v = pack_date(y, m, d);
+            return (v > 0) ? std::optional<int>(v) : std::nullopt;
         }
 
         // 5) ISO-8601 datetime variants: "YYYY-MM-DDTHH:MM[:SS][Z|±HH:MM]"
-            //    legacy API still needs DATE — just slice s[0..9].
-            //    Accept strings with 'T' after position 10.
         if (s.size() >= 19 && s[4] == '-' && s[7] == '-' && s[10] == 'T') {
-            return try_parse_yyyy_mm_dd(s.substr(0, 10));
+            const int v = try_parse_yyyy_mm_dd(s.substr(0, 10));
+            return (v > 0) ? std::optional<int>(v) : std::nullopt;
         }
 
-        return -1; // invalid
+        return std::nullopt; // invalid
     }
 
     void format_yyyymmdd(int yyyymmdd, char out[9]) {
@@ -92,7 +94,7 @@ namespace sugar {
             out[i] = char('0' + (yyyymmdd % 10));
             yyyymmdd /= 10;
         }
-        // Note: no null terminator required if printed via string_view(out, 8).
+        out[8] = '\0';
     }
 
     // --- Full ISO-8601 date-time parser ---------------------------------

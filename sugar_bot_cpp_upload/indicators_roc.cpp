@@ -1,38 +1,64 @@
 ﻿#include "indicators_roc.h"
-#include <limits>
-#include <cmath>
 
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <span>
+#include <vector>
 
 namespace sugar {
 
-																									
-	static inline double qnan() {																	// File-local helper; static = internal linkage
-		return std::numeric_limits<double>::quiet_NaN();											// Uses quiet NaN sentinels to mark warm-up indices; returns an output aligned to input size, 
-	}				
-																										
+    namespace {
 
-	std::vector<double> roc_over_series(const std::vector<double>& v, std::size_t k) {				// Rate-of-change over k steps:
-		std::vector<double> out(v.size(), qnan());													// count–value ctor: prefill with NaN (warm-up)
-		if (k == 0 || v.size() <= k) return out;													// Guards: undefined lookback or no usable indices yet → return NaN-filled vector
-		for (std::size_t i = k; i < v.size(); ++i) {												// Loop over closes vector v (not CandleSeries directly)
-			const double prev = v[i - k];															// compare to value k steps back
-			if (prev == 0.0) {																		// Division-by-zero guard at i-k → NaN (undefined return).
-				out[i] = qnan();																	// undef
-				continue;																			// cont
-			}																						
-			if (!std::isfinite(prev) || !std::isfinite(v[i])) {										// Guards: bad data 
-				out[i]=qnan();																		// set out[i] to undef NaN 
-				continue;																			// skip remainer of the loop, iterate i
-			}
-			out[i] = (v[i] / prev - 1.0) * 100.0;													// out[i] = ((v[i] / v[i - k]) - 1) * 100 for i >= k; NaN for i < k
-		}
-		return out;																					// return result vector 
-	}
+        inline double qnan() {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
 
+        // Single-kernel truth: ROC over k steps on a close series.
+        // - Output aligned to input (same size).
+        // - Warm-up: indices < k are NaN.
+        // - Guards:
+        //   * prev == 0 => NaN
+        //   * non-finite prev or current => NaN
+        std::vector<double> roc_kernel(std::span<const double> close, std::size_t k) {
+            std::vector<double> out(close.size(), qnan());
+            if (k == 0 || close.size() <= k) {
+                return out;
+            }
 
-	std::vector<double> ROCIndicator::compute(const CandleSeries& series) const {					// Thin adapter: feed closes into the ROC kernel with this instance's k_
-		return roc_over_series(series.closes(), k_);												// definition of the virtual override declared in the header.
-	}
+            for (std::size_t i = k; i < close.size(); ++i) {
+                const double prev = close[i - k];
+                const double cur = close[i];
 
+                if (prev == 0.0) {
+                    out[i] = qnan();
+                    continue;
+                }
+                if (!std::isfinite(prev) || !std::isfinite(cur)) {
+                    out[i] = qnan();
+                    continue;
+                }
+
+                out[i] = (cur / prev - 1.0) * 100.0;
+            }
+
+            return out;
+        }
+
+    } // namespace
+
+    std::vector<double> roc_over_series(const std::vector<double>& v, std::size_t k) {
+        return roc_kernel(std::span<const double>(v.data(), v.size()), k);
+    }
+
+    std::vector<double> ROCIndicator::compute(const CandleSeries& series) const {
+        // CandleSeries path forwards into the SeriesView kernel.
+        return compute(SeriesView::from_series(series));
+    }
+
+    std::vector<double> ROCIndicator::compute(const SeriesView& view) const {
+        // ROC only depends on close, so this works for both full OHLCV views and close-only views.
+        return roc_kernel(view.close(), k_);
+    }
 
 } // namespace sugar

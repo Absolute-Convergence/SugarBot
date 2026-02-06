@@ -61,9 +61,13 @@ namespace sugar {
             }
             if (cols.size() < 5) continue;                                                                      // not enough fields → skip
 
-            Candle c{};                                                                                         // candle object 
-            c.date = parse_yyyymmdd(cols[0]);                                                                   // store date from string in cols[0] as an int, accaptable formats: 1) "YYYYMMDD" 2) "YYYY-MM-DD" 3) "YYYY/MM/DD" 4) "MM/DD/YYYY"
-            if (c.date < 0) continue;                                                                           // skip row with date less than zero
+            Candle c{};                                                                                         // candle object
+            {
+                // parse_yyyymmdd now returns std::optional<int>
+                const auto d = parse_yyyymmdd(cols[0]);                                                         // acceptable formats: YYYYMMDD, YYYY-MM-DD, YYYY/MM/DD, MM/DD/YYYY
+                if (!d) continue;                                                                               // skip row if date cannot be parsed
+                c.date = static_cast<decltype(c.date)>(*d);
+            }
             c.open = std::stod(cols[1]);                                                                        // store open
             c.high = std::stod(cols[2]);                                                                        // store high
             c.low = std::stod(cols[3]);                                                                         // store low
@@ -78,7 +82,7 @@ namespace sugar {
             }
             else {
                 c.volume = 0.0;
-            }                                           
+            }
 
             rows.push_back(c);                                                                                  // store each candle object in rows
         }

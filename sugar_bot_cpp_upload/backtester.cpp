@@ -1,2 +1,13 @@
 #include "backtester.h"
-// Inline in header for now; nothing to compile here.
+#include "strategy_executor.h"
+
+namespace sugar {
+
+    BacktestResult Backtester::run(const StrategyPlan& plan,
+        const CandleSeries& data,
+        const ExecSettings& settings) {
+        StrategyExecutor exec;
+        return exec.run(SeriesView::from_series(data), plan, settings);
+    }
+
+} // namespace sugar
