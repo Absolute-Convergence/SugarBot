@@ -1,0 +1,12 @@
+.vs/
+out/
+CMakeBuilds/
+ipch/
+*.ipch
+*.db
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.zip

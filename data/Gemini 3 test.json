@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "MACD Sweep (v2)",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "fill_timing": "close",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
+  },
+  "params": {
+    "fast": 12,
+    "slow": 26,
+    "sig": 9
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "ema_f", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "fast" } } },
+    { "id": "ema_s", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "slow" } } },
+    { "id": "macd_line", "op": "ts.sub", "args": ["ema_f", "ema_s"] },
+    { "id": "sig_line", "op": "ts.ema", "args": ["macd_line"], "params": { "n": { "ref": "sig" } } }
+  ],
+  "bool_nodes": [
+    { "id": "x_up", "op": "cmp.cross_up", "args": ["macd_line", "sig_line"] },
+    { "id": "x_dn", "op": "cmp.cross_down", "args": ["macd_line", "sig_line"] }
+  ],
+  "bindings": {
+    "entry_long": "x_up",
+    "exit_long": "x_dn",
+    "entry_short": "x_dn",
+    "exit_short": "x_up",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "objective": "pnl",
+    "top_k": 5,
+    "params": {
+      "fast": { "min": 8, "max": 16, "step": 2, "is_int": true },
+      "slow": { "min": 20, "max": 30, "step": 2, "is_int": true },
+      "sig":  { "values": [9], "is_int": true }
+    }
+  }
+}

@@ -1,0 +1,451 @@
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 99
+
+Custom User Strategy (PlanSpec JSON)
+Enter path to PlanSpec JSON:
+No PlanSpec file provided.
+Print operator registry (same as --dump-ops)? (y/N): y
+
+# SugarBot Operator Registry (capabilities of this build)
+
+Modules loaded: `cmp`, `core`, `logic`, `ts`
+
+Type legend: `num` = numeric series, `bool` = boolean series
+
+## PlanSpec / Custom Strategy JSON
+
+Custom User Strategy (menu item 99) loads a PlanSpec JSON, compiles a node graph into a StrategyPlan,
+then runs it through the normal StrategyExecutor.
+
+### Root schema (v1)
+Required:
+- `name` (string)
+- `bindings` (object)
+
+Optional:
+- `version` (int, default 1)
+- `required` (array<string>)  // informational only in this build
+- `trade_mode` (string: LongOnly | LongShort)
+- `exec_settings` (object)    // NOTE: JSON key is exec_settings (not 'exec')
+- `params` (object)           // top-level param table for {ref:...}
+- `numeric_nodes` (array<NodeSpec>)
+- `bool_nodes` (array<NodeSpec>)
+- `sweep` (object)            // optional sweep extension (see below)
+
+### NodeSpec
+- `id` (string, unique within its node list)
+- `op` (string)               // must exist in this registry; see modules below
+- `args` (array<string>)      // node ids; order must match the op signature
+- `params` (object)           // op params (scalars or {ref:"paramName"})
+
+### Type rules / graph wiring
+- `numeric_nodes` may only reference other numeric node ids in `args`.
+- `bool_nodes` may reference bool or numeric ids depending on the operator signature:
+  - logic.* ops consume bool inputs
+  - cmp.* ops consume numeric inputs
+- Node `args` are untyped in JSON; the compiler infers each arg's type from the operator signature.
+
+### Param refs and precedence
+- A param value may be a literal (number/bool/string/null), or a reference object: `{ "ref": "k" }`.
+- `{ref:...}` pulls from top-level `params`, and can be overridden by sweep overrides.
+- When resolving an op param, precedence is roughly:
+  1) sweep override for that param name (if present)
+  2) node.params literal/ref
+  3) plan-level params (used when node uses {ref:...})
+
+### Precomputed leaves (project-specific oddity)
+- `core.precomputed_num` / `core.precomputed_bool` require the named leaf to exist in the CompileEnv.
+  If the leaf is missing, compilation fails (not a runtime NaN/false fallback).
+  In Custom User Strategy (99), only the default environment is available, so avoid precomputed_* unless you
+  know that build/strategy injects those leaves.
+
+### Windows path and JSON escaping (common gotcha)
+- In JSON strings on Windows, backslashes must be escaped: `C:\\Dev\\plans\\my_plan.json`.
+  Forward slashes also work: `C:/Dev/plans/my_plan.json`.
+
+### Minimal example PlanSpec
+
+{
+  "version": 1,
+  "name": "SMA Cross (demo)",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "fill_timing": "close",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
+  },
+  "params": { "fast": 10, "slow": 30 },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "f", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "fast" } } },
+    { "id": "s", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "slow" } } }
+  ],
+  "bool_nodes": [
+    { "id": "enterL", "op": "cmp.cross_up", "args": ["f","s"] },
+    { "id": "exitL",  "op": "cmp.cross_down", "args": ["f","s"] }
+  ],
+  "bindings": {
+    "entry_long": "enterL",
+    "exit_long":  "exitL",
+    "entry_short": "",
+    "exit_short":  "",
+    "allow_trade": ""
+  }
+}
+
+## PlanSpec sweep extension
+
+If `sweep` is present and `sweep.enabled=true`, SugarBot will iterate param combinations,
+compile+run each plan, and report Top-K.
+
+Sweep schema (v1):
+- `sweep.enabled` (bool, optional)
+- `sweep.top_k` (int, optional)
+- `sweep.max_evals` (int, optional)
+- `sweep.objective` (string: 'pnl' or 'pnl_dd', optional)
+- `sweep.dd_weight` (float, optional; used when objective='pnl_dd')
+- `sweep.params` (object): map paramName -> range
+
+Range forms:
+- Discrete: `{ "values": [5,10,20], "is_int": true }`
+- Stepped : `{ "min": 5, "max": 50, "step": 5, "is_int": true }`
+
+## Module: `cmp`
+
+- **cmp.cross_down**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups) + 1 (needs previous bar)`
+
+- **cmp.cross_up**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups) + 1 (needs previous bar)`
+
+- **cmp.eq**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **cmp.ge**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **cmp.gt**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **cmp.le**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **cmp.lt**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **cmp.ne**
+  module: `cmp`
+  op_type: `bool`
+  signature: (num, num) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+## Module: `core`
+
+- **core.bool_const**
+  module: `core`
+  op_type: `bool`
+  signature: () -> bool
+  kind: `primitive`
+  warmup: `0`
+  params:
+    - `value`: bool (required)
+
+- **core.close**
+  module: `core`
+  op_type: `numeric`
+  signature: () -> num
+  kind: `primitive`
+  warmup: `0`
+
+- **core.const**
+  module: `core`
+  op_type: `numeric`
+  signature: () -> num
+  kind: `primitive`
+  warmup: `0`
+  params:
+    - `value`: float (required)
+
+- **core.precomputed_bool**
+  module: `core`
+  op_type: `bool`
+  signature: () -> bool
+  kind: `primitive`
+  warmup: `env-defined (typically 0)`
+  params:
+    - `name`: string (required)
+
+- **core.precomputed_num**
+  module: `core`
+  op_type: `numeric`
+  signature: () -> num
+  kind: `primitive`
+  warmup: `env-defined (typically 0)`
+  params:
+    - `name`: string (required)
+
+## Module: `logic`
+
+- **logic.and**
+  module: `logic`
+  op_type: `bool`
+  signature: (bool, bool) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **logic.nand**
+  module: `logic`
+  op_type: `bool`
+  signature: (bool, bool) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **logic.nor**
+  module: `logic`
+  op_type: `bool`
+  signature: (bool, bool) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **logic.not**
+  module: `logic`
+  op_type: `bool`
+  signature: (bool) -> bool
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **logic.or**
+  module: `logic`
+  op_type: `bool`
+  signature: (bool, bool) -> bool
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+## Module: `ts`
+
+- **ts.abs**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.add**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.clamp**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.clamp_const**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+  params:
+    - `lo`: float (required)
+    - `hi`: float (required)
+
+- **ts.delta**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + 1`
+
+- **ts.div**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.ema**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + (n-1)`
+  params:
+    - `n`: int (required), min=1
+
+- **ts.exp**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.log**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.max**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.min**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.mul**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+- **ts.neg**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.normalize_minmax**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + (n-1)`
+  params:
+    - `n`: int (required), min=1
+
+- **ts.normalize_minmax_global**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.pow_const**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+  params:
+    - `p`: float (required)
+
+- **ts.ratio_of_ma**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.roc**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + k`
+  params:
+    - `k`: int (required), min=1
+
+- **ts.roll_max**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + (n-1)`
+  params:
+    - `n`: int (required), min=1
+
+- **ts.roll_min**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + (n-1)`
+  params:
+    - `n`: int (required), min=1
+
+- **ts.shift**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + k`
+  params:
+    - `k`: int (required), min=0
+    - `fill`: float (optional)
+
+- **ts.sma**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup + (n-1)`
+  params:
+    - `n`: int (required), min=1
+
+- **ts.sqrt**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num) -> num
+  kind: `primitive`
+  warmup: `child_warmup`
+
+- **ts.sub**
+  module: `ts`
+  op_type: `numeric`
+  signature: (num, num) -> num
+  kind: `primitive`
+  warmup: `max(child_warmups)`
+
+
+[Info] Custom strategy cancelled (no PlanSpec JSON provided).
+
+C:\Dev\sugar_Bot\out\build\x64-Debug\sugar_Bot.exe (process 3080) exited with code 0 (0x0).
