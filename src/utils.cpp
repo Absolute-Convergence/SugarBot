@@ -27,9 +27,22 @@ namespace sugar {
         return parse_int(sv, out);
     }
 
-    // Parse "YYYY-MM-DD" into YYYYMMDD (no validation beyond ranges).
+    static inline bool is_leap_year(int y) {
+        return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    }
+
+    static inline int days_in_month(int y, int m) {
+        static constexpr int kDays[12] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
+        if (m < 1 || m > 12) return 0;
+        if (m == 2) return is_leap_year(y) ? 29 : 28;
+        return kDays[m - 1];
+    }
+
+    // Parse "YYYY-MM-DD" into YYYYMMDD with calendar validation.
     static inline int pack_date(int y, int m, int d) {
-        if (y <= 0 || m < 1 || m > 12 || d < 1 || d > 31) return -1;
+        if (y <= 0) return -1;
+        const int dim = days_in_month(y, m);
+        if (dim <= 0 || d < 1 || d > dim) return -1;
         return y * 10000 + m * 100 + d;
     }
 
@@ -49,8 +62,12 @@ namespace sugar {
     std::optional<int> parse_yyyymmdd(std::string_view s) {
         // 1) "YYYYMMDD"
         if (s.size() == 8) {
-            int v = -1;
-            if (parse_int(s, v) && v > 0) return v;
+            int y = -1, m = -1, d = -1;
+            if (!parse_4(s.substr(0, 4), y)) return std::nullopt;
+            if (!parse_2(s.substr(4, 2), m)) return std::nullopt;
+            if (!parse_2(s.substr(6, 2), d)) return std::nullopt;
+            const int v = pack_date(y, m, d);
+            return (v > 0) ? std::optional<int>(v) : std::nullopt;
         }
 
         // 2) "YYYY-MM-DD"

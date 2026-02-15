@@ -233,7 +233,7 @@ namespace sugar {
                 auto sweep = make_sweep_index(cfg);
                 const auto run = sweep->run(series, problem, score_fn, progress_cb);
                 best = run.has_two_stage ? run.two_stage.stage2_best_first : run.best_first;
-                eval_count = points.size();
+                eval_count = run.eval_count;
                 break;
             }
             }

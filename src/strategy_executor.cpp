@@ -247,27 +247,59 @@ namespace sugar {
 
                 if (pos == Pos::Long) {
                     const bool wants_reverse = allow_short && es;
-                    if (xl || wants_reverse) {
-                        const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
-                        close_trade(Pos::Long, j, px);
+                    if (settings.exits_first) {
+                        if (xl || wants_reverse) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Long, j, px);
 
-                        // Optional same-bar reversal (on the execution bar).
-                        if (wants_reverse && settings.allow_same_bar_reversal) {
-                            open_trade(Pos::Short, j, px);
+                            // Optional same-bar reversal (on the execution bar).
+                            if (wants_reverse && settings.allow_same_bar_reversal) {
+                                open_trade(Pos::Short, j, px);
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+                    else {
+                        if (wants_reverse) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Long, j, px);
+                            // entries-first: reversal signal takes precedence over pure exits
+                            open_trade(Pos::Short, j, px);
+                            continue;
+                        }
+                        if (xl) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Long, j, px);
+                            continue;
+                        }
                     }
                 }
                 else if (pos == Pos::Short) {
                     const bool wants_reverse = el;
-                    if (xs || wants_reverse) {
-                        const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
-                        close_trade(Pos::Short, j, px);
+                    if (settings.exits_first) {
+                        if (xs || wants_reverse) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Short, j, px);
 
-                        if (wants_reverse && settings.allow_same_bar_reversal) {
-                            open_trade(Pos::Long, j, px);
+                            if (wants_reverse && settings.allow_same_bar_reversal) {
+                                open_trade(Pos::Long, j, px);
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+                    else {
+                        if (wants_reverse) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Short, j, px);
+                            // entries-first: reversal signal takes precedence over pure exits
+                            open_trade(Pos::Long, j, px);
+                            continue;
+                        }
+                        if (xs) {
+                            const double px = fill_price_on_bar(view, j, settings.fill_timing, false);
+                            close_trade(Pos::Short, j, px);
+                            continue;
+                        }
                     }
                 }
 
@@ -298,26 +330,58 @@ namespace sugar {
 
                 if (pos == Pos::Long) {
                     const bool wants_reverse = allow_short && es;
-                    if (xl || wants_reverse) {
-                        const double px = fill_price(view, i, settings.fill_timing, false);
-                        close_trade(Pos::Long, i, px);
+                    if (settings.exits_first) {
+                        if (xl || wants_reverse) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Long, i, px);
 
-                        if (wants_reverse && settings.allow_same_bar_reversal) {
-                            open_trade(Pos::Short, i, px);
+                            if (wants_reverse && settings.allow_same_bar_reversal) {
+                                open_trade(Pos::Short, i, px);
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+                    else {
+                        if (wants_reverse) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Long, i, px);
+                            // entries-first: reversal signal takes precedence over pure exits
+                            open_trade(Pos::Short, i, px);
+                            continue;
+                        }
+                        if (xl) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Long, i, px);
+                            continue;
+                        }
                     }
                 }
                 else if (pos == Pos::Short) {
                     const bool wants_reverse = el;
-                    if (xs || wants_reverse) {
-                        const double px = fill_price(view, i, settings.fill_timing, false);
-                        close_trade(Pos::Short, i, px);
+                    if (settings.exits_first) {
+                        if (xs || wants_reverse) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Short, i, px);
 
-                        if (wants_reverse && settings.allow_same_bar_reversal) {
-                            open_trade(Pos::Long, i, px);
+                            if (wants_reverse && settings.allow_same_bar_reversal) {
+                                open_trade(Pos::Long, i, px);
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+                    else {
+                        if (wants_reverse) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Short, i, px);
+                            // entries-first: reversal signal takes precedence over pure exits
+                            open_trade(Pos::Long, i, px);
+                            continue;
+                        }
+                        if (xs) {
+                            const double px = fill_price(view, i, settings.fill_timing, false);
+                            close_trade(Pos::Short, i, px);
+                            continue;
+                        }
                     }
                 }
 

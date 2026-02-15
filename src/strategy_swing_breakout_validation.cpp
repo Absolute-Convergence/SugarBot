@@ -25,6 +25,16 @@ namespace sugar {
         inline double NaN() { return std::numeric_limits<double>::quiet_NaN(); }
         inline bool finite(double x) { return std::isfinite(x); }
 
+        // Keep plan-level warmup deterministic; do not rely on runtime lambda side effects.
+        static std::size_t first_valid_index_for_plan(const SwingBreakoutValidationOptions& opt) {
+            std::size_t warm = 0;
+            warm = std::max(warm, static_cast<std::size_t>(9)); // EMA10 seed horizon
+            warm = std::max(warm, static_cast<std::size_t>(std::max(0, opt.rightBars))); // pivot confirmation delay
+            warm = std::max(warm, static_cast<std::size_t>(std::max(0, opt.volumeAvgPeriod - 1)));
+            warm = std::max(warm, static_cast<std::size_t>(std::max(0, opt.volumeClimaxMAPeriod - 1)));
+            return warm;
+        }
+
         // Strict pivot-high confirmation at pivot bar p = i-rightBars (Pine-style delay).
         // Returns flag series aligned to bar i (flag true at the *confirmation bar* i).
         static std::vector<std::uint8_t> strict_pivothigh_confirm(const SeriesView& v, int leftBars, int rightBars) {
@@ -336,12 +346,13 @@ namespace sugar {
         plan.mode = TradeMode::LongOnly;
 
         // Build entry/exit as precomputed bool signals (state machine compiled)
-        std::size_t first_valid = 0;
+        const std::size_t first_valid = first_valid_index_for_plan(opt);
 
         auto entry = make_precomputed_bool("entry_long",
-            [opt, &first_valid](const SeriesView& v) mutable {
+            [opt](const SeriesView& v) {
                 BoolSeries en, ex;
-                compute_pine_signals(v, opt, en, ex, first_valid);
+                std::size_t fv = 0;
+                compute_pine_signals(v, opt, en, ex, fv);
                 return en;
             });
 
@@ -600,22 +611,6 @@ namespace sugar {
         // -----------------------------
         // ---- Uniqueness behavior ----
         // -----------------------------
-
-        using Key = std::uint64_t;
-
-        auto key_fn = [&](const SwingBreakoutValidationParams&, const BacktestResult& res) -> Key {
-            // IMPORTANT: ensure trade_hash is set in StrategyExecutor/BacktestResult.
-            // 0 means "no trades" if you followed the earlier recommendation.
-            // That will collapse all no-trade candidates into one (usually desired).
-            return res.trade_hash;
-            };
-
-        struct BestByHash {
-            double score = -std::numeric_limits<double>::infinity();
-            BacktestResult result{};
-            SwingBreakoutValidationParams params{};
-            bool has = false;
-        };
 
         // -----------------------------
         // Basin-aware Top-K (Option B)

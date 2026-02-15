@@ -777,6 +777,9 @@ namespace sugar {
         // Optional diagnostics (used by coarse→fine).
         TwoStageSweepResult two_stage;
         bool has_two_stage = false;
+
+        // Number of evaluations actually executed by the engine.
+        std::size_t eval_count = 0;
     };
 
     // Base interface for index-based sweep types.

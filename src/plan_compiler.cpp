@@ -3,19 +3,11 @@
 #include <algorithm>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace sugar {
 
     namespace {
-        std::string join(const std::vector<std::string>& v, const char* sep) {
-            std::ostringstream oss;
-            for (std::size_t i = 0; i < v.size(); ++i) {
-                if (i) oss << sep;
-                oss << v[i];
-            }
-            return oss.str();
-        }
-
         std::size_t w_max(const std::vector<std::size_t>& v) {
             std::size_t m = 0;
             for (auto x : v) m = std::max(m, x);
@@ -36,6 +28,70 @@ namespace sugar {
 
             std::unordered_map<std::string, std::size_t> num_warm_cache;
             std::unordered_map<std::string, std::size_t> bool_warm_cache;
+
+            // Recursion guards for cyclic PlanSpec DAGs.
+            std::unordered_set<std::string> num_build_visiting;
+            std::unordered_set<std::string> bool_build_visiting;
+            std::unordered_set<std::string> num_warm_visiting;
+            std::unordered_set<std::string> bool_warm_visiting;
+
+            std::vector<std::string> num_build_stack;
+            std::vector<std::string> bool_build_stack;
+            std::vector<std::string> num_warm_stack;
+            std::vector<std::string> bool_warm_stack;
+
+            Ctx(const PlanSpec& s, const OperatorRegistry& r, const CompileEnv& e, const ParamMap* o = nullptr)
+                : spec(s), reg(r), env(e), overrides(o) {
+            }
+        };
+
+        std::string cycle_path_text(const std::vector<std::string>& stack, const std::string& id) {
+            std::ostringstream oss;
+            auto it = std::find(stack.begin(), stack.end(), id);
+            if (it == stack.end()) {
+                oss << id << " -> " << id;
+                return oss.str();
+            }
+            for (auto p = it; p != stack.end(); ++p) {
+                if (p != it) oss << " -> ";
+                oss << *p;
+            }
+            oss << " -> " << id;
+            return oss.str();
+        }
+
+        class VisitGuard {
+        public:
+            VisitGuard(std::unordered_set<std::string>& visiting,
+                std::vector<std::string>& stack,
+                const std::string& id,
+                const char* graph_name,
+                std::string& err)
+                : visiting_(visiting), stack_(stack), id_(id)
+            {
+                if (visiting_.find(id_) != visiting_.end()) {
+                    err = std::string("Cycle detected in ") + graph_name
+                        + ": " + cycle_path_text(stack_, id_);
+                    return;
+                }
+                visiting_.insert(id_);
+                stack_.push_back(id_);
+                active_ = true;
+            }
+
+            ~VisitGuard() {
+                if (!active_) return;
+                if (!stack_.empty()) stack_.pop_back();
+                visiting_.erase(id_);
+            }
+
+            explicit operator bool() const { return active_; }
+
+        private:
+            std::unordered_set<std::string>& visiting_;
+            std::vector<std::string>& stack_;
+            std::string id_;
+            bool active_{ false };
         };
 
         bool build_numeric(Ctx& ctx, const std::string& id, IndicatorPtr& out, std::string& err);
@@ -69,6 +125,8 @@ namespace sugar {
 
         bool build_numeric(Ctx& ctx, const std::string& id, IndicatorPtr& out, std::string& err) {
             if (auto it = ctx.num_cache.find(id); it != ctx.num_cache.end()) { out = it->second; return true; }
+            VisitGuard visiting(ctx.num_build_visiting, ctx.num_build_stack, id, "PlanSpec numeric node graph", err);
+            if (!visiting) return false;
             auto nit = ctx.num_nodes.find(id);
             if (nit == ctx.num_nodes.end()) { err = "Unknown numeric node id '" + id + "'"; return false; }
             const NodeSpec& node = *nit->second;
@@ -97,6 +155,8 @@ namespace sugar {
 
         bool build_bool(Ctx& ctx, const std::string& id, BoolSignalPtr& out, std::string& err) {
             if (auto it = ctx.bool_cache.find(id); it != ctx.bool_cache.end()) { out = it->second; return true; }
+            VisitGuard visiting(ctx.bool_build_visiting, ctx.bool_build_stack, id, "PlanSpec bool node graph", err);
+            if (!visiting) return false;
             auto bit = ctx.bool_nodes.find(id);
             if (bit == ctx.bool_nodes.end()) { err = "Unknown bool node id '" + id + "'"; return false; }
             const NodeSpec& node = *bit->second;
@@ -133,6 +193,8 @@ namespace sugar {
 
         bool warm_numeric(Ctx& ctx, const std::string& id, std::size_t& out, std::string& err) {
             if (auto it = ctx.num_warm_cache.find(id); it != ctx.num_warm_cache.end()) { out = it->second; return true; }
+            VisitGuard visiting(ctx.num_warm_visiting, ctx.num_warm_stack, id, "PlanSpec numeric warmup graph", err);
+            if (!visiting) return false;
             auto nit = ctx.num_nodes.find(id);
             if (nit == ctx.num_nodes.end()) { err = "Unknown numeric node id '" + id + "'"; return false; }
             const NodeSpec& node = *nit->second;
@@ -159,6 +221,8 @@ namespace sugar {
 
         bool warm_bool(Ctx& ctx, const std::string& id, std::size_t& out, std::string& err) {
             if (auto it = ctx.bool_warm_cache.find(id); it != ctx.bool_warm_cache.end()) { out = it->second; return true; }
+            VisitGuard visiting(ctx.bool_warm_visiting, ctx.bool_warm_stack, id, "PlanSpec bool warmup graph", err);
+            if (!visiting) return false;
             auto bit = ctx.bool_nodes.find(id);
             if (bit == ctx.bool_nodes.end()) { err = "Unknown bool node id '" + id + "'"; return false; }
             const NodeSpec& node = *bit->second;

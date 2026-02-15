@@ -230,11 +230,13 @@ namespace sugar {
             if (auto* p = obj_get(o, "top_k")) {
                 std::int64_t x = 0;
                 if (!as_i64(*p, x)) { err = "sweep.top_k must be number"; return false; }
+                if (x <= 0) { err = "sweep.top_k must be > 0"; return false; }
                 out.top_k = static_cast<std::size_t>(x);
             }
             if (auto* p = obj_get(o, "max_evals")) {
                 std::int64_t x = 0;
                 if (!as_i64(*p, x)) { err = "sweep.max_evals must be number"; return false; }
+                if (x <= 0) { err = "sweep.max_evals must be > 0"; return false; }
                 out.max_evals = static_cast<std::size_t>(x);
             }
             if (auto* p = obj_get(o, "objective")) {

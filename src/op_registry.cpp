@@ -13,12 +13,6 @@ namespace sugar {
             return t == "int" || t == "float";
         }
 
-        std::size_t w_max(const std::vector<std::size_t>& v) {
-            std::size_t m = 0;
-            for (auto x : v) m = std::max(m, x);
-            return m;
-        }
-
         std::string vt(ValueType t) {
             return (t == ValueType::Num) ? "num" : "bool";
         }

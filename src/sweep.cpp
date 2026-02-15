@@ -467,6 +467,7 @@ namespace sugar {
         out.has_two_stage = true;
         out.two_stage = std::move(two);
         out.best_first = out.two_stage.stage2_best_first;
+        out.eval_count = out.two_stage.stage1_evaluated + out.two_stage.stage2_evaluated;
         return out;
     }
 
@@ -531,6 +532,7 @@ namespace sugar {
         for (const auto& c : top.sorted_best_first()) {
             out.best_first.push_back(IndexedCandidate{ c.params, c.score, c.result });
         }
+        out.eval_count = cfg_.draws;
         return out;
     }
 
