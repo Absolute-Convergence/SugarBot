@@ -11,6 +11,7 @@ namespace sugar {
     struct PlanSweepRuntimeOptions {
         bool override_mode{ false };
         TradeMode custom_mode{ TradeMode::LongShort };
+        bool override_eval_mode{ false };
         BarEvalMode eval_mode{ BarEvalMode::SameBar };
     };
 

@@ -1,43 +1,81 @@
 {
   "version": 1,
-  "name": "MACD Sweep (v2)",
+  "name": "Coarse-Fine Memory Shredder",
   "trade_mode": "LongShort",
   "exec_settings": {
-    "initial_equity": 10000,
-    "fill_timing": "close",
-    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
+    "initial_equity": 100000,
+    "eval_mode": "next",
+    "fill_timing": "open",
+    "costs": { "fee_bps": 1.5, "slippage_bps": 2.5 }
   },
   "params": {
-    "fast": 12,
-    "slow": 26,
-    "sig": 9
+    "win_norm": 50,
+    "shift_k": 3,
+    "ema_len": 8,
+    "sma_len": 34,
+    "vol_thresh": 0.5,
+    "p_val": 2.0
   },
   "numeric_nodes": [
     { "id": "c", "op": "core.close" },
-    { "id": "ema_f", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "fast" } } },
-    { "id": "ema_s", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "slow" } } },
-    { "id": "macd_line", "op": "ts.sub", "args": ["ema_f", "ema_s"] },
-    { "id": "sig_line", "op": "ts.ema", "args": ["macd_line"], "params": { "n": { "ref": "sig" } } }
+    { "id": "hi", "op": "ts.roll_max", "args": ["c"], "params": { "n": { "ref": "win_norm" } } },
+    { "id": "lo", "op": "ts.roll_min", "args": ["c"], "params": { "n": { "ref": "win_norm" } } },
+    { "id": "spread", "op": "ts.sub", "args": ["hi", "lo"] },
+    { "id": "spread_norm", "op": "ts.normalize_minmax", "args": ["spread"], "params": { "n": { "ref": "win_norm" } } },
+    { "id": "ratio", "op": "ts.ratio_of_ma", "args": ["spread_norm"] },
+    { "id": "ratio_shifted", "op": "ts.shift", "args": ["ratio"], "params": { "k": { "ref": "shift_k" } } },
+    { "id": "delta_r", "op": "ts.delta", "args": ["ratio_shifted"] },
+    { "id": "abs_delta", "op": "ts.abs", "args": ["delta_r"] },
+    { "id": "pow_r", "op": "ts.pow_const", "args": ["abs_delta"], "params": { "p": { "ref": "p_val" } } },
+    { "id": "fast", "op": "ts.ema", "args": ["pow_r"], "params": { "n": { "ref": "ema_len" } } },
+    { "id": "slow", "op": "ts.sma", "args": ["pow_r"], "params": { "n": { "ref": "sma_len" } } },
+    { "id": "thresh", "op": "core.const", "params": { "value": { "ref": "vol_thresh" } } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
   ],
   "bool_nodes": [
-    { "id": "x_up", "op": "cmp.cross_up", "args": ["macd_line", "sig_line"] },
-    { "id": "x_dn", "op": "cmp.cross_down", "args": ["macd_line", "sig_line"] }
+    { "id": "cross_up", "op": "cmp.cross_up", "args": ["fast", "slow"] },
+    { "id": "cross_dn", "op": "cmp.cross_down", "args": ["fast", "slow"] },
+    { "id": "is_vol", "op": "cmp.gt", "args": ["fast", "thresh"] },
+    { "id": "not_vol", "op": "logic.not", "args": ["is_vol"] },
+    { "id": "el_1", "op": "logic.and", "args": ["cross_up", "is_vol"] },
+    { "id": "es_1", "op": "logic.and", "args": ["cross_dn", "not_vol"] },
+    { "id": "xl_1", "op": "logic.or", "args": ["cross_dn", "not_vol"] },
+    { "id": "xs_1", "op": "logic.or", "args": ["cross_up", "is_vol"] },
+    { "id": "sanity_check", "op": "cmp.ge", "args": ["pow_r", "zero"] },
+    { "id": "allow_trade", "op": "logic.and", "args": ["sanity_check", "sanity_check"] }
   ],
   "bindings": {
-    "entry_long": "x_up",
-    "exit_long": "x_dn",
-    "entry_short": "x_dn",
-    "exit_short": "x_up",
-    "allow_trade": ""
+    "entry_long": "el_1",
+    "exit_long": "xl_1",
+    "entry_short": "es_1",
+    "exit_short": "xs_1",
+    "allow_trade": "allow_trade"
   },
   "sweep": {
     "enabled": true,
-    "objective": "pnl",
+    "engine": "coarse_fine",
+    "objective": "pnl_dd",
+    "dd_weight": 2.0,
     "top_k": 5,
+    "max_evals": 121500,
+    "engine_config": {
+      "coarse_fine": {
+        "k_stage1": 50,
+        "k_stage2": 100,
+        "depollute_stage1": true,
+        "dedupe_stage2": true,
+        "suppression_hops": 2,
+        "stage2_hops": 2,
+        "stage1_stride": 3
+      }
+    },
     "params": {
-      "fast": { "min": 8, "max": 16, "step": 2, "is_int": true },
-      "slow": { "min": 20, "max": 30, "step": 2, "is_int": true },
-      "sig":  { "values": [9], "is_int": true }
+      "win_norm": { "min": 20, "max": 100, "step": 10, "is_int": true },
+      "shift_k": { "min": 1, "max": 5, "step": 1, "is_int": true },
+      "ema_len": { "min": 5, "max": 50, "step": 5, "is_int": true },
+      "sma_len": { "min": 10, "max": 100, "step": 10, "is_int": true },
+      "vol_thresh": { "min": 0.1, "max": 0.9, "step": 0.1, "is_int": false },
+      "p_val": { "values": [1.5, 2.0, 2.5], "is_int": false }
     }
   }
 }

@@ -72,6 +72,7 @@ namespace sugar {
         std::string plan_spec_path{};
         bool override_mode{ false };
         TradeMode custom_mode{ TradeMode::LongShort };
+        bool override_custom_eval_mode{ false };
         ExecSettings custom_exec{};
     };
 

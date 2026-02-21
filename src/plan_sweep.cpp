@@ -53,7 +53,9 @@ namespace sugar {
 
             StrategyExecutor exec;
             ExecSettings settings = cr.exec;
-            settings.eval_mode = opt.eval_mode;
+            if (opt.override_eval_mode) {
+                settings.eval_mode = opt.eval_mode;
+            }
             result_out = exec.run(series, cr.plan, settings);
             return true;
             };
@@ -214,12 +216,13 @@ namespace sugar {
                     cfg.coarse_fine.opt.suppression_hops = sw.coarse_fine.suppression_hops;
                     cfg.coarse_fine.opt.stage2_hops = sw.coarse_fine.stage2_hops;
 
-                    std::vector<std::size_t> stage1_indices;
                     if (sw.coarse_fine.stage1_stride > 1) {
+                        auto stage1_indices = std::make_shared<std::vector<std::size_t>>();
+                        stage1_indices->reserve(points.size() / sw.coarse_fine.stage1_stride + 1);
                         for (std::size_t i = 0; i < points.size(); i += sw.coarse_fine.stage1_stride) {
-                            stage1_indices.push_back(i);
+                            stage1_indices->push_back(i);
                         }
-                        cfg.coarse_fine.stage1_indices = &stage1_indices;
+                        cfg.coarse_fine.stage1_indices = stage1_indices;
                     }
                 }
                 else {

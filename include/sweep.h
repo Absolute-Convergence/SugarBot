@@ -800,7 +800,8 @@ namespace sugar {
     // -------------------------
     struct CoarseFineIndexConfig {
         // Optional: stage-1 index subset (coarse mesh). If null, stage-1 scans all.
-        const std::vector<std::size_t>* stage1_indices = nullptr;
+        // Shared ownership avoids dangling pointers when configs outlive local vectors.
+        std::shared_ptr<const std::vector<std::size_t>> stage1_indices{};
 
         std::size_t k_stage1 = 25;
         std::size_t k_stage2 = 50;

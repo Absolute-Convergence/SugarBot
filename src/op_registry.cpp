@@ -613,111 +613,401 @@ namespace sugar {
             }
             os << "\n\n";
             os << "Type legend: `num` = numeric series, `bool` = boolean series\n\n";
+            os << "## AI Contract (PlanSpec JSON)\n\n";
+            os << "Use only this dump as capability truth for this build.\n";
+            os << "If a field/op is not documented here, do not infer it.\n\n";
 
-            os << "## PlanSpec / Custom Strategy JSON\n\n";
-            os << "Custom User Strategy (menu item 99) loads a PlanSpec JSON, compiles a node graph into a StrategyPlan,\n";
-            os << "then runs it through the normal StrategyExecutor.\n\n";
+            os << "### Hard Guardrails (must follow)\n";
+            os << "- PlanSpec is a strict graph DSL: nodes + ids + bindings.\n";
+            os << "- `args[]` must contain exact prior node ids only (plain strings).\n";
+            os << "- Unary bool ops (for example `logic.not`) require dedicated nodes.\n";
+            os << "- `op` must exist in this registry; no user-defined ops in PlanSpec JSON.\n";
+            os << "- Data input is not limited to OHLC candles; close-only single-value tabular vectors are also supported.\n";
+            os << "- core.volume is not supported.\n";
+            os << "- core.close produces one numeric, index-aligned 1D time-series vector.\n";
+            os << "- Deep composition across numeric and bool graphs is supported.\n";
+            os << "- Plan execution is deterministic; Monte Carlo sweep is non-deterministic unless `seed > 0`.\n";
+            os << "- Sweep keys must match the documented schema exactly (including `engine_config`).\n";
+            os << "- JSON parsing/validation is strict: wrong types/arity/refs/bounds fail compilation.\n";
+            os << "- Custom PlanSpec uses a single JSON file.\n";
+            os << "- Anything not documented in this dump is unsupported for this build.\n\n";
 
             os << "### Root schema (v1)\n";
             os << "Required:\n";
-            os << "- `name` (string)\n";
             os << "- `bindings` (object)\n\n";
-            os << "Optional:\n";
+            os << "Common fields:\n";
             os << "- `version` (int, default 1)\n";
-            os << "- `required` (array<string>)  // informational only in this build\n";
+            os << "- `name` (string)\n";
             os << "- `trade_mode` (string: LongOnly | LongShort)\n";
-            os << "- `exec_settings` (object)    // NOTE: JSON key is exec_settings (not 'exec')\n";
-            os << "- `params` (object)           // top-level param table for {ref:...}\n";
+            os << "- `exec_settings` (object)\n";
+            os << "- `params` (object)\n";
             os << "- `numeric_nodes` (array<NodeSpec>)\n";
             os << "- `bool_nodes` (array<NodeSpec>)\n";
-            os << "- `sweep` (object)            // optional sweep extension (see below)\n\n";
+            os << "- `sweep` (object, optional)\n\n";
 
             os << "### NodeSpec\n";
-            os << "- `id` (string, unique within its node list)\n";
-            os << "- `op` (string)               // must exist in this registry; see modules below\n";
-            os << "- `args` (array<string>)      // node ids; order must match the op signature\n";
-            os << "- `params` (object)           // op params (scalars or {ref:\"paramName\"})\n\n";
+            os << "- `id` (string, unique per node list)\n";
+            os << "- `op` (string; must exist in this registry)\n";
+            os << "- `args` (array<string>; order must match op signature)\n";
+            os << "- `params` (object; literals or `{ \"ref\": \"paramName\" }`)\n\n";
 
-            os << "### Type rules / graph wiring\n";
-            os << "- `numeric_nodes` may only reference other numeric node ids in `args`.\n";
-            os << "- `bool_nodes` may reference bool or numeric ids depending on the operator signature:\n";
-            os << "  - logic.* ops consume bool inputs\n";
-            os << "  - cmp.* ops consume numeric inputs\n";
-            os << "- Node `args` are untyped in JSON; the compiler infers each arg's type from the operator signature.\n\n";
+            os << "### Type/wiring rules\n";
+            os << "- `numeric_nodes` may only consume numeric node ids.\n";
+            os << "- `bool_nodes` may consume bool or numeric ids depending on each op signature.\n";
+            os << "- `logic.*` inputs are bool; `cmp.*` inputs are numeric.\n";
+            os << "- `args` count must match op signature exactly.\n";
+            os << "- `args` entries are node ids only (never inline expressions like `cmp.cross_up(c, hi_prev)`).\n\n";
+            os << "logic.not also requires its own dedicated node (see Example 4 for trend_up / trend_dn pattern).\n\n";
 
-            os << "### Param refs and precedence\n";
-            os << "- A param value may be a literal (number/bool/string/null), or a reference object: `{ \"ref\": \"k\" }`.\n";
-            os << "- `{ref:...}` pulls from top-level `params`, and can be overridden by sweep overrides.\n";
-            os << "- When resolving an op param, precedence is roughly:\n";
-            os << "  1) sweep override for that param name (if present)\n";
-            os << "  2) node.params literal/ref\n";
-            os << "  3) plan-level params (used when node uses {ref:...})\n\n";
+            os << "### Important limitations\n";
+            os << "- No user-defined ops in PlanSpec JSON.\n";
+            os << "- No include/import/multi-file PlanSpec composition.\n";
+            os << "- Param objects are only valid as `{ \"ref\": \"...\" }` (no expression objects).\n";
+            os << "- `core.precomputed_num` / `core.precomputed_bool` may be unavailable in custom plans; prefer standard ops.\n\n";
 
-            os << "### Precomputed leaves (project-specific oddity)\n";
-            os << "- `core.precomputed_num` / `core.precomputed_bool` require the named leaf to exist in the CompileEnv.\n";
-            os << "  If the leaf is missing, compilation fails (not a runtime NaN/false fallback).\n";
-            os << "  In Custom User Strategy (99), only the default environment is available, so avoid precomputed_* unless you\n";
-            os << "  know that build/strategy injects those leaves.\n\n";
+            os << "### AI preflight checklist\n";
+            os << "- Root is valid JSON object (no comments, no trailing garbage).\n";
+            os << "- `bindings` exists; each binding value is a string.\n";
+            os << "- Node ids are unique per list and all referenced ids exist.\n";
+            os << "- Every `op` exists in this registry and `args` arity/type matches signature.\n";
+            os << "- All strings in every `args[]` array exactly match an earlier node id (plain string, no extra text).\n";
+            os << "- Required op params are present with correct types and bounds.\n";
+            os << "- Every `{ \"ref\": \"k\" }` resolves to a top-level `params.k` value.\n";
+            os << "- If sweep is enabled, `sweep.params` is non-empty and valid.\n\n";
 
-            os << "### Windows path and JSON escaping (common gotcha)\n";
-            os << "- In JSON strings on Windows, backslashes must be escaped: `C:\\\\Dev\\\\plans\\\\my_plan.json`.\n";
-            os << "  Forward slashes also work: `C:/Dev/plans/my_plan.json`.\n\n";
+            os << "## Sweep Configuration\n\n";
+            os << "- `sweep.enabled` (bool, optional)\n";
+            os << "- `sweep.top_k` (int > 0, optional)\n";
+            os << "- `sweep.max_evals` (int > 0, optional)\n";
+            os << "- `sweep.objective` (string: `pnl` | `pnl_dd`, optional)\n";
+            os << "- `sweep.dd_weight` (float, optional; used for `pnl_dd`)\n";
+            os << "- `sweep.engine` (string: `exhaustive` | `coarse_fine` | `monte_carlo`, optional)\n";
+            os << "- `sweep.params` (object): map `paramName -> range`\n";
+            os << "- `sweep.engine_config` (object, optional)\n";
+            os << "  - `coarse_fine`:\n";
+            os << "    - `k_stage1`, `k_stage2` (int > 0)\n";
+            os << "    - `depollute_stage1`, `dedupe_stage2` (bool)\n";
+            os << "    - `suppression_hops`, `stage2_hops` (int > 0)\n";
+            os << "    - `stage1_stride` (int >= 0)\n";
+            os << "  - `monte_carlo`:\n";
+            os << "    - `draws` (int > 0)\n";
+            os << "    - `seed` (int >= 0)\n";
+            os << "    - `dedupe` (bool)\n";
+            os << "    - `top_k` (int > 0, optional)\n\n";
 
-            os << "### Minimal example PlanSpec\n";
+            os << "Range forms:\n";
+            os << "- Discrete: `{ \"values\": [5,10,20], \"is_int\": true }`\n";
+            os << "- Stepped : `{ \"min\": 5, \"max\": 50, \"step\": 5, \"is_int\": true }`\n\n";
+
+            os << "Monte Carlo note:\n";
+            os << "- Monte Carlo search is stochastic.\n";
+            os << "- If `seed=0`, runs are non-deterministic.\n";
+            os << "- If `seed>0`, sampling is reproducible for the same build/data/config.\n\n";
+
+            os << "### Example 1: Multi-stage momentum + volatility gate (deep numeric + bool composition)\n";
             os << R"JSON(
 {
   "version": 1,
-  "name": "SMA Cross (demo)",
+  "name": "Momentum Volatility Gate",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "initial_equity": 15000,
+    "eval_mode": "next",
+    "fill_timing": "open",
+    "costs": { "fee_bps": 1.0, "slippage_bps": 2.0 }
+  },
+  "params": {
+    "fast": 8,
+    "slow": 34,
+    "roc_k": 5,
+    "vol_win": 20,
+    "vol_gate": 0.7,
+    "mom_gate": 0.0,
+    "norm_win": 50
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "ema_f", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "fast" } } },
+    { "id": "ema_s", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "slow" } } },
+    { "id": "trend_spread", "op": "ts.sub", "args": ["ema_f", "ema_s"] },
+    { "id": "trend_roc", "op": "ts.roc", "args": ["trend_spread"], "params": { "k": { "ref": "roc_k" } } },
+    { "id": "vol_raw", "op": "ts.abs", "args": ["trend_spread"] },
+    { "id": "vol_sma", "op": "ts.sma", "args": ["vol_raw"], "params": { "n": { "ref": "vol_win" } } },
+    { "id": "vol_norm", "op": "ts.normalize_minmax", "args": ["vol_sma"], "params": { "n": { "ref": "norm_win" } } },
+    { "id": "mom_norm", "op": "ts.normalize_minmax", "args": ["trend_roc"], "params": { "n": { "ref": "norm_win" } } },
+    { "id": "mom0", "op": "core.const", "params": { "value": { "ref": "mom_gate" } } },
+    { "id": "vg", "op": "core.const", "params": { "value": { "ref": "vol_gate" } } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "trend_up", "op": "cmp.gt", "args": ["ema_f", "ema_s"] },
+    { "id": "trend_dn", "op": "cmp.lt", "args": ["ema_f", "ema_s"] },
+    { "id": "mom_up", "op": "cmp.gt", "args": ["trend_roc", "mom0"] },
+    { "id": "mom_dn", "op": "cmp.lt", "args": ["trend_roc", "mom0"] },
+    { "id": "vol_ok", "op": "cmp.lt", "args": ["vol_norm", "vg"] },
+    { "id": "cross_up", "op": "cmp.cross_up", "args": ["trend_spread", "zero"] },
+    { "id": "cross_dn", "op": "cmp.cross_down", "args": ["trend_spread", "zero"] },
+    { "id": "entryL_a", "op": "logic.and", "args": ["trend_up", "mom_up"] },
+    { "id": "entryL_b", "op": "logic.and", "args": ["entryL_a", "vol_ok"] },
+    { "id": "entryL", "op": "logic.and", "args": ["entryL_b", "cross_up"] },
+    { "id": "entryS_a", "op": "logic.and", "args": ["trend_dn", "mom_dn"] },
+    { "id": "entryS_b", "op": "logic.and", "args": ["entryS_a", "vol_ok"] },
+    { "id": "entryS", "op": "logic.and", "args": ["entryS_b", "cross_dn"] },
+    { "id": "exitL_a", "op": "logic.or", "args": ["cross_dn", "trend_dn"] },
+    { "id": "exitL", "op": "logic.or", "args": ["exitL_a", "mom_dn"] },
+    { "id": "exitS_a", "op": "logic.or", "args": ["cross_up", "trend_up"] },
+    { "id": "exitS", "op": "logic.or", "args": ["exitS_a", "mom_up"] },
+    { "id": "allow_trade", "op": "logic.and", "args": ["vol_ok", "vol_ok"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
+    "allow_trade": "allow_trade"
+  }
+}
+)JSON";
+            os << "\n";
+
+            os << "### Example 2: Composite regime machine with dual gates + monte_carlo sweep\n";
+            os << R"JSON(
+{
+  "version": 1,
+  "name": "Composite Regime Machine",
+  "trade_mode": "LongShort",
+  "params": {
+    "sma_fast": 12,
+    "sma_slow": 48,
+    "channel_n": 30,
+    "norm_n": 60,
+    "entry_bias": 0.15,
+    "exit_bias": -0.05,
+    "clamp_lo": -2.0,
+    "clamp_hi": 2.0
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "f", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "sma_fast" } } },
+    { "id": "s", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "sma_slow" } } },
+    { "id": "spread", "op": "ts.sub", "args": ["f", "s"] },
+    { "id": "spread_clamped", "op": "ts.clamp_const", "args": ["spread"], "params": { "lo": { "ref": "clamp_lo" }, "hi": { "ref": "clamp_hi" } } },
+    { "id": "spread_delta", "op": "ts.delta", "args": ["spread_clamped"] },
+    { "id": "spread_accel", "op": "ts.delta", "args": ["spread_delta"] },
+    { "id": "spread_energy", "op": "ts.abs", "args": ["spread_accel"] },
+    { "id": "spread_energy_sm", "op": "ts.ema", "args": ["spread_energy"], "params": { "n": 10 } },
+    { "id": "hi", "op": "ts.roll_max", "args": ["c"], "params": { "n": { "ref": "channel_n" } } },
+    { "id": "lo", "op": "ts.roll_min", "args": ["c"], "params": { "n": { "ref": "channel_n" } } },
+    { "id": "hi_prev", "op": "ts.shift", "args": ["hi"], "params": { "k": 1 } },
+    { "id": "lo_prev", "op": "ts.shift", "args": ["lo"], "params": { "k": 1 } },
+    { "id": "dist_hi", "op": "ts.sub", "args": ["c", "hi_prev"] },
+    { "id": "dist_lo", "op": "ts.sub", "args": ["c", "lo_prev"] },
+    { "id": "sym_pressure", "op": "ts.sub", "args": ["dist_hi", "dist_lo"] },
+    { "id": "sym_norm", "op": "ts.normalize_minmax", "args": ["sym_pressure"], "params": { "n": { "ref": "norm_n" } } },
+    { "id": "entry_b", "op": "core.const", "params": { "value": { "ref": "entry_bias" } } },
+    { "id": "exit_b", "op": "core.const", "params": { "value": { "ref": "exit_bias" } } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "trend_up", "op": "cmp.gt", "args": ["spread_clamped", "zero"] },
+    { "id": "trend_dn", "op": "cmp.lt", "args": ["spread_clamped", "zero"] },
+    { "id": "accel_up", "op": "cmp.gt", "args": ["spread_accel", "zero"] },
+    { "id": "accel_dn", "op": "cmp.lt", "args": ["spread_accel", "zero"] },
+    { "id": "pressure_up", "op": "cmp.gt", "args": ["sym_norm", "entry_b"] },
+    { "id": "pressure_dn", "op": "cmp.lt", "args": ["sym_norm", "exit_b"] },
+    { "id": "breakout_up", "op": "cmp.cross_up", "args": ["c", "hi_prev"] },
+    { "id": "breakout_dn", "op": "cmp.cross_down", "args": ["c", "lo_prev"] },
+    { "id": "gateL_a", "op": "logic.and", "args": ["trend_up", "accel_up"] },
+    { "id": "gateL_b", "op": "logic.and", "args": ["gateL_a", "pressure_up"] },
+    { "id": "entryL", "op": "logic.and", "args": ["gateL_b", "breakout_up"] },
+    { "id": "gateS_a", "op": "logic.and", "args": ["trend_dn", "accel_dn"] },
+    { "id": "gateS_b", "op": "logic.and", "args": ["gateS_a", "pressure_dn"] },
+    { "id": "entryS", "op": "logic.and", "args": ["gateS_b", "breakout_dn"] },
+    { "id": "exitL_1", "op": "logic.or", "args": ["breakout_dn", "trend_dn"] },
+    { "id": "exitL", "op": "logic.or", "args": ["exitL_1", "pressure_dn"] },
+    { "id": "exitS_1", "op": "logic.or", "args": ["breakout_up", "trend_up"] },
+    { "id": "exitS", "op": "logic.or", "args": ["exitS_1", "pressure_up"] },
+    { "id": "allow_a", "op": "cmp.gt", "args": ["spread_energy_sm", "zero"] },
+    { "id": "allow_trade", "op": "logic.and", "args": ["allow_a", "allow_a"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
+    "allow_trade": "allow_trade"
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "monte_carlo",
+    "objective": "pnl_dd",
+    "dd_weight": 1.2,
+    "top_k": 12,
+    "max_evals": 10000,
+    "engine_config": {
+      "monte_carlo": {
+        "draws": 7000,
+        "seed": 42,
+        "dedupe": true,
+        "top_k": 12
+      }
+    },
+    "params": {
+      "sma_fast": { "min": 6, "max": 20, "step": 2, "is_int": true },
+      "sma_slow": { "min": 30, "max": 90, "step": 6, "is_int": true },
+      "channel_n": { "min": 15, "max": 60, "step": 5, "is_int": true },
+      "norm_n": { "values": [30, 45, 60, 75], "is_int": true },
+      "entry_bias": { "values": [0.10, 0.15, 0.20], "is_int": false },
+      "exit_bias": { "values": [-0.10, -0.05, 0.00], "is_int": false },
+      "clamp_lo": { "values": [-3.0, -2.0, -1.0], "is_int": false },
+      "clamp_hi": { "values": [1.0, 2.0, 3.0], "is_int": false }
+    }
+  }
+}
+)JSON";
+            os << "\n";
+        }
+
+            os << "### Example 3: Breakout with shifted bands and monte_carlo sweep\n";
+            os << R"JSON(
+{
+  "version": 1,
+  "name": "Shifted Breakout",
+  "trade_mode": "LongShort",
+  "params": {
+    "lookback": 20
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "hi", "op": "ts.roll_max", "args": ["c"], "params": { "n": { "ref": "lookback" } } },
+    { "id": "lo", "op": "ts.roll_min", "args": ["c"], "params": { "n": { "ref": "lookback" } } },
+    { "id": "hi_prev", "op": "ts.shift", "args": ["hi"], "params": { "k": 1 } },
+    { "id": "lo_prev", "op": "ts.shift", "args": ["lo"], "params": { "k": 1 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.cross_up", "args": ["c", "hi_prev"] },
+    { "id": "exitL",  "op": "cmp.cross_down", "args": ["c", "lo_prev"] },
+    { "id": "entryS", "op": "cmp.cross_down", "args": ["c", "lo_prev"] },
+    { "id": "exitS",  "op": "cmp.cross_up", "args": ["c", "hi_prev"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "monte_carlo",
+    "objective": "pnl",
+    "top_k": 8,
+    "max_evals": 5000,
+    "engine_config": {
+      "monte_carlo": {
+        "draws": 4000,
+        "seed": 0,
+        "dedupe": true,
+        "top_k": 8
+      }
+    },
+    "params": {
+      "lookback": { "min": 10, "max": 80, "step": 2, "is_int": true }
+    }
+  }
+}
+)JSON";
+            os << "\n";
+
+            os << "### Example 4: Trend-following SMA cross (LongShort)\n";
+            os << R"JSON(
+{
+  "version": 1,
+  "name": "SMA Cross Trend",
   "trade_mode": "LongShort",
   "exec_settings": {
     "initial_equity": 10000,
     "fill_timing": "close",
     "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
   },
-  "params": { "fast": 10, "slow": 30 },
+  "params": { "fast": 10, "slow": 40 },
   "numeric_nodes": [
     { "id": "c", "op": "core.close" },
     { "id": "f", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "fast" } } },
     { "id": "s", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "slow" } } }
   ],
   "bool_nodes": [
-    { "id": "enterL", "op": "cmp.cross_up", "args": ["f","s"] },
-    { "id": "exitL",  "op": "cmp.cross_down", "args": ["f","s"] }
+    { "id": "entryL", "op": "cmp.cross_up",   "args": ["f", "s"] },
+    { "id": "exitL",  "op": "cmp.cross_down", "args": ["f", "s"] },
+    { "id": "entryS", "op": "cmp.cross_down", "args": ["f", "s"] },
+    { "id": "exitS",  "op": "cmp.cross_up",   "args": ["f", "s"] }
   ],
   "bindings": {
-    "entry_long": "enterL",
-    "exit_long":  "exitL",
-    "entry_short": "",
-    "exit_short":  "",
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
     "allow_trade": ""
   }
 }
 )JSON";
             os << "\n";
 
-            os << "## PlanSpec sweep extension\n\n";
-            os << "If `sweep` is present and `sweep.enabled=true`, SugarBot will iterate param combinations,\n";
-            os << "compile+run each plan, and report Top-K.\n\n";
-            os << "Sweep schema (v1):\n";
-            os << "- `sweep.enabled` (bool, optional)\n";
-            os << "- `sweep.top_k` (int, optional)\n";
-            os << "- `sweep.max_evals` (int, optional)\n";
-            os << "- `sweep.objective` (string: 'pnl' or 'pnl_dd', optional)\n";
-            os << "- `sweep.dd_weight` (float, optional; used when objective='pnl_dd')\n";
-            os << "- `sweep.engine` (string: 'exhaustive' | 'coarse_fine' | 'monte_carlo', optional; default='exhaustive')\n";
-            os << "- `sweep.engine_config` (object, optional)\n";
-            os << "  - `coarse_fine` object:\n";
-            os << "    - `k_stage1`, `k_stage2` (int > 0)\n";
-            os << "    - `depollute_stage1`, `dedupe_stage2` (bool)\n";
-            os << "    - `suppression_hops`, `stage2_hops` (int > 0)\n";
-            os << "    - `stage1_stride` (int >= 0; 0 means no coarse subset)\n";
-            os << "  - `monte_carlo` object:\n";
-            os << "    - `draws` (int > 0), `seed` (int >= 0), `dedupe` (bool), `top_k` (int > 0, optional)\n";
-            os << "- `sweep.params` (object): map paramName -> range\n\n";
-            os << "Range forms:\n";
-            os << "- Discrete: `{ \"values\": [5,10,20], \"is_int\": true }`\n";
-            os << "- Stepped : `{ \"min\": 5, \"max\": 50, \"step\": 5, \"is_int\": true }`\n\n";
-        }
+            os << "### Example 5: Mean-reversion normalization with coarse_fine sweep\n";
+            os << R"JSON(
+{
+  "version": 1,
+  "name": "Norm Mean Reversion",
+  "trade_mode": "LongOnly",
+  "params": {
+    "win": 30,
+    "entry_th": 0.10,
+    "exit_th": 0.55
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "n", "op": "ts.normalize_minmax", "args": ["c"], "params": { "n": { "ref": "win" } } },
+    { "id": "e", "op": "core.const", "params": { "value": { "ref": "entry_th" } } },
+    { "id": "x", "op": "core.const", "params": { "value": { "ref": "exit_th" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.lt", "args": ["n", "e"] },
+    { "id": "exitL",  "op": "cmp.gt", "args": ["n", "x"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "coarse_fine",
+    "objective": "pnl_dd",
+    "dd_weight": 1.5,
+    "top_k": 10,
+    "max_evals": 1728,
+    "engine_config": {
+      "coarse_fine": {
+        "k_stage1": 20,
+        "k_stage2": 40,
+        "depollute_stage1": true,
+        "dedupe_stage2": true,
+        "suppression_hops": 1,
+        "stage2_hops": 1,
+        "stage1_stride": 2
+      }
+    },
+    "params": {
+      "win": { "min": 20, "max": 60, "step": 5, "is_int": true },
+      "entry_th": { "values": [0.05, 0.10, 0.15], "is_int": false },
+      "exit_th": { "values": [0.45, 0.55, 0.65], "is_int": false }
+    }
+  }
+}
+)JSON";
+            os << "\n";
 
         std::string current_module;
         for (const auto* e : ordered) {
@@ -860,3 +1150,4 @@ namespace sugar {
     }
 
 } // namespace sugar
+

@@ -168,7 +168,12 @@ namespace sugar {
             opt.custom_mode = prompt_trade_mode(in, out, opt.custom_mode);
         }
 
-        opt.custom_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.custom_exec.eval_mode);
+        out << "Override eval mode from PlanSpec file? (y/N): ";
+        std::getline(in, line);
+        opt.override_custom_eval_mode = (!line.empty() && (line[0] == 'y' || line[0] == 'Y'));
+        if (opt.override_custom_eval_mode) {
+            opt.custom_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.custom_exec.eval_mode);
+        }
     }
 
     bool run_strategy_template(const CandleSeries& series,
@@ -241,6 +246,7 @@ namespace sugar {
             PlanSweepRuntimeOptions rt{};
             rt.override_mode = opt.override_mode;
             rt.custom_mode = opt.custom_mode;
+            rt.override_eval_mode = opt.override_custom_eval_mode;
             rt.eval_mode = opt.custom_exec.eval_mode;
             return run_custom_plan_spec(series, spec, rt, out);
         }

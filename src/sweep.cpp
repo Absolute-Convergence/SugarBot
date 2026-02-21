@@ -454,7 +454,7 @@ namespace sugar {
         auto two = two_stage_sweep_topk(
             data,
             problem.param_count,
-            cfg_.stage1_indices,
+            cfg_.stage1_indices ? cfg_.stage1_indices.get() : nullptr,
             problem.eval,
             objective,
             problem.neighbors,

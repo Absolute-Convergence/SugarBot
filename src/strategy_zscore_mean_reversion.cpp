@@ -273,7 +273,7 @@ namespace sugar {
             problem.neighbors = neighbors;
 
             CoarseFineIndexConfig cfg{};
-            cfg.stage1_indices = &stage1_indices;
+            cfg.stage1_indices = std::make_shared<std::vector<std::size_t>>(std::move(stage1_indices));
             cfg.k_stage1 = k_stage1;
             cfg.k_stage2 = k_stage2;
             cfg.opt.depollute_stage1 = true;
