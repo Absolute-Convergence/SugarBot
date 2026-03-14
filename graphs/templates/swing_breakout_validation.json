@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "name": "template_swing_breakout_validation",
+  "trade_mode": "LongOnly",
+  "params": {
+    "n_break": 20,
+    "n_trend": 50
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "hi", "op": "ts.roll_max", "args": ["c"], "params": { "n": { "ref": "n_break" } } },
+    { "id": "lo", "op": "ts.roll_min", "args": ["c"], "params": { "n": { "ref": "n_break" } } },
+    { "id": "hi_prev", "op": "ts.shift", "args": ["hi"], "params": { "k": 1 } },
+    { "id": "lo_prev", "op": "ts.shift", "args": ["lo"], "params": { "k": 1 } },
+    { "id": "trend", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "n_trend" } } }
+  ],
+  "bool_nodes": [
+    { "id": "break_up", "op": "cmp.cross_up", "args": ["c", "hi_prev"] },
+    { "id": "trend_ok", "op": "cmp.gt", "args": ["c", "trend"] },
+    { "id": "entry", "op": "logic.and", "args": ["break_up", "trend_ok"] },
+    { "id": "exit", "op": "cmp.cross_down", "args": ["c", "lo_prev"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

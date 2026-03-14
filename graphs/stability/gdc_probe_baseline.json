@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "gdc_policy_probe",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false
+  },
+  "params": { "n_fast": 8, "n_slow": 21 },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "fast", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "n_fast" } } },
+    { "id": "slow", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "n_slow" } } },
+    { "id": "d", "op": "ts.sub", "args": ["fast", "slow"] },
+    { "id": "z", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_l", "op": "cmp.cross_up", "args": ["d", "z"] },
+    { "id": "exit_l", "op": "cmp.cross_down", "args": ["d", "z"] },
+    { "id": "entry_s", "op": "cmp.cross_down", "args": ["d", "z"] },
+    { "id": "exit_s", "op": "cmp.cross_up", "args": ["d", "z"] }
+  ],
+  "bindings": {
+    "entry_long": "entry_l",
+    "exit_long": "exit_l",
+    "entry_short": "entry_s",
+    "exit_short": "exit_s",
+    "allow_trade": ""
+  }
+}

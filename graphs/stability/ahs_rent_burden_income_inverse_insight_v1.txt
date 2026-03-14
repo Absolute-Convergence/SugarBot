@@ -1,0 +1,31 @@
+[Info] frame-first ingestion active (--data-spec)
+[Info] selected primary entity: __single__
+[Info] aligned calendar rows: 2299
+  rows: 2299
+  time min/max: 0 .. 2298
+  missing stats per column:
+    rent_burden: 0/2299 (0.00%)
+    income: 0/2299 (0.00%)
+    income_inverse: 0/2299 (0.00%)
+    rent: 0/2299 (0.00%)
+CSV Preview:
+  First candle:
+   00000000, 0.00, 0.00, 0.00, 0.00, vol=0.00
+  Last candle:
+   00002298, 0.00, 0.00, 0.00, 0.00, vol=0.00
+Loaded 2299 candle(s) from 'data/ahs2023m_insight_clean.csv'
+
+Run debug test harness now? [y/N]: 
+
+Choose strategy source:
+  1) Strategy template list
+  2) Custom User Strategy (PlanSpec JSON)
+Selection [default: 1]: 
+Custom User Strategy (PlanSpec JSON)
+Enter path to PlanSpec JSON: Override trade mode? (y/N): Override eval mode from PlanSpec file? (y/N): PnL: 14800.00%
+Trades: 1
+Max DD: 0.00%
+Trade hash: 12707583764215806114
+First usable signal time_key: 59
+Long trades: 1, Long PnL: 14800.00%
+Short trades: 0, Short PnL: 0.00%

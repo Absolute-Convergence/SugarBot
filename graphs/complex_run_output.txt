@@ -1,0 +1,35 @@
+[Info] canonical ingestion active (legacy preset DataSpec)
+[Info] selected primary entity: __single__
+[Info] aligned calendar rows: 80
+  rows: 80
+  time min/max: 20250102 .. 20250423
+  missing stats per column:
+    open: 0/80 (0.00%)
+    high: 0/80 (0.00%)
+    low: 0/80 (0.00%)
+    close: 0/80 (0.00%)
+    volume: 0/80 (0.00%)
+CSV Preview:
+  First candle:
+   20250102, 100.40, 101.22, 100.40, 100.84, vol=814.67
+  Last candle:
+   20250423, 104.05, 105.24, 102.83, 104.73, vol=3164.62
+Loaded 80 candle(s) from 'data/sample.csv'
+
+Run debug test harness now? [y/N]: 
+
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 
+Custom User Strategy (PlanSpec JSON)
+Enter path to PlanSpec JSON: Override trade mode? (y/N): Override eval mode from PlanSpec file? (y/N): PnL: 2.11%
+Trades: 4
+Max DD: 0.49%
+Trade hash: 17844761311843573852
+First usable signal time_key: 1731888000
+Long trades: 4, Long PnL: 2.19%
+Short trades: 0, Short PnL: 0.00%

@@ -1,0 +1,18 @@
+
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 
+Position behavior:
+  1) LongOnly
+  2) LongShort (stop-and-reverse)
+Selection [default: 2]: Panel summary
+  entities_total: 1
+  entities_ok: 1
+  entities_failed: 0
+Top-K entities
+  #1 __single__ objective=-53.7681
+    pnl=-44.1234 trades=46 dd=38.5788 hash=12769036871913685418

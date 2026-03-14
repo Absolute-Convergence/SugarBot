@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "name": "Complex Supported-Subset (Sweep 5k)",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 1.0, "slippage_bps": 1.0 }
+  },
+  "params": {
+    "z_fast": 8,
+    "z_slow": 30,
+    "entry_th": 1.2,
+    "exit_th": 0.1,
+    "neg_entry_th": -1.2,
+    "neg_exit_th": -0.1
+  },
+  "numeric_nodes": [
+    { "id": "main_close", "op": "core.ref", "params": { "ref": "close" } },
+    { "id": "main_open", "op": "core.ref", "params": { "ref": "open" } },
+    { "id": "main_high", "op": "core.ref", "params": { "ref": "high" } },
+    { "id": "main_low", "op": "core.ref", "params": { "ref": "low" } },
+
+    { "id": "spread", "op": "ms.diff", "args": ["main_close", "main_open"] },
+    { "id": "ratio", "op": "ms.ratio", "args": ["main_high", "main_low"] },
+    { "id": "ratio_minus_one", "op": "ts.sub", "args": ["ratio", "one"] },
+    { "id": "spread_to_ratio", "op": "ts.div", "args": ["spread", "ratio"] },
+
+    { "id": "z_fast_v", "op": "ms.zscore", "args": ["spread"], "params": { "n": { "ref": "z_fast" } } },
+    { "id": "z_slow_v", "op": "ms.zscore", "args": ["spread"], "params": { "n": { "ref": "z_slow" } } },
+    { "id": "z_gap", "op": "ms.diff", "args": ["z_fast_v", "z_slow_v"] },
+
+    { "id": "entry_th_v", "op": "core.const", "params": { "value": { "ref": "entry_th" } } },
+    { "id": "exit_th_v", "op": "core.const", "params": { "value": { "ref": "exit_th" } } },
+    { "id": "neg_entry_th_v", "op": "core.const", "params": { "value": { "ref": "neg_entry_th" } } },
+    { "id": "neg_exit_th_v", "op": "core.const", "params": { "value": { "ref": "neg_exit_th" } } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "z_up", "op": "cmp.gt", "args": ["z_gap", "entry_th_v"] },
+    { "id": "z_dn", "op": "cmp.lt", "args": ["z_gap", "neg_entry_th_v"] },
+    { "id": "z_flat_hi", "op": "cmp.lt", "args": ["z_gap", "exit_th_v"] },
+    { "id": "z_flat_lo", "op": "cmp.gt", "args": ["z_gap", "neg_exit_th_v"] },
+
+    { "id": "spread_cross_up", "op": "cmp.cross_up", "args": ["spread", "zero"] },
+    { "id": "spread_cross_dn", "op": "cmp.cross_down", "args": ["spread", "zero"] },
+
+    { "id": "ratio_bias_up", "op": "cmp.gt", "args": ["ratio_minus_one", "zero"] },
+    { "id": "ratio_bias_dn", "op": "cmp.lt", "args": ["ratio_minus_one", "zero"] },
+    { "id": "ratio_guard", "op": "cmp.ne", "args": ["spread_to_ratio", "zero"] },
+
+    { "id": "entryL_a", "op": "logic.and", "args": ["z_up", "spread_cross_up"] },
+    { "id": "entryL_b", "op": "logic.and", "args": ["entryL_a", "ratio_bias_up"] },
+    { "id": "entryL", "op": "logic.and", "args": ["entryL_b", "ratio_guard"] },
+
+    { "id": "entryS_a", "op": "logic.and", "args": ["z_dn", "spread_cross_dn"] },
+    { "id": "entryS_b", "op": "logic.and", "args": ["entryS_a", "ratio_bias_dn"] },
+    { "id": "entryS", "op": "logic.and", "args": ["entryS_b", "ratio_guard"] },
+
+    { "id": "exitL_a", "op": "logic.or", "args": ["spread_cross_dn", "z_flat_hi"] },
+    { "id": "exitL", "op": "logic.or", "args": ["exitL_a", "z_flat_lo"] },
+    { "id": "exitS_a", "op": "logic.or", "args": ["spread_cross_up", "z_flat_lo"] },
+    { "id": "exitS", "op": "logic.or", "args": ["exitS_a", "z_flat_hi"] },
+
+    { "id": "allow_trade", "op": "logic.and", "args": ["ratio_guard", "ratio_guard"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
+    "allow_trade": "allow_trade"
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "exhaustive",
+    "objective": "pnl_dd",
+    "dd_weight": 1.0,
+    "top_k": 10,
+    "max_evals": 5000,
+    "params": {
+      "z_fast": { "values": [4,6,8,10,12,14,16,18,20,22], "is_int": true },
+      "z_slow": { "values": [24,28,32,36,40,44,48,52,56,60], "is_int": true },
+      "entry_th": { "values": [0.6,0.8,1.0,1.2,1.4,1.6,1.8,2.0,2.2,2.4], "is_int": false },
+      "exit_th": { "values": [-0.2,-0.1,0.0,0.1,0.2], "is_int": false }
+    }
+  }
+}

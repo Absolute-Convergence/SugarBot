@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "template_donchian_breakout",
+  "trade_mode": "LongOnly",
+  "params": {
+    "n": 20
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "hi", "op": "ts.roll_max", "args": ["c"], "params": { "n": { "ref": "n" } } },
+    { "id": "lo", "op": "ts.roll_min", "args": ["c"], "params": { "n": { "ref": "n" } } },
+    { "id": "hi_prev", "op": "ts.shift", "args": ["hi"], "params": { "k": 1 } },
+    { "id": "lo_prev", "op": "ts.shift", "args": ["lo"], "params": { "k": 1 } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.cross_up", "args": ["c", "hi_prev"] },
+    { "id": "exit", "op": "cmp.cross_down", "args": ["c", "lo_prev"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "ahs_rent_burden_income_inverse_insight_v1",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false
+  },
+  "params": {
+    "primary_value_col": "income_inverse",
+    "n": 60,
+    "entry_z": 0.75,
+    "exit_z": 0.15
+  },
+  "numeric_nodes": [
+    { "id": "burden", "op": "core.ref", "params": { "ref": "rent_burden" } },
+    { "id": "z", "op": "ts.zscore_sma", "args": ["burden"], "params": { "n": { "ref": "n" } } },
+    { "id": "entry_thr", "op": "core.const", "params": { "value": { "ref": "entry_z" } } },
+    { "id": "exit_thr", "op": "core.const", "params": { "value": { "ref": "exit_z" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_long", "op": "cmp.gt", "args": ["z", "entry_thr"] },
+    { "id": "exit_long", "op": "cmp.lt", "args": ["z", "exit_thr"] },
+    { "id": "allow_trade", "op": "core.bool_const", "params": { "value": true } }
+  ],
+  "bindings": {
+    "entry_long": "entry_long",
+    "exit_long": "exit_long",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": "allow_trade"
+  }
+}

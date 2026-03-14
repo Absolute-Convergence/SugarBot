@@ -1,0 +1,38 @@
+[Info] runtime format preset: iso_ohlcv_time (auto-detected: header contains time+OHLC columns)
+[Info] canonical ingestion active (legacy preset DataSpec)
+[Info] selected primary entity: __single__
+[Info] aligned calendar rows: 1423
+  rows: 1423
+  time min/max: 1728457200 .. 1759179600
+  missing stats per column:
+    open: 0/1423 (0.00%)
+    high: 0/1423 (0.00%)
+    low: 0/1423 (0.00%)
+    close: 0/1423 (0.00%)
+    volume: 0/1423 (0.00%)
+CSV Preview:
+  First candle:
+   28457200, 62399.99, 62399.99, 61696.96, 61739.71, vol=1336.20
+  Last candle:
+   59179600, 114310.00, 114417.06, 114069.15, 114391.97, vol=389.47
+Loaded 1423 candle(s) from 'data/BTCUSD_420.csv'
+
+Run debug test harness now? [y/N]: 
+
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 
+Position behavior:
+  1) LongOnly
+  2) LongShort (stop-and-reverse)
+Selection [default: 2]: Customize sweep ranges? [y/N]: PnL: -44.12%
+Trades: 46
+Max DD: 38.58%
+Trade hash: 12769036871913685418
+First usable signal time_key: 1728914400
+Long trades: 0, Long PnL: 0.00%
+Short trades: 46, Short PnL: -44.12%

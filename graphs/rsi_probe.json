@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "RSI Probe",
+  "trade_mode": "LongOnly",
+  "params": {
+    "n": 14,
+    "entry_th": 30.0,
+    "exit_th": 50.0
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "rsi", "op": "ts.rsi", "args": ["c"], "params": { "n": { "ref": "n" } } },
+    { "id": "entry_v", "op": "core.const", "params": { "value": { "ref": "entry_th" } } },
+    { "id": "exit_v", "op": "core.const", "params": { "value": { "ref": "exit_th" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.lt", "args": ["rsi", "entry_v"] },
+    { "id": "exit", "op": "cmp.gt", "args": ["rsi", "exit_v"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

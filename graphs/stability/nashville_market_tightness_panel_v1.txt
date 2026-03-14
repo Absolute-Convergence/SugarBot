@@ -1,0 +1,22 @@
+
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 
+Custom User Strategy (PlanSpec JSON)
+Enter path to PlanSpec JSON: Override trade mode? (y/N): Override eval mode from PlanSpec file? (y/N): Panel summary
+  entities_total: 4
+  entities_ok: 4
+  entities_failed: 0
+Top-K entities
+  #1 nashville_metro objective=-28.7882
+    pnl=-21.7111 trades=35 dd=28.3087 hash=12728688288620016595
+  #2 nashville_city objective=-41.5815
+    pnl=-33.2864 trades=35 dd=33.1802 hash=8814450173677117737
+  #3 murfreesboro objective=-49.5613
+    pnl=-37.2438 trades=38 dd=49.2699 hash=15929734068693459317
+  #4 nashville_davidson objective=-94.6493
+    pnl=-74.7853 trades=45 dd=79.4559 hash=15489146964641980315

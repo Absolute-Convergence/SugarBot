@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "nashville_market_tightness_insight_v1",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": true
+  },
+  "params": {
+    "primary_value_col": "median_sale_price",
+    "lookback": 6,
+    "entry_tight": 0.75,
+    "exit_tight": 0.10,
+    "entry_loose": -0.75,
+    "exit_loose": -0.10
+  },
+  "numeric_nodes": [
+    { "id": "sold", "op": "core.ref", "params": { "ref": "homes_sold" } },
+    { "id": "inv", "op": "core.ref", "params": { "ref": "inventory" } },
+    { "id": "sold_z", "op": "ts.zscore_sma", "args": ["sold"], "params": { "n": { "ref": "lookback" } } },
+    { "id": "inv_z", "op": "ts.zscore_sma", "args": ["inv"], "params": { "n": { "ref": "lookback" } } },
+    { "id": "tightness", "op": "ts.sub", "args": ["sold_z", "inv_z"] },
+    { "id": "entry_tight", "op": "core.const", "params": { "value": { "ref": "entry_tight" } } },
+    { "id": "exit_tight", "op": "core.const", "params": { "value": { "ref": "exit_tight" } } },
+    { "id": "entry_loose", "op": "core.const", "params": { "value": { "ref": "entry_loose" } } },
+    { "id": "exit_loose", "op": "core.const", "params": { "value": { "ref": "exit_loose" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_long", "op": "cmp.gt", "args": ["tightness", "entry_tight"] },
+    { "id": "exit_long", "op": "cmp.lt", "args": ["tightness", "exit_tight"] },
+    { "id": "entry_short", "op": "cmp.lt", "args": ["tightness", "entry_loose"] },
+    { "id": "exit_short", "op": "cmp.gt", "args": ["tightness", "exit_loose"] },
+    { "id": "allow_trade", "op": "core.bool_const", "params": { "value": true } }
+  ],
+  "bindings": {
+    "entry_long": "entry_long",
+    "exit_long": "exit_long",
+    "entry_short": "entry_short",
+    "exit_short": "exit_short",
+    "allow_trade": "allow_trade"
+  }
+}

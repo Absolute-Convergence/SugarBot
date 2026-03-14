@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "template_zscore_mean_reversion",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": true
+  },
+  "params": {
+    "n": 20,
+    "entry_z_long": -1.0,
+    "entry_z_short": 1.0
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "m", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "n" } } },
+    { "id": "dev", "op": "ts.sub", "args": ["c", "m"] },
+    { "id": "z", "op": "ms.zscore", "args": ["dev"], "params": { "n": { "ref": "n" } } },
+    { "id": "entry_thr_long", "op": "core.const", "params": { "value": { "ref": "entry_z_long" } } },
+    { "id": "entry_thr_short", "op": "core.const", "params": { "value": { "ref": "entry_z_short" } } },
+    { "id": "exit_thr", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_long", "op": "cmp.lt", "args": ["z", "entry_thr_long"] },
+    { "id": "exit_long", "op": "cmp.gt", "args": ["z", "exit_thr"] },
+    { "id": "entry_short", "op": "cmp.gt", "args": ["z", "entry_thr_short"] },
+    { "id": "exit_short", "op": "cmp.lt", "args": ["z", "exit_thr"] }
+  ],
+  "bindings": {
+    "entry_long": "entry_long",
+    "exit_long": "exit_long",
+    "entry_short": "entry_short",
+    "exit_short": "exit_short",
+    "allow_trade": ""
+  }
+}

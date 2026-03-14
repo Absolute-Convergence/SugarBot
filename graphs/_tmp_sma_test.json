@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "SMA Temp",
+  "trade_mode": "LongShort",
+  "params": {"fast": 10, "slow": 40},
+  "numeric_nodes": [
+    {"id":"c","op":"core.close"},
+    {"id":"f","op":"ts.sma","args":["c"],"params":{"n":{"ref":"fast"}}},
+    {"id":"s","op":"ts.sma","args":["c"],"params":{"n":{"ref":"slow"}}}
+  ],
+  "bool_nodes": [
+    {"id":"entryL","op":"cmp.cross_up","args":["f","s"]},
+    {"id":"exitL","op":"cmp.cross_down","args":["f","s"]},
+    {"id":"entryS","op":"cmp.cross_down","args":["f","s"]},
+    {"id":"exitS","op":"cmp.cross_up","args":["f","s"]}
+  ],
+  "bindings": {"entry_long":"entryL","exit_long":"exitL","entry_short":"entryS","exit_short":"exitS","allow_trade":""}
+}

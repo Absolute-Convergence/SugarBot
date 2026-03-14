@@ -1,0 +1,247 @@
+[Info] canonical ingestion active (legacy preset DataSpec)
+[Info] selected primary entity: __single__
+[Info] aligned calendar rows: 80
+  rows: 80
+  time min/max: 20250102 .. 20250423
+  missing stats per column:
+    open: 0/80 (0.00%)
+    high: 0/80 (0.00%)
+    low: 0/80 (0.00%)
+    close: 0/80 (0.00%)
+    volume: 0/80 (0.00%)
+CSV Preview:
+  First candle:
+   20250102, 100.40, 101.22, 100.40, 100.84, vol=814.67
+  Last candle:
+   20250423, 104.05, 105.24, 102.83, 104.73, vol=3164.62
+Loaded 80 candle(s) from 'data/sample.csv'
+
+Run debug test harness now? [y/N]: 
+
+Choose strategy template:
+  1) Donchian breakout
+  2) Gated diff cross
+  3) ZScore mean reversion
+  4) Swing breakout validation
+  99) Custom User Strategy (PlanSpec JSON)
+Selection [default: 2]: 
+Custom User Strategy (PlanSpec JSON)
+Enter path to PlanSpec JSON: Override trade mode? (y/N): Override eval mode from PlanSpec file? (y/N): 
+  [sweep] 100/5000 elapsed=0s eta~18s
+  [sweep] 200/5000 elapsed=0s eta~17s
+  [sweep] 300/5000 elapsed=1s eta~17s
+  [sweep] 400/5000 elapsed=1s eta~16s
+  [sweep] 500/5000 elapsed=1s eta~16s
+  [sweep] 600/5000 elapsed=2s eta~15s
+  [sweep] 700/5000 elapsed=2s eta~15s
+  [sweep] 800/5000 elapsed=2s eta~15s
+  [sweep] 900/5000 elapsed=3s eta~14s
+  [sweep] 1000/5000 elapsed=3s eta~14s
+  [sweep] 1100/5000 elapsed=3s eta~14s
+  [sweep] 1200/5000 elapsed=4s eta~13s
+  [sweep] 1300/5000 elapsed=4s eta~13s
+  [sweep] 1400/5000 elapsed=5s eta~12s
+  [sweep] 1500/5000 elapsed=5s eta~12s
+  [sweep] 1600/5000 elapsed=5s eta~12s
+  [sweep] 1700/5000 elapsed=6s eta~11s
+  [sweep] 1800/5000 elapsed=6s eta~11s
+  [sweep] 1900/5000 elapsed=6s eta~11s
+  [sweep] 2000/5000 elapsed=7s eta~10s
+  [sweep] 2100/5000 elapsed=7s eta~10s
+  [sweep] 2200/5000 elapsed=7s eta~10s
+  [sweep] 2300/5000 elapsed=8s eta~9s
+  [sweep] 2400/5000 elapsed=8s eta~9s
+  [sweep] 2500/5000 elapsed=9s eta~9s
+  [sweep] 2600/5000 elapsed=9s eta~8s
+  [sweep] 2700/5000 elapsed=9s eta~8s
+  [sweep] 2800/5000 elapsed=10s eta~7s
+  [sweep] 2900/5000 elapsed=10s eta~7s
+  [sweep] 3000/5000 elapsed=10s eta~7s
+  [sweep] 3100/5000 elapsed=11s eta~6s
+  [sweep] 3200/5000 elapsed=11s eta~6s
+  [sweep] 3300/5000 elapsed=11s eta~6s
+  [sweep] 3400/5000 elapsed=12s eta~5s
+  [sweep] 3500/5000 elapsed=12s eta~5s
+  [sweep] 3600/5000 elapsed=13s eta~5s
+  [sweep] 3700/5000 elapsed=13s eta~4s
+  [sweep] 3800/5000 elapsed=13s eta~4s
+  [sweep] 3900/5000 elapsed=14s eta~3s
+  [sweep] 4000/5000 elapsed=14s eta~3s
+  [sweep] 4100/5000 elapsed=14s eta~3s
+  [sweep] 4200/5000 elapsed=15s eta~2s
+  [sweep] 4300/5000 elapsed=15s eta~2s
+  [sweep] 4400/5000 elapsed=15s eta~2s
+  [sweep] 4500/5000 elapsed=16s eta~1s
+  [sweep] 4600/5000 elapsed=16s eta~1s
+  [sweep] 4700/5000 elapsed=17s eta~1s
+  [sweep] 4800/5000 elapsed=17s eta~0s
+  [sweep] 4900/5000 elapsed=17s eta~0s
+  [sweep] 5000/5000 elapsed=18s eta~0s
+
+=== PlanSpec Sweep Results ===
+Engine: exhaustive
+Objective: pnl_dd (dd_weight=1.00)
+Param dims: 4
+Total combos: 5000
+Evals run: 5000 (max 5000)
+Compile failures: 0
+TopK: 10
+
+-- Rank 1 | score=10.00 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.20
+  z_fast: 6
+  z_slow: 28
+Result:
+  PnL: 11.19%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 6359297095373750860
+  First usable signal time_key: 1729209600
+  Long trades: 21, Long PnL: 11.61%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 2 | score=10.00 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.10
+  z_fast: 6
+  z_slow: 28
+Result:
+  PnL: 11.19%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 6359297095373750860
+  First usable signal time_key: 1729209600
+  Long trades: 21, Long PnL: 11.61%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 3 | score=10.00 --
+Params:
+  entry_th: 1.00
+  exit_th: -0.20
+  z_fast: 6
+  z_slow: 28
+Result:
+  PnL: 11.19%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 6359297095373750860
+  First usable signal time_key: 1729209600
+  Long trades: 21, Long PnL: 11.61%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 4 | score=10.00 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.00
+  z_fast: 6
+  z_slow: 28
+Result:
+  PnL: 11.19%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 6359297095373750860
+  First usable signal time_key: 1729209600
+  Long trades: 21, Long PnL: 11.61%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 5 | score=10.00 --
+Params:
+  entry_th: 1.00
+  exit_th: -0.10
+  z_fast: 6
+  z_slow: 28
+Result:
+  PnL: 11.19%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 6359297095373750860
+  First usable signal time_key: 1729209600
+  Long trades: 21, Long PnL: 11.61%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 6 | score=9.01 --
+Params:
+  entry_th: 1.00
+  exit_th: -0.10
+  z_fast: 6
+  z_slow: 36
+Result:
+  PnL: 10.21%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 2720624372073697777
+  First usable signal time_key: 1731196800
+  Long trades: 21, Long PnL: 10.63%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 7 | score=9.01 --
+Params:
+  entry_th: 1.00
+  exit_th: -0.20
+  z_fast: 6
+  z_slow: 36
+Result:
+  PnL: 10.21%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 2720624372073697777
+  First usable signal time_key: 1731196800
+  Long trades: 21, Long PnL: 10.63%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 8 | score=9.01 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.10
+  z_fast: 6
+  z_slow: 36
+Result:
+  PnL: 10.21%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 2720624372073697777
+  First usable signal time_key: 1731196800
+  Long trades: 21, Long PnL: 10.63%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 9 | score=9.01 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.20
+  z_fast: 6
+  z_slow: 36
+Result:
+  PnL: 10.21%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 2720624372073697777
+  First usable signal time_key: 1731196800
+  Long trades: 21, Long PnL: 10.63%
+  Short trades: 0, Short PnL: 0.00%
+
+-- Rank 10 | score=9.01 --
+Params:
+  entry_th: 1.00
+  exit_th: 0.00
+  z_fast: 6
+  z_slow: 36
+Result:
+  PnL: 10.21%
+  Trades: 21
+  Max DD: 1.19%
+  Trade hash: 2720624372073697777
+  First usable signal time_key: 1731196800
+  Long trades: 21, Long PnL: 10.63%
+  Short trades: 0, Short PnL: 0.00%
+
+=== Best Result (Rank 1) ===
+PnL: 11.19%
+Trades: 21
+Max DD: 1.19%
+Trade hash: 6359297095373750860
+First usable signal time_key: 1729209600
+Long trades: 21, Long PnL: 11.61%
+Short trades: 0, Short PnL: 0.00%
