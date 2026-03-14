@@ -67,14 +67,6 @@ namespace {
         return s;
     }
 
-    std::string trim_copy(std::string s) {
-        auto not_ws = [](unsigned char c) { return !std::isspace(c); };
-        auto b = std::find_if(s.begin(), s.end(), not_ws);
-        auto e = std::find_if(s.rbegin(), s.rend(), not_ws).base();
-        if (b >= e) return {};
-        return std::string(b, e);
-    }
-
     bool parse_runtime_format(std::string_view s, InputProfile& out) {
         const std::string x = lower_copy(std::string(s));
         if (x == "auto") {
