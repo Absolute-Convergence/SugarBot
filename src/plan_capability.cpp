@@ -182,15 +182,6 @@ namespace sugar {
             return out;
         }
 
-        std::string join_topology_query_kinds(const std::vector<TopologyQueryKind>& kinds) {
-            std::string out;
-            for (std::size_t i = 0; i < kinds.size(); ++i) {
-                if (i) out += ", ";
-                out += std::string(topology_query_kind_name(kinds[i]));
-            }
-            return out;
-        }
-
         std::string topology_provision_hint(
             const ObservationWorldFacts& facts,
             const std::vector<TopologyFamily>& families,
