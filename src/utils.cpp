@@ -105,7 +105,7 @@ namespace sugar {
         return std::nullopt; // invalid
     }
 
-    void format_yyyymmdd(int yyyymmdd, char out[9]) {
+    void format_yyyymmdd(TimeKey yyyymmdd, char out[9]) {
         // Render as 8 ASCII digits, most significant first.
         for (int i = 7; i >= 0; --i) {
             out[i] = char('0' + (yyyymmdd % 10));
@@ -144,10 +144,14 @@ namespace sugar {
             pos += 3; // move past ":SS"
         }
 
+        if (hh < 0 || hh > 23) return false;
+        if (mm < 0 || mm > 59) return false;
+        if (ss < 0 || ss > 59) return false;
+
         seconds_since_mid = hh * 3600 + mm * 60 + ss;
 
         // Timezone: optional
-        tz_offset_minutes = 0; // default to 0 if absent
+        tz_offset_minutes = 0; // default to UTC if offset is absent
         if (pos >= s.size()) return true;
 
         char tzch = s[pos];
@@ -169,6 +173,9 @@ namespace sugar {
             if (!parse_2(s.substr(pos + 1, 2), tzh)) return false;
             if (s[pos + 3] != ':') return false;
             if (!parse_2(s.substr(pos + 4, 2), tzm)) return false;
+            if (tzh < 0 || tzh > 14) return false;
+            if (tzm < 0 || tzm > 59) return false;
+            if (tzh == 14 && tzm != 0) return false;
             int sign = (tzch == '-') ? -1 : 1;
             tz_offset_minutes = sign * (tzh * 60 + tzm);
             return true;

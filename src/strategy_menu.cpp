@@ -6,33 +6,58 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "utils.h"
 #include "plan_sweep.h"
 
 namespace sugar {
+    namespace {
+        std::string template_planspec_relpath(StrategyTemplate templ) {
+            switch (templ) {
+            case StrategyTemplate::Donchian_Breakout:
+                return "graphs/templates/donchian_breakout.json";
+            case StrategyTemplate::Gated_Diff_Cross:
+                return "graphs/templates/gated_diff_cross.json";
+            case StrategyTemplate::ZScore_MeanReversion:
+                return "graphs/templates/zscore_mean_reversion.json";
+            case StrategyTemplate::Swing_Breakout_Validation:
+                return "graphs/templates/swing_breakout_validation.json";
+            default:
+                return {};
+            }
+        }
+    } // namespace
+
+    StrategySource prompt_strategy_source(std::istream& in, std::ostream& out) {
+        out << "\nChoose strategy source:\n";
+        out << "  1) Strategy template list\n";
+        out << "  2) Custom User Strategy (PlanSpec JSON)\n";
+        out << "Selection [default: 1]: ";
+
+        std::string line;
+        std::getline(in, line);
+
+        int source = 1;
+        if (!line.empty()) {
+            std::istringstream iss(line);
+            iss >> source;
+        }
+        if (source == 2 || source == 99) {
+            return StrategySource::CustomPlanSpec;
+        }
+        return StrategySource::TemplateList;
+    }
 
     StrategyTemplate prompt_strategy_template(std::istream& in, std::ostream& out) {
         out << "\nChoose strategy template:\n";
-#if SUGAR_HAS_DONCHIAN
         out << "  1) Donchian breakout\n";
-#else
-        out << "  1) Donchian breakout (not in this build)\n";
-#endif
-        out << "  2) Gated diff cross\n"; // Should be in all builds
-#if SUGAR_HAS_ZSCORE
+        out << "  2) Gated diff cross\n";
         out << "  3) ZScore mean reversion\n";
-#else
-        out << "  3) ZScore mean reversion (not in this build)\n";
-#endif
-#if SUGAR_HAS_SWING
         out << "  4) Swing breakout validation\n";
-#else
-        out << "  4) Swing breakout validation (not in this build)\n";
-#endif
-        out << "  99) Custom User Strategy (PlanSpec JSON)\n";
         out << "Selection [default: 2]: ";
 
         std::string line;
@@ -43,7 +68,7 @@ namespace sugar {
             std::istringstream iss(line);
             iss >> choice;
         }
-        if (choice != 99 && (choice < 1 || choice > 4)) choice = 2;
+        if (choice < 1 || choice > 4) choice = 2;
         return static_cast<StrategyTemplate>(choice);
     }
 
@@ -94,19 +119,13 @@ namespace sugar {
         std::ostream& out,
         StrategyRunOptions& opt)
     {
-#if SUGAR_HAS_DONCHIAN
-        sugar::prompt_donchian_sweep_ranges(in, out, opt.donchian_ranges);
         opt.donchian_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.donchian_exec.eval_mode);
-#else
-        (void)in; (void)out; (void)opt;
-#endif
     }
 
     void prompt_gated_diff_cross_sweep(std::istream& in,
         std::ostream& out,
         StrategyRunOptions& opt)
     {
-        sugar::prompt_gated_diff_cross_sweep_ranges(in, out, opt.gated_diff_ranges);
         opt.gated_diff_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.gated_diff_exec.eval_mode);
     }
 
@@ -114,29 +133,19 @@ namespace sugar {
         std::ostream& out,
         StrategyRunOptions& opt)
     {
-#if SUGAR_HAS_ZSCORE
-        sugar::prompt_zscore_mean_reversion_sweep_ranges(in, out, opt.zscore_ranges);
         opt.zscore_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.zscore_exec.eval_mode);
-#else
-        (void)in; (void)out; (void)opt;
-#endif
     }
 
     void prompt_swing_breakout_validation_sweep(std::istream& in,
         std::ostream& out,
         StrategyRunOptions& opt)
     {
-#if SUGAR_HAS_SWING
-        sugar::prompt_swing_breakout_validation_sweep_ranges(in, out, opt.swing_ranges);
         opt.swing_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.swing_exec.eval_mode);
-#else
-        (void)in; (void)out; (void)opt;
-#endif
     }
 
     void prompt_custom_user_planspec(std::istream& in,
         std::ostream& out,
-        StrategyRunOptions& opt)
+        CustomPlanSpecRunOptions& opt)
     {
         out << "\nCustom User Strategy (PlanSpec JSON)\n";
         out << "Enter path to PlanSpec JSON: ";
@@ -165,90 +174,114 @@ namespace sugar {
         std::getline(in, line);
         opt.override_mode = (!line.empty() && (line[0] == 'y' || line[0] == 'Y'));
         if (opt.override_mode) {
-            opt.custom_mode = prompt_trade_mode(in, out, opt.custom_mode);
+            opt.mode = prompt_trade_mode(in, out, opt.mode);
         }
 
         out << "Override eval mode from PlanSpec file? (y/N): ";
         std::getline(in, line);
-        opt.override_custom_eval_mode = (!line.empty() && (line[0] == 'y' || line[0] == 'Y'));
-        if (opt.override_custom_eval_mode) {
-            opt.custom_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.custom_exec.eval_mode);
+        opt.override_eval_mode = (!line.empty() && (line[0] == 'y' || line[0] == 'Y'));
+        if (opt.override_eval_mode) {
+            opt.exec.eval_mode = prompt_bar_eval_mode(in, out, opt.exec.eval_mode);
         }
     }
 
-    bool run_strategy_template(const CandleSeries& series,
+    bool load_custom_planspec_runtime(
+        const CustomPlanSpecRunOptions& opt,
+        PlanSpec& out_spec,
+        PlanSweepRuntimeOptions& out_rt,
+        std::string& err) {
+        out_spec = PlanSpec{};
+        out_rt = PlanSweepRuntimeOptions{};
+
+        if (opt.plan_spec_path.empty()) {
+            err = "no PlanSpec JSON provided";
+            return false;
+        }
+        if (!load_plan_spec_file(opt.plan_spec_path, out_spec, err)) {
+            return false;
+        }
+
+        out_rt.override_mode = opt.override_mode;
+        out_rt.custom_mode = opt.mode;
+        out_rt.override_eval_mode = opt.override_eval_mode;
+        out_rt.eval_mode = opt.exec.eval_mode;
+        return true;
+    }
+
+    bool load_template_planspec(StrategyTemplate templ,
+        PlanSpec& out_spec,
+        std::string& err) {
+        const std::string rel = template_planspec_relpath(templ);
+        if (rel.empty()) {
+            err = "template has no default PlanSpec mapping";
+            return false;
+        }
+
+        const std::string path = sugar::normalize_path_for_runtime(rel);
+        if (!load_plan_spec_file(path, out_spec, err)) {
+            err = "failed to load template PlanSpec '" + path + "': " + err;
+            return false;
+        }
+        return true;
+    }
+
+    bool run_strategy_template(const DataView& dv,
+        const ColumnRef& primary,
+        StrategyTemplate templ,
         const StrategyRunOptions& opt,
         std::ostream& out) {
-        switch (opt.templ) {
+        if (!dv.has_col(primary)) {
+            out << "Runtime data error: primary series/column is missing from DataView.\n";
+            return false;
+        }
 
+        const auto& b = dv.bundle();
+        const std::size_t si = b.find_series_index(primary.series);
+        if (si == static_cast<std::size_t>(-1) || si >= b.frames.size()) {
+            out << "Runtime data error: primary series '" << primary.series << "' is missing.\n";
+            return false;
+        }
+
+        switch (templ) {
         case StrategyTemplate::Donchian_Breakout:
-#if SUGAR_HAS_DONCHIAN
-            return run_donchian_breakout_sweep_best(
-                series,
-                opt.donchian_ranges,
-                opt.mode,
-                opt.donchian_exec,
-                out
-            );
-#else
-            out << "Donchian breakout is not available in this build.\n";
-            return false;
-#endif
-
         case StrategyTemplate::Gated_Diff_Cross:
-            return run_gated_diff_cross_sweep_best(
-                series,
-                opt.gated_diff_ranges,
-                opt.mode,
-                opt.gated_diff_exec,
-                out
-            );
-
         case StrategyTemplate::ZScore_MeanReversion:
-#if SUGAR_HAS_ZSCORE
-            return run_zscore_mean_reversion_sweep_best(
-                series,
-                opt.zscore_ranges,
-                opt.mode,
-                opt.zscore_exec,
-                out
-            );
-#else
-            out << "ZScore mean reversion is not available in this build.\n";
-            return false;
-#endif
-
         case StrategyTemplate::Swing_Breakout_Validation:
-#if SUGAR_HAS_SWING
-            return run_swing_breakout_validation_sweep_best(
-                series,
-                opt.swing_ranges,
-                opt.swing_exec,
-                out
-            );
-#else
-            out << "Swing breakout validation is not available in this build.\n";
-            return false;
-#endif
-
-        case StrategyTemplate::Custom_User_PlanSpec: {
-            if (opt.plan_spec_path.empty()) {
-                out << "[Info] Custom strategy cancelled (no PlanSpec JSON provided).\n";
-                return true;
-            }
-
-            PlanSpec spec;
+        {
+            PlanSpec spec{};
             std::string e;
-            if (!load_plan_spec_file(opt.plan_spec_path, spec, e)) {
-                out << "Failed to load PlanSpec: " << e << "\n";
+            if (!load_template_planspec(templ, spec, e)) {
+                out << "Template PlanSpec error: " << e << "\n";
                 return false;
             }
+
             PlanSweepRuntimeOptions rt{};
-            rt.override_mode = opt.override_mode;
-            rt.custom_mode = opt.custom_mode;
-            rt.override_eval_mode = opt.override_custom_eval_mode;
-            rt.eval_mode = opt.custom_exec.eval_mode;
-            return run_custom_plan_spec(series, spec, rt, out);
+            rt.override_mode = true;
+            rt.custom_mode = opt.mode;
+
+            // Keep per-template eval-mode prompts behavior while routing execution through PlanSpec.
+            switch (templ) {
+            case StrategyTemplate::Donchian_Breakout:
+                rt.override_eval_mode = true;
+                rt.eval_mode = opt.donchian_exec.eval_mode;
+                break;
+            case StrategyTemplate::Gated_Diff_Cross:
+                rt.override_eval_mode = true;
+                rt.eval_mode = opt.gated_diff_exec.eval_mode;
+                break;
+            case StrategyTemplate::ZScore_MeanReversion:
+                rt.override_eval_mode = true;
+                rt.eval_mode = opt.zscore_exec.eval_mode;
+                break;
+            case StrategyTemplate::Swing_Breakout_Validation:
+                rt.override_eval_mode = true;
+                rt.eval_mode = opt.swing_exec.eval_mode;
+                break;
+            default:
+                break;
+            }
+
+            return run_custom_plan_spec(dv, primary, spec, rt, out, nullptr);
         }
 
         default:

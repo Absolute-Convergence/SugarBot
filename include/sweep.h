@@ -18,8 +18,6 @@
 #include <string>
 
 #include "metrics.h"
-#include "series.h"
-
 #include "plan_spec.h"
 
 namespace sugar {
@@ -150,7 +148,6 @@ namespace sugar {
     // -------------------------
     template <typename ParamsT, typename EvalFn, typename ScoreFn>
     TopK<ParamsT> sweep_topk(
-        const CandleSeries& data,
         const std::vector<ParamsT>& params,
         EvalFn&& eval,
         ScoreFn&& score,
@@ -174,7 +171,7 @@ namespace sugar {
 
         TopK<ParamsT> top(k);
         for (const auto& p : params) {
-            auto res = eval(data, p);
+            auto res = eval(p);
             ++done;
             report();
 
@@ -197,7 +194,6 @@ namespace sugar {
         typename EvalFn, typename ScoreFn, typename KeyFn,
         typename HashFn = std::hash<KeyT>, typename EqFn = std::equal_to<KeyT>>
         TopK<ParamsT> sweep_topk_unique(
-            const CandleSeries& data,
             const std::vector<ParamsT>& params,
             EvalFn&& eval,
             ScoreFn&& score,
@@ -229,7 +225,7 @@ namespace sugar {
         TopK<ParamsT> provisional(oversample_k);
 
         for (const auto& p : params) {
-            auto res = eval(data, p);
+            auto res = eval(p);
             ++done;
             report();
 
@@ -277,7 +273,6 @@ namespace sugar {
         typename EqFn = std::equal_to<KeyT>
     >
     TopK<ParamsT> sweep_topk_basins(
-        const CandleSeries& data,
         const std::vector<ParamsT>& params,
         EvalFn&& eval,
         ScoreFn&& score,
@@ -351,7 +346,7 @@ namespace sugar {
         for (std::size_t i = 0; i < params.size(); ++i) {
             const auto& p = params[i];
 
-            BacktestResult res = eval(data, p);
+            BacktestResult res = eval(p);
             const double sc = score(res);
 
             report(i + 1);
@@ -442,7 +437,6 @@ namespace sugar {
         typename DistFn = std::nullptr_t,
         typename HashFn = std::hash<KeyT>, typename EqFn = std::equal_to<KeyT>>
         TopK<ParamsT> sweep_topk_basins(
-            const CandleSeries& data,
             const std::vector<ParamsT>& params,
             EvalFn&& eval,
             ScoreFn&& score,
@@ -474,7 +468,6 @@ namespace sugar {
             };
 
         return sweep_topk_basins<ParamsT, KeyT>(
-            data,
             params,
             std::forward<EvalFn>(eval),
             std::forward<ScoreFn>(score),
@@ -540,7 +533,7 @@ namespace sugar {
         const PlanSpecSweepDims& dims,
         std::size_t max_evals);
 
-    // ============================================================================
+    // ============================================================================    
     // Index-based helpers (for coarse→fine + gated strategies)
     // ============================================================================
 
@@ -579,12 +572,11 @@ namespace sugar {
 
     // Coarse → fine sweep using index indirection
     TwoStageSweepResult two_stage_sweep_topk(
-        const CandleSeries& data,
         std::size_t param_count,
         // Optional: restrict stage-1 evaluation to this subset of indices (coarse mesh).
         // If null, stage-1 evaluates [0, param_count).
         const std::vector<std::size_t>* stage1_indices,
-        const std::function<BacktestResult(const CandleSeries&, std::size_t)>& eval,
+        const std::function<BacktestResult(std::size_t)>& eval,
         const std::function<double(const BacktestResult&)>& score,
         const std::function<std::vector<std::size_t>(std::size_t)>& neighbors,
         std::size_t k_stage1,
@@ -606,10 +598,9 @@ namespace sugar {
     };
 
     std::vector<TrainValidateCandidate> evaluate_train_validate(
-        const CandleSeries& train,
-        const CandleSeries& validate,
         const std::vector<std::size_t>& indices,
-        const std::function<BacktestResult(const CandleSeries&, std::size_t)>& eval,
+        const std::function<BacktestResult(std::size_t)>& eval_train,
+        const std::function<BacktestResult(std::size_t)>& eval_validate,
         const std::function<double(const BacktestResult&)>& train_score_fn,
         const std::function<double(const BacktestResult&)>& validate_score_fn,
         double validate_weight = 1.0,
@@ -662,20 +653,18 @@ namespace sugar {
     class ITrialEvaluator {
     public:
         virtual ~ITrialEvaluator() = default;
-        virtual BacktestResult evaluate(const CandleSeries& data, const SweepCandidateToken& token) const = 0;
+        virtual BacktestResult evaluate(const SweepCandidateToken& token) const = 0;
     };
 
     class FunctionTrialEvaluator final : public ITrialEvaluator {
     public:
         explicit FunctionTrialEvaluator(
-            std::function<BacktestResult(const CandleSeries&, const SweepCandidateToken&)> fn);
+            std::function<BacktestResult(const SweepCandidateToken&)> fn);
 
-        BacktestResult evaluate(
-            const CandleSeries& data,
-            const SweepCandidateToken& token) const override;
+        BacktestResult evaluate(const SweepCandidateToken& token) const override;
 
     private:
-        std::function<BacktestResult(const CandleSeries&, const SweepCandidateToken&)> fn_;
+        std::function<BacktestResult(const SweepCandidateToken&)> fn_;
     };
 
     class IObjective {
@@ -733,7 +722,6 @@ namespace sugar {
     };
 
     SweepSessionResult run_sweep_session(
-        const CandleSeries& data,
         const ISweepSpace& space,
         const ITrialEvaluator& evaluator,
         const IObjective& objective,
@@ -758,7 +746,7 @@ namespace sugar {
         std::size_t param_count = 0;
 
         // Required: evaluate an index candidate.
-        std::function<BacktestResult(const CandleSeries&, std::size_t)> eval;
+        std::function<BacktestResult(std::size_t)> eval;
 
         // Optional: neighborhood topology for local refinement.
         // If empty, sweep types that require neighbors should fail fast.
@@ -789,7 +777,6 @@ namespace sugar {
         virtual const char* name() const = 0;
 
         virtual SweepIndexRunResult run(
-            const CandleSeries& data,
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr) const = 0;
@@ -814,7 +801,6 @@ namespace sugar {
         const char* name() const override { return "coarse_fine"; }
 
         SweepIndexRunResult run(
-            const CandleSeries& data,
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr) const override;
@@ -839,7 +825,6 @@ namespace sugar {
         const char* name() const override { return "monte_carlo"; }
 
         SweepIndexRunResult run(
-            const CandleSeries& data,
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr) const override;

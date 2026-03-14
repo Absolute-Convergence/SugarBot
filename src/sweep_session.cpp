@@ -12,16 +12,14 @@ namespace sugar {
     }
 
     FunctionTrialEvaluator::FunctionTrialEvaluator(
-        std::function<BacktestResult(const CandleSeries&, const SweepCandidateToken&)> fn)
+        std::function<BacktestResult(const SweepCandidateToken&)> fn)
         : fn_(std::move(fn)) {
     }
 
-    BacktestResult FunctionTrialEvaluator::evaluate(
-        const CandleSeries& data,
-        const SweepCandidateToken& token) const
+    BacktestResult FunctionTrialEvaluator::evaluate(const SweepCandidateToken& token) const
     {
         if (!fn_) return BacktestResult{};
-        return fn_(data, token);
+        return fn_(token);
     }
 
     FunctionObjective::FunctionObjective(std::function<double(const BacktestResult&)> fn)
@@ -79,7 +77,6 @@ namespace sugar {
     }
 
     SweepSessionResult run_sweep_session(
-        const CandleSeries& data,
         const ISweepSpace& space,
         const ITrialEvaluator& evaluator,
         const IObjective& objective,
@@ -108,7 +105,7 @@ namespace sugar {
         for (;;) {
             SweepProposalBatch batch = policy.propose();
             for (const auto& token : batch.tokens) {
-                const auto res = evaluator.evaluate(data, token);
+                const auto res = evaluator.evaluate(token);
                 const double sc = objective.score(res);
                 policy.observe(SweepObservation{ token, res, sc });
                 ++done;

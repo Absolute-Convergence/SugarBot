@@ -431,7 +431,13 @@ namespace sugar {
         std::ostringstream oss;
         oss << fp.rdbuf();
         const auto s = oss.str();
-        return parse_plan_spec_json(s, out, err);
+        PlanSpec parsed{};
+        if (!parse_plan_spec_json(s, parsed, err)) {
+            return false;
+        }
+        parsed.source_path = path;
+        out = std::move(parsed);
+        return true;
     }
 
     bool param_is_ref(const ParamValue& v) {

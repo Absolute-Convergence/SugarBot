@@ -108,6 +108,8 @@ namespace sugar {
     struct PlanSpec {
         int version{ 1 };
         std::string name;
+        // Optional metadata set by load_plan_spec_file; empty when parsed from raw JSON text.
+        std::string source_path;
 
         // Optional declaration of required registry modules.
         std::vector<std::string> required;

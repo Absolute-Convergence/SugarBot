@@ -3,31 +3,41 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iosfwd>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
-#include <iosfwd>
 
-#include "indicators_composite_numeric.h"
-#include "indicators_composite_bool.h"
-#include "indicator_precomputed.h"
-#include "signals_precomputed.h"
-#include "plan_spec.h" // ParamMap/ParamValue
+#include "index_schema.h"
+#include "locality_subject.h"
+#include "plan_spec.h"
+#include "topology_spec.h"
 
 namespace sugar {
 
+    struct CompileEnvStorage;
+    class DataView;
+
     enum class OpType : std::uint8_t { Numeric = 0, Bool = 1 };
     enum class ValueType : std::uint8_t { Num = 0, Bool = 1 };
-
+    enum class OpAxisScope : std::uint8_t {
+        RowWise = 0,
+        TimeSeries = 1,
+        CrossSeries = 2,
+        SpatialLocal = 3,
+        SpatioTemporal = 4,
+    };
     using ResolvedParam = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string>;
     using ResolvedParamMap = std::unordered_map<std::string, ResolvedParam>;
 
     struct OpParamSpec {
         std::string name;
-        std::string type; // "int", "float", "bool", "string"
+        std::string type;
         bool required{ false };
         std::optional<ResolvedParam> default_value;
         std::optional<double> min_num;
@@ -40,28 +50,29 @@ namespace sugar {
         std::vector<ValueType> inputs;
         ValueType output{ ValueType::Num };
         std::vector<OpParamSpec> params;
-
         std::string module;
         bool is_macro{ false };
-
-        // Human/AI-facing warmup description (since lambdas aren't introspectable).
-        // Example: "max(child_warmups) + (n-1)"
         std::string warmup_desc;
+        OpAxisScope axis_scope{ OpAxisScope::RowWise };
+        std::vector<AxisKind> required_axes{};
+        std::vector<TopologyFamily> required_topology_families{};
+        std::vector<TopologyQueryKind> required_topology_query_kinds{};
+        std::string default_topology_name{};
+        std::string topology_binding_param{};
+        LocalitySubjectKind default_locality_subject_kind{ LocalitySubjectKind::PrimarySeries };
+        std::string default_locality_subject_value{};
+        LocalitySubjectKind bound_locality_subject_kind{ LocalitySubjectKind::SeriesKey };
+        std::string locality_subject_binding_param{};
     };
 
     struct CompileEnv {
-        std::unordered_map<std::string, IndicatorPtr> numeric_leaves;
-        std::unordered_map<std::string, BoolSignalPtr> bool_leaves;
+        std::shared_ptr<const CompileEnvStorage> storage{};
+
+        bool has_storage() const { return static_cast<bool>(storage); }
     };
 
     struct OpEntry {
         OpSpec spec;
-
-        std::function<IndicatorPtr(const std::vector<IndicatorPtr>&, const ResolvedParamMap&, const CompileEnv&)> build_num;
-        std::function<BoolSignalPtr(const std::vector<BoolSignalPtr>&,
-            const std::vector<IndicatorPtr>&,
-            const ResolvedParamMap&, const CompileEnv&)> build_bool;
-
         std::function<std::size_t(const std::vector<std::size_t>& child_warmups, const ResolvedParamMap&)> warmup_num;
         std::function<std::size_t(const std::vector<std::size_t>& bool_child_warmups,
             const std::vector<std::size_t>& num_child_warmups,
@@ -78,13 +89,7 @@ namespace sugar {
 
         void add(OpEntry e);
 
-        // ---- NEW: AI reference manual dump ----
-        // Returns a stable, human/AI-readable text describing all available ops.
-        // This is intentionally "capabilities of this build", so missing indicator packs
-        // simply won't appear.
         std::string describe_text(bool include_modules_header = true) const;
-
-        // Writes the same description to a stream.
         void print_description(std::ostream& os, bool include_modules_header = true) const;
 
     private:
@@ -98,6 +103,46 @@ namespace sugar {
         const ParamMap& plan_params,
         const ParamMap* overrides,
         ResolvedParamMap& out,
+        std::string& err);
+
+    bool resolve_bound_topology_name(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        std::string& out,
+        std::string& err);
+
+    bool resolve_bound_topology_name(const OpEntry& op,
+        const ResolvedParamMap& params,
+        std::string& out,
+        std::string& err);
+
+    bool resolve_bound_locality_subject(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        ResolvedLocalitySubject& out,
+        std::string& err);
+
+    bool resolve_bound_locality_subject(const OpEntry& op,
+        const ResolvedParamMap& params,
+        ResolvedLocalitySubject& out,
+        std::string& err);
+
+    bool resolve_runtime_locality_subject(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        const DataView& dv,
+        std::string_view compatibility_primary_series,
+        RuntimeLocalitySubject& out,
+        std::string& err);
+
+    bool resolve_runtime_locality_subject(const OpEntry& op,
+        const ResolvedParamMap& params,
+        const DataView& dv,
+        std::string_view compatibility_primary_series,
+        RuntimeLocalitySubject& out,
         std::string& err);
 
     std::optional<double> as_f64(const ResolvedParamMap& m, const std::string& key);

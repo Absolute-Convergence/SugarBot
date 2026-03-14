@@ -1,449 +1,240 @@
-READ ME: Last updated: 01/29/2026
+# SugarBot
 
-Abstract: 
+Last updated: 2026-03-14
 
-**SugarBot** is a C++ strategy experimentation engine for time-series data.
+SugarBot is a C++ strategy experimentation engine for decision-rule research over tabular observations.
 
-It is designed to answer one question rigorously and at scale:
+The current engine is built around one DataView-first compiled-program runtime that can carry temporal, spatial, spatiotemporal, and panel-shaped datasets without splitting into separate runtime families.
 
-> **“What would have happened if I made this decision differently?”**
+It is:
+- A rule lab for composing signals, wiring strategies, running execution, and evaluating outcomes.
+- Built for inspectability, deterministic contracts, and controlled iteration.
 
-SugarBot is not a predictor, not a black box, and not a single trading strategy.
-It is a **decision-rule laboratory**: a system for building, composing, executing,
-and evaluating rule-based strategies over historical data.
+It is not:
+- A predictor.
+- A black-box model.
+- A production trading system.
 
-SugarBot is an active research and learning project, not a production trading system.
+License: ALL RIGHTS RESERVED.
 
-License: ALL RIGHTS RESERVED
+## Architecture
 
-Copyright © All rights to the source code, architecture, and associated materials are reserved. 
-No redistribution, or modification is permitted without explicit authorization. 
-Limited use only.
----
+SugarBot supports one canonical runtime family plus one explicit compatibility path:
+
+1. Canonical runtime pipeline
+`CSV -> RawTable -> DataSpec -> preprocess -> NumericFrame/FrameSet -> align -> DataView -> compile_plan -> CompiledProgram -> StrategyExecutor / sweep`
+
+2. Legacy candle compatibility path
+`CSV -> CandleSeries -> legacy_candle_frame_adapter -> NumericFrame -> align -> DataView -> canonical runtime`
+
+Current contract highlights:
+- `DataView` and `AlignedBundle` are the one stable indexed observation runtime family.
+- `PlanSpec` is strategy DSL only; `DataSpec`, `IndexSchema`, and `RunManifest` own observation policy, axis roles, alignment intent, and provenance.
+- `TimeKey` is canonical (`int64_t`), and `TimeKind::Iso8601` is normalized to UTC epoch-seconds with intraday fidelity preserved.
+- Row domain is first-class: `row_count()` is not derived from time payload, and single-series non-temporal inputs are supported without inventing synthetic time.
+- Alignment is still calendar/time based only; mixed temporal/non-temporal inputs and non-temporal multi-series alignment reject explicitly instead of silently falling back to row position.
+- Runtime topology is a named sidecar seam: built-in temporal, spatial, and spatiotemporal topologies are mounted onto the runtime catalog as `builtin.temporal.window`, `builtin.spatial.metric_2d`, and `builtin.spatiotemporal.composite`.
+- Current locality execution is intentionally narrow and explicit: `spatial.radius_mean` and `st.radius_mean` run on the DataView/NeighborhoodQuery substrate.
+- Shared observation-capability and plan-capability diagnosis power prep/align dumps, runtime preview, interactive and panel reporting, and manifest snapshots.
+- Custom sweep now compiles once through template compilation and instantiates executable plans per bound parameter set.
+
+## Build
+
+Requirements:
+- CMake 3.16+
+- C++20 compiler
+- Windows: MSVC x64
+- Linux/WSL2: GCC or Clang
+
+All shipped presets enable `BUILD_TESTING=ON`.
+
+### Windows (PowerShell)
+
+Run from Visual Studio or a terminal using the Windows Ninja configuration:
+
+```powershell
+cmake --preset windows-debug
+cmake --build --preset windows-debug
+```
+
+Standard Windows build artifacts are kept under `out/build/x64-debug` or `out/build/x64-release`, with installs under the matching `out/install/...` tree.
+
+Visual Studio note:
+- Visual Studio folder mode is intentionally Windows-local only and should expose the two Ninja configs from [CMakeSettings.json](/C:/Users/Mel/source/repos/Absolute-Convergence/sugar_bot/sugar_bot_cpp_upload/CMakeSettings.json):
+  - `x64-Debug`
+  - `x64-Release`
+- WSL/Linux support remains available through [CMakePresets.json](/C:/Users/Mel/source/repos/Absolute-Convergence/sugar_bot/sugar_bot_cpp_upload/CMakePresets.json) and normal CLI use, not through the Visual Studio folder config list.
+
+### Linux / WSL2
+
+```bash
+cmake --preset linux-release
+cmake --build --preset linux-release
+```
+
+The configure/build tree for preset builds lives under `out/build/wsl-gcc-debug` or `out/build/wsl-gcc-release`.
+
+Visual Studio note:
+- `CMakeSettings.json` is intentionally Windows-local only so the Visual Studio folder workflow does not mix Windows and WSL configurations.
+- WSL remains supported through `CMakePresets.json` and normal CLI/WSL invocations.
+
+By default on Linux/WSL, final runtime artifacts are redirected to:
+`$HOME/devbuild/sugar_Bot/out/Linux/<CONFIG>`
+
+Override that location with `SUGAR_OUT_ROOT` if you need a different output root.
+
+## Executables
+
+- `sugarbot`: main CLI and interactive runtime. This is the DataView-first app surface for frame-first ingestion, custom/template runs, panel runs, diagnostics, and contract dispatch.
+- `SB`: generated launcher alias beside `sugarbot` in build and install output.
+- `sugar_contracts`: standalone deterministic contract-suite runner with focused section filtering.
+- `sugar_app_tests`: app-surface wiring suite for CLI/orchestration behavior. This is a build/test target, not an installed end-user binary.
+
+## Install For Easy Launch
+
+Use a normal `cmake --install` step from the configured build tree if you want `sugarbot`, `sugar_contracts`, and the `SB` launcher alias under a stable install root such as `out/install/x64-debug/bin` or `out/install/wsl-gcc-release/bin`.
+
+For preset builds, that usually means installing the matching preset build directory after configuration and build are complete.
 
 ## Quick Start
 
-SugarBot supports **Windows** and **Linux** builds. The fastest way to run it is to download a prebuilt binary from the GitHub **Releases** page.
+If you launch `sugarbot` with no mode flags, it enters the interactive flow.
 
----
+### Legacy preset ingestion (no DataSpec file)
 
-### Option A: Download Prebuilt Binary (Recommended)
+```bash
+./sugarbot path/to/data.csv
+```
 
-#### Windows (x86_64)
+(Windows: `.\sugarbot.exe path\\to\\data.csv` or `.\SB.exe path\\to\\data.csv`)
 
-1. Download `sugar_Bot-windows-x86_64.zip` from the Releases page.
-2. Extract the archive.
-3. Run from **PowerShell** (recommended) or **Command Prompt**:
+This path still resolves into the canonical preprocess -> NumericFrame -> align -> DataView runtime. Without `--data-spec`, SugarBot uses runtime ingest defaults, `--format`, and CSV-header/value auto-detect to choose a compatible input profile.
 
-   **Run with a CSV path:**
+If you want to force the preset-style interpretation without a DataSpec file, use interactive mode with `--format auto`, `--format legacy_ohlcv_date`, or `--format iso_ohlcv_time`.
 
-   ```powershell
-   .\sugar_Bot.exe path\to\data.csv
-   ```
+### Frame-first ingestion (recommended)
 
-   **Or run with no arguments and enter the CSV path when prompted:**
+```bash
+./sugarbot --data-spec path/to/data_spec.json path/to/data.csv
+```
 
-   ```powershell
-   .\sugar_Bot.exe
-   ```
+This is the authoritative ingestion path. `DataSpec` controls parsing, axis roles, optional entity grouping, optional spatial coordinates, header policy, and normalization before everything enters the same DataView runtime.
 
----
+For diagnostics before execution, use the same pair of files with `--prep-dump` or `--align-dump`.
 
-#### Linux (x86_64)
+## CLI Modes
 
-1. Download `sugar_Bot-linux-x86_64.zip` from the Releases page.
-2. Extract the archive:
+- Default interactive mode: `sugarbot [csv] [--data-spec spec.json] [--format auto|legacy_ohlcv_date|iso_ohlcv_time]`
+  - Enters the menu-driven template/custom flow and can reuse shared runtime diagnostics before execution.
+- `--data-spec <data_spec.json> [<csv>]`
+  - Marks the runtime input path as explicit frame-first ingestion for interactive/template/custom execution.
+- `--prep-dump <data_spec.json> <csv>`
+  - Runs preprocess only and prints schema/frame diagnostics plus shared observation-capability output.
+- `--align-dump <data_spec.json> <csv> --series-key-col <col> [--calendar union|intersection]`
+  - Builds aligned multi-series runtime diagnostics and prints shared observation/topology truth before execution.
+- `--run-panel <data_spec.json> <csv> [--primary <col>] [--topk N]`
+  - Builds a panel-style runtime package and then runs template or custom PlanSpec flow with the same shared capability reporting used elsewhere.
+- `--dump-ops`
+  - Prints the operator registry and runtime contract metadata, including axis scope, required axes, topology requirements, default topology bindings, and locality-subject binding surface.
+- `--run-contract-suite [--contract-section <key> ...]`
+  - Runs the deterministic contract suite from the app binary. Repeating `--contract-section` filters to focused sections such as `runtime_design_loads`, `runtime_overload_rejection`, `metadata_preservation`, `locality_design_loads`, `topology_overload_rejection`, `compile_bridge_design_loads`, or `runtime_gates`.
 
-   ```bash
-   unzip sugar_Bot-linux-x86_64.zip
-   ```
+## Strategies and Plans
 
-3. Make the binary executable (safe even if already executable):
+Built-in templates currently include:
+- Gated Diff Cross
+- Donchian Breakout
+- ZScore Mean Reversion
+- Swing Breakout Validation
+- Custom User PlanSpec
 
-   ```bash
-   chmod +x sugar_Bot
-   ```
+Built-in templates load observation-agnostic PlanSpec JSON from `graphs/templates/` and run through the same DataView-first compile/runtime bridge as custom plans.
 
-4. Run:
+`PlanSpec` owns strategy graph structure, params, bindings, execution defaults, and optional sweep metadata. It is not the observation/world-model contract.
 
-   **Run with a CSV path:**
+PlanSpec runtime is DataView-native for single-series runs and for the currently supported multi-series, panel, spatial, and spatiotemporal shapes that the shared runtime can already build.
 
-   ```bash
-   ./sugar_Bot path/to/data.csv
-   ```
+Custom sweep follows the compiled-template path: compile once with `compile_plan_template(...)`, then instantiate executable plans per override set through `instantiate_compiled_plan(...)`.
 
-   **Or run with no arguments and enter the CSV path when prompted:**
+Series-prefixed refs such as `series:column` are supported in custom plans for multi-series bindings. Cross-series execution is still intentionally narrow today (`ms.diff`, `ms.ratio`, `ms.zscore`), and locality execution is intentionally narrow today (`spatial.radius_mean`, `st.radius_mean`) over built-in topologies.
 
-   ```bash
-   ./sugar_Bot
-   ```
+Legacy embedded observation inputs (`series_inputs`) remain compatibility-only adapter metadata for older self-contained plans. They are resolved inside `run_pipeline` and do not define a separate runtime family.
 
----
+Checked-in active examples under `graphs/` are observation-agnostic. Retired embedded-input examples live under `retirement/legacy_reference/graphs/`.
 
-### Option B: Build from Source
+## DataSpec Notes
 
-1. Build with a **C++17+ compiler** (CMake-based build recommended).
-2. Run:
+DataSpec is the parsing and normalization policy boundary for observations. It controls:
+- `input_profile` defaults and legacy/ISO preset intent
+- time column plus `time_kind`
+- value columns plus rename map
+- primary value column
+- missing-data policy and missing tokens
+- dedupe policy and sort behavior
+- optional entity grouping
+- optional spatial axis (`spatial_x_col`, `spatial_y_col`)
+- CSV header policy:
+  - `RequiredHeaders`
+  - `OptionalHeaders`
+  - `HeaderlessPositional` with explicit `columns_by_index`
 
-   **Linux:**
+Important current behavior:
+- Spatial-only `DataSpec` is valid without `time_col`.
+- Preprocess preserves source order for non-temporal single-series runtime inputs and leaves semantic time empty instead of inventing ordinal `TimeKey` storage.
+- `IndexSchema` remains axis metadata only; topology is carried separately through runtime topology catalogs and manifests.
+- Headerless ingestion is explicit and deterministic through `HeaderlessPositional` plus `columns_by_index`.
+- In app runtime ingestion, explicit `--data-spec` is authoritative. Without it, SugarBot may use `--format` or header/value auto-detect to select a compatible profile.
 
-   ```bash
-   ./sugar_Bot path/to/data.csv
-   ```
+## Testing
 
-   **Windows (PowerShell):**
+Deterministic contract coverage can be run directly:
 
-   ```powershell
-   .\sugar_Bot.exe path\to\data.csv
-   ```
+```bash
+./sugar_contracts
+```
 
----
+or through the app surface:
 
-### Notes
+```bash
+./sugarbot --run-contract-suite
+```
 
-- Linux binaries are tested on **Ubuntu / WSL2 (x86_64)**.
-- Windows binaries are built with **MSVC (x64)**.
-- If the executable fails to run on Linux after extracting, re-apply permissions:
-
-  ```bash
-  chmod +x sugar_Bot
-  ```
-
-
-####Introduction:
-
-## What SugarBot does (high level)
-
-SugarBot takes historical time-series data (e.g. OHLCV candles) and:
-
-1. Transforms that data into **signals** using modular indicators
-2. Combines signals into **decision rules** (strategies)
-3. Executes those rules through a unified runtime engine
-4. Scores outcomes using explicit performance metrics
-5. Repeats the process across large parameter spaces via **sweeps**
-
-The goal is not prediction — it is **structured exploration** of decision logic.
-
-Think of SugarBot as a **wind tunnel for strategies**.
-
----
-
-## Core architectural ideas
-
-SugarBot is intentionally built from clean, orthogonal layers.
-
-### 1. Data model: `CandleSeries` and `SeriesView`
-
-- `CandleSeries` owns raw OHLCV data loaded from CSV
-- `SeriesView` provides a time-aligned, column-oriented view over the same data
-
-This separation allows:
-- safe indexing by time
-- efficient indicator computation
-- consistent alignment across all downstream components
-
----
-
-### 2. Indicators: signals, not decisions
-
-Indicators are **pure transformations** from one series to another.
-They do not place trades or make decisions.
-
-Included indicators span multiple categories:
-
-- **Trend**: SMA, EMA
-- **Momentum**: ROC
-- **Volatility**: ATR, StdDev (SMA & EMA variants)
-- **Oscillators**: RSI, Z-Score
-- **Channels**: Donchian (upper, lower, mid, width)
-
-All indicators:
-- respect explicit warm-up contracts
-- propagate NaNs until valid
-- are composable by design
-
----
-
-### 3. Indicator composition (graphs)
-
-Indicators can be built *from other indicators*.
-
-Examples:
-- ROC of an EMA
-- Z-Score of a rolling standard deviation
-- Boolean signals derived from numeric series
-
-This enables **indicator graphs**, not just flat pipelines,
-without rewriting compute logic or coupling strategies to raw data.
-
----
-
-### 4. StrategyPlan: declarative strategy wiring
-
-A **StrategyPlan** defines *what a strategy is*, not *how it runs*.
-
-A plan encapsulates:
-- strategy identity and options
-- indicator graph construction
-- parameter definitions and defaults
-
-Plans do **not** execute trades.
-They describe the structure of a strategy in a declarative way.
-
-This separation is what makes runtime selection, sweeping,
-and reuse possible.
-
----
-
-### 5. Strategy execution (runtime engine)
-
-The **StrategyExecutor** is strategy-agnostic.
-
-It:
-- consumes a `StrategyPlan`
-- evaluates indicators over a series
-- applies entry/exit rules
-- produces a trade stream
-
-Because execution is decoupled from strategy definition:
-- strategies can be swapped at runtime
-- execution logic stays centralized and testable
-
----
-
-### 6. Strategy templates
-
-Concrete strategies are implemented as **templates** that provide:
-- options
-- plan construction
-- execution rules
-- sweep configuration
-
-Included reference templates:
-
-- **Gated Diff Cross**  
-  The canonical example of how to build a strategy in SugarBot.
-  Serves as the architectural reference for future strategies.
-
-- **Donchian Breakout**  
-  A channel-based strategy demonstrating rolling-window semantics
-  and correct “previous-state” event logic.
-
----
-
-### 7. Sweeps: structured parameter exploration
-
-SugarBot treats parameter search as a first-class concept.
-
-The sweep system:
-- is strategy-agnostic
-- explores parameter grids (coarse → fine)
-- tracks Top-K results
-- supports train/validate evaluation
-
-Sweeps are not bolted on — they are part of the core design.
-
----
-
-### 8. Metrics: explicit scoring
-
-Strategies are evaluated using explicit metrics such as:
-- PnL
-- drawdown
-- trade count
-- other extensible performance measures
-
-Metrics are separated from execution so scoring can evolve independently.
-
----
-
-## Method (simplified)
-
-CSV → CandleSeries
-↓
-SeriesView
-↓
-Indicators
-↓
-StrategyPlan
-↓
-StrategyExecutor
-↓
-Backtester
-↓
-Metrics / Sweeps
-
-Each layer has a single responsibility.
-No layer “reaches around” another.
-
----
-
-## Design / Methodology
-
-Most backtesting systems entangle:
-- data
-- indicators
-- strategy logic
-- execution
-- optimization
-
-SugarBot deliberately **pulls these apart**.
-
-That separation makes it possible to:
-- swap indicators without touching strategies
-- swap strategies without touching execution
-- explore large parameter spaces safely
-- reason about *why* a result occurred
-
-SugarBot is designed to make decision logic **explicit and inspectable**.
-
----
-
-## What SugarBot is *not*
-
-- Not a trading bot
-- Not a prediction engine
-- Not a machine-learning model
-- Not a black box
-
-It does not guess the future.
-
-It rigorously explores the past so you can understand
-which decisions mattered — and which didn’t.
-
----
-
-## Implementation
-
-SugarBot is suitable for:
-- quantitative strategy research
-- decision-rule experimentation
-- educational exploration of time-series systems
-- generating structured datasets for downstream ML
-
-The architecture is intentionally general:
-anything that looks like *“if-this-then-that over time”* can fit.
-
----
+Focused contract sections are available from both entry points. Examples:
+
+```bash
+./sugar_contracts --contract-section runtime_design_loads
+./sugar_contracts --contract-section topology_design_loads --contract-section locality_overload_rejection
+```
+
+The focused harness is now load-rated:
+- `runtime_design_loads` freezes what the current runtime is explicitly meant to carry.
+- `runtime_overload_rejection` freezes explicit clean rejection for heavier unsupported loads.
+- `metadata_preservation` freezes provenance and non-goal preservation without pretending those seams execute.
+
+CTest integration:
+
+```bash
+ctest --preset windows-debug
+```
+
+Current registered CTest lanes include:
+- full contract suite
+- focused runtime gates
+- focused locality, topology, and compile-bridge seam sections
+- load-rated wrapper lanes
+- app-surface suite (`sugar_app_tests`)
+
+## Repository Layout
+
+- `app/` CLI parsing, command dispatch, runtime glue, reporters, and interactive flow
+- `include/` public contracts and stable headers
+- `src/` ingest, runtime, compiler, evaluator, sweep, manifests, and contract-suite implementation
+- `graphs/` active observation-agnostic PlanSpec examples and built-in template JSON
+- `data/` sample CSV inputs, sample DataSpec files, and local dump artifacts
+- `retirement/legacy_reference/` retired compatibility-era graphs and reference material
+- `out/` user-managed preset build and install trees
+- `release/` packaging helpers and release-related notes
 
 ## Disclaimer
 
-SugarBot is a research and experimentation tool.
-Backtests do not guarantee future performance.
-Overfitting is real.
-
----
-
-## System Overview & Repo Structure
-
-A strategy-centric, object-oriented C++ framework for quantitative analysis, backtesting, and parameter optimization.
-SugarBot reads OHLCV candle .csv data, constructs composable indicator graphs (numeric + boolean), executes declarative
-StrategyPlans via a runtime StrategyExecutor (FSM), and performs strategy-agnostic parameter sweeps (Top-K, coarse→fine,
-optional train/validate) to discover strong configurations.
-
-Quick Start:
-1) Build with a C++17+ compiler (CMake-based build recommended).
-2) Run:
-   ./sugar_bot path/to/FILE.csv
-3) Use the runtime menu to select a strategy template and run a backtest or sweep.
-
-Tip: main.cpp also contains a debug/validation harness used to verify indicator alignment, warm-up behavior, and NaN
-propagation on real CSV data.
-
-
-Overview:
-| Layer                 | Role                                                         | Example / Notes                                                |
-| :-------------------- | :----------------------------------------------------------- | :------------------------------------------------------------- |
-| **Data Layer**        | Loads and owns historical market candles.                    | `Candle`, `CandleSeries`, `load_candles_csv()`                 |
-| **Execution View**    | Read-only projection used for indicator execution.           | `SeriesView`                                                   |
-| **Indicators**        | Numeric & boolean signal graphs (composable).                | `Indicator`, composite numeric/bool builders                   |
-| **Strategy Plan**     | Declarative strategy identity + indicator wiring + params.   | `StrategyPlan`                                                 |
-| **Strategy Executor** | Runtime FSM that converts plan + signals into trades.        | `StrategyExecutor`                                             |
-| **Backtester**        | Orchestrates execution over historical data.                 | `Backtester::run()`                                            |
-| **Sweeper / Optimizer** | Parameter search and ranking (strategy-agnostic).          | `sweep.*`, Top-K, coarse→fine, train/validate                  |
-| **Metrics**           | Reporting boundary for results and summaries.                | `BacktestResult`, `metrics.*`                                  |
-
-
-Repo Structure (logical grouping):
-app/
- └─ main.cpp
-
-core/
- ├─ candle.h
- ├─ series.h / series.cpp
- ├─ series_view.h
- ├─ csv.h
- └─ utils.h / utils.cpp
-
-indicators/
- ├─ indicator.h
- ├─ indicators_sma.h
- ├─ indicators_ema.h
- ├─ indicators_roc.h
- ├─ indicators_stddev.h
- ├─ indicators_zscore.h
- ├─ indicators_atr.h
- ├─ indicators_rsi.h
- ├─ indicators_donchian.h
- ├─ indicators_composite_numeric.h / indicators_composite_numeric.cpp
- └─ indicators_composite_bool.h / indicators_composite_bool.cpp
-
-strategy/
- ├─ strategy_plan.h
- ├─ strategy_executor.h / strategy_executor.cpp
- ├─ strategy_menu.h / strategy_menu.cpp
- ├─ strategy_gated_diff_cross.h / strategy_gated_diff_cross.cpp
- └─ strategy_donchian_breakout.h
-
-engine/
- ├─ backtester.h / backtester.cpp
- ├─ sweep.h / sweep.cpp
- └─ metrics.h
-
-
-Architecture:
-main.cpp
- ├─ StrategyMenu (runtime selection)
- │   └─ StrategyPlan (declarative wiring)
- │        └─ StrategyExecutor (runtime FSM)
- │             ├─ Indicators (numeric + boolean composition graphs)
- │             │    └─ SeriesView (read-only access over CandleSeries)
- │             └─ Entry/Exit events → trades
- ├─ Backtester
- │    └─ BacktestResult + Metrics
- └─ Sweep Engine
-      └─ Top-K ranking, coarse→fine search, optional train/validate split
-
-
-Implemented Strategies (templates):
-| Strategy Template            | Description                                                                 |
-| :-------------------------- | :-------------------------------------------------------------------------- |
-| `GatedDiffCross`            | Canonical reference template: gating + thresholds + composition + clean separation. |
-| `DonchianBreakout`          | Concrete example: single-indicator breakout implemented through Plan/Executor.      |
-
-
-Implemented Indicators:
-| Indicator / Component              | Description                                                          |
-| :-------------------------------- | :------------------------------------------------------------------- |
-| `SMA`                             | Simple Moving Average                                                |
-| `EMA`                             | Exponential Moving Average                                           |
-| `ROC`                             | Rate of Change                                                       |
-| `StdDev`                          | Rolling standard deviation (SMA & EMA variants)                      |
-| `ZScore`                          | Normalized deviation from rolling mean (SMA & EMA variants)          |
-| `ATR`                             | Average True Range                                                   |
-| `RSI`                             | Relative Strength Index                                              |
-| `Donchian`                        | Upper / Lower / Mid / Width channels                                 |
-| `Composite Numeric`               | Functional composition tools for numeric indicator graphs            |
-| `Composite Bool`                  | Comparators/gates for boolean signal graphs                          |
-
-Notes:
-- Indicators are designed to be composed (graphs) rather than extended via deep subclass trees.
-- Warm-up behavior and NaN propagation are explicit to prevent silent alignment bugs common in TA stacks.
-
-
-License: 
-ALL RIGHTS RESERVED
-
-Copyright © All rights to the source code, architecture, and associated materials are reserved. 
-No redistribution, or modification is permitted without explicit authorization. 
-Limited use only.
+SugarBot is a research and experimentation tool. Backtests, capability reports, and contract coverage do not guarantee future performance or production suitability.

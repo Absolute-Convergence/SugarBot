@@ -10,6 +10,8 @@
 #include <iosfwd>
 #include <optional>
 
+#include "time_key.h"
+
 
 namespace sugar {
 
@@ -22,13 +24,14 @@ namespace sugar {
 
     // Format YYYYMMDD -> "YYYYMMDD" (8 chars) into a fixed 9-byte buffer.
     // (We include the 9th byte for convenience; caller may ignore the null.)
-    void format_yyyymmdd(int yyyymmdd, char out[9]);
+    void format_yyyymmdd(TimeKey yyyymmdd, char out[9]);
 
     // Parse ISO-8601 datetime strings like:
     //   2024-10-09T01:00:00-06:00
     //   2025-09-12T17:30:00-06:00
     //   2025-10-03T11:09:15-06:00
     // Seconds optional; timezone can be 'Z' or +/-HH:MM.
+    // If timezone is absent, UTC is assumed.
     // On success returns true and fills:
     //   yyyymmdd          -> date as int YYYYMMDD
     //   seconds_since_mid -> seconds since local clock time midnight in the string
@@ -155,5 +158,3 @@ namespace sugar {
     }
 
 } // namespace sugar
-
-

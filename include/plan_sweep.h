@@ -2,8 +2,9 @@
 
 #include <iosfwd>
 
+#include "data_view.h"
+#include "metrics.h"
 #include "plan_spec.h"
-#include "series.h"
 #include "strategy_plan.h"
 
 namespace sugar {
@@ -15,13 +16,13 @@ namespace sugar {
         BarEvalMode eval_mode{ BarEvalMode::SameBar };
     };
 
-    // Runs a custom PlanSpec strategy:
-    // - sweep mode when spec.sweep is enabled/populated
-    // - single-run otherwise
+    // DataView-first custom PlanSpec runtime path.
     bool run_custom_plan_spec(
-        const CandleSeries& series,
+        const DataView& dv,
+        const ColumnRef& primary,
         const PlanSpec& spec,
         const PlanSweepRuntimeOptions& opt,
-        std::ostream& out);
+        std::ostream& out,
+        BacktestResult* result_out = nullptr);
 
 } // namespace sugar

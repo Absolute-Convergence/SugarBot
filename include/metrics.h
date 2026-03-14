@@ -3,6 +3,7 @@
 #include <ostream>
 #include <string_view>
 #include <cstdint>
+#include "time_key.h"
 
 namespace sugar {
 
@@ -10,7 +11,8 @@ namespace sugar {
 		double pnl{};											// cumulative % return across closed trades
 		std::size_t trades{};									// round-trip trades
 		double max_drawdown{};									// max peak-to-trough drawdown (%)
-		int best_start_date{};									// first usable signal date (YYYYMMDD)
+		TimeKey best_start_date{};								// first usable signal TimeKey
+		bool has_best_start_date{ false };						// true if best_start_date is set
 
 		std::size_t long_trades{};								// 
 		std::size_t short_trades{};								// 
@@ -30,9 +32,9 @@ namespace sugar {
 			<< indent << "Max DD: " << r.max_drawdown << "%\n"
 			<< indent << "Trade hash: " << r.trade_hash << "\n";
 
-		if (r.best_start_date > 0) {
+		if (r.has_best_start_date) {
 			os << indent
-				<< "First usable signal date (YYYYMMDD): "
+				<< "First usable signal time_key: "
 				<< r.best_start_date << "\n";
 		}
 

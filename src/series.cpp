@@ -12,6 +12,7 @@ namespace sugar {
         lows_.resize(n);
         closes_.resize(n);
         volumes_.resize(n);
+        dates_.resize(n);
 
         for (std::size_t i = 0; i < n; ++i) {
             const Candle& c = rows_[i];
@@ -20,6 +21,7 @@ namespace sugar {
             lows_[i] = c.low;
             closes_[i] = c.close;
             volumes_[i] = c.volume;  // 0.0 is valid if CSV had no volume
+            dates_[i] = c.date;
         }
     }
 

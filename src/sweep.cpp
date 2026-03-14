@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <numeric>
 #include <limits>
 #include <queue>
 #include <unordered_set>
@@ -230,10 +231,9 @@ namespace sugar {
     // Index-based coarse→fine sweep (existing algorithm)
     // ============================================================================
     TwoStageSweepResult two_stage_sweep_topk(
-        const CandleSeries& data,
         std::size_t param_count,
         const std::vector<std::size_t>* stage1_indices,
-        const std::function<BacktestResult(const CandleSeries&, std::size_t)>& eval,
+        const std::function<BacktestResult(std::size_t)>& eval,
         const std::function<double(const BacktestResult&)>& score,
         const std::function<std::vector<std::size_t>(std::size_t)>& neighbors,
         std::size_t k_stage1,
@@ -281,7 +281,7 @@ namespace sugar {
             TopK<std::size_t> top1(k_stage1);
             for (std::size_t i : s1) {
                 if (i >= param_count) continue;
-                const auto res = eval(data, i);
+                const auto res = eval(i);
                 ++done;
                 report();
                 const double sc = score(res);
@@ -302,7 +302,7 @@ namespace sugar {
 
             for (std::size_t i : s1) {
                 if (i >= param_count) continue;
-                const auto res = eval(data, i);
+                const auto res = eval(i);
                 ++done;
                 report();
                 double sc = score(res);
@@ -340,7 +340,7 @@ namespace sugar {
             if (opt.dedupe_stage2) {
                 collect_region(param_count, seed.index, opt.stage2_hops, neighbors, &seen,
                     [&](std::size_t idx) {
-                        const auto res = eval(data, idx);
+                        const auto res = eval(idx);
                         ++done;
                         report();
                         const double sc = score(res);
@@ -353,7 +353,7 @@ namespace sugar {
                     param_count, seed.index, opt.stage2_hops, neighbors,
                     (std::unordered_set<std::size_t>*)nullptr,
                     [&](std::size_t idx) {
-                        const auto res = eval(data, idx);
+                        const auto res = eval(idx);
                         ++done;
                         report();
                         const double sc = score(res);
@@ -382,10 +382,9 @@ namespace sugar {
     // Train / validate evaluation
     // ============================================================================
     std::vector<TrainValidateCandidate> evaluate_train_validate(
-        const CandleSeries& train,
-        const CandleSeries& validate,
         const std::vector<std::size_t>& indices,
-        const std::function<BacktestResult(const CandleSeries&, std::size_t)>& eval,
+        const std::function<BacktestResult(std::size_t)>& eval_train,
+        const std::function<BacktestResult(std::size_t)>& eval_validate,
         const std::function<double(const BacktestResult&)>& train_score_fn,
         const std::function<double(const BacktestResult&)>& validate_score_fn,
         double validate_weight,
@@ -410,11 +409,11 @@ namespace sugar {
         out.reserve(indices.size());
 
         for (auto idx : indices) {
-            auto tr = eval(train, idx);
+            auto tr = eval_train(idx);
             ++done;
             report();
 
-            auto vr = eval(validate, idx);
+            auto vr = eval_validate(idx);
             ++done;
             report();
 
@@ -440,7 +439,6 @@ namespace sugar {
     }
 
     SweepIndexRunResult CoarseFineIndexSweep::run(
-        const CandleSeries& data,
         const SweepIndexProblem& problem,
         const ScalarObjective& objective,
         SweepProgressCallback progress_cb) const
@@ -452,7 +450,6 @@ namespace sugar {
         }
 
         auto two = two_stage_sweep_topk(
-            data,
             problem.param_count,
             cfg_.stage1_indices ? cfg_.stage1_indices.get() : nullptr,
             problem.eval,
@@ -476,7 +473,6 @@ namespace sugar {
     }
 
     SweepIndexRunResult MonteCarloIndexSweep::run(
-        const CandleSeries& data,
         const SweepIndexProblem& problem,
         const ScalarObjective& objective,
         SweepProgressCallback progress_cb) const
@@ -495,44 +491,59 @@ namespace sugar {
         std::uniform_int_distribution<std::size_t> dist(0, problem.param_count - 1);
 
         TopK<std::size_t> top(cfg_.top_k);
-        std::unordered_set<std::size_t> seen;
-        if (cfg_.dedupe) {
-            seen.reserve(std::min<std::size_t>(cfg_.draws, cfg_.top_k * 64));
-        }
-
         const auto t0 = Clock::now();
-        for (std::size_t i = 0; i < cfg_.draws; ++i) {
-            std::size_t idx = dist(rng);
-            if (cfg_.dedupe) {
-                if (!seen.insert(idx).second) {
-                    // resample a couple times to avoid wasting draws
-                    for (int tries = 0; tries < 3; ++tries) {
-                        idx = dist(rng);
-                        if (seen.insert(idx).second) break;
+        std::vector<std::size_t> draw_indices;
+        if (cfg_.dedupe) {
+            const std::size_t target = std::min<std::size_t>(cfg_.draws, problem.param_count);
+            draw_indices.reserve(target);
+
+            // Strict dedupe contract: sample without replacement.
+            // Use partial shuffle for dense draws and rejection sampling for sparse draws.
+            if (target > (problem.param_count / 3)) {
+                draw_indices.resize(problem.param_count);
+                std::iota(draw_indices.begin(), draw_indices.end(), 0);
+                std::shuffle(draw_indices.begin(), draw_indices.end(), rng);
+                draw_indices.resize(target);
+            } else {
+                std::unordered_set<std::size_t> selected;
+                selected.reserve(target * 2 + 1);
+                while (draw_indices.size() < target) {
+                    const std::size_t idx = dist(rng);
+                    if (selected.insert(idx).second) {
+                        draw_indices.push_back(idx);
                     }
                 }
             }
+        } else {
+            draw_indices.reserve(cfg_.draws);
+            for (std::size_t i = 0; i < cfg_.draws; ++i) {
+                draw_indices.push_back(dist(rng));
+            }
+        }
 
-            const auto res = problem.eval(data, idx);
+        const std::size_t total_draws = draw_indices.size();
+        for (std::size_t i = 0; i < total_draws; ++i) {
+            const std::size_t idx = draw_indices[i];
+            const auto res = problem.eval(idx);
             const double sc = objective(res);
             if (std::isfinite(sc)) {
                 top.consider(sc, res, idx);
             }
 
-            if (progress_cb && (i % 200 == 0 || i + 1 == cfg_.draws)) {
+            if (progress_cb && (i % 200 == 0 || i + 1 == total_draws)) {
                 const auto now = Clock::now();
                 const double elapsed = std::chrono::duration<double>(now - t0).count();
                 const double rate = (elapsed > 1e-6) ? (static_cast<double>(i + 1) / elapsed) : 0.0;
-                const double remaining = (cfg_.draws > (i + 1)) ? static_cast<double>(cfg_.draws - (i + 1)) : 0.0;
+                const double remaining = (total_draws > (i + 1)) ? static_cast<double>(total_draws - (i + 1)) : 0.0;
                 const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-                progress_cb(SweepProgress{ i + 1, cfg_.draws, elapsed, eta });
+                progress_cb(SweepProgress{ i + 1, total_draws, elapsed, eta });
             }
         }
 
         for (const auto& c : top.sorted_best_first()) {
             out.best_first.push_back(IndexedCandidate{ c.params, c.score, c.result });
         }
-        out.eval_count = cfg_.draws;
+        out.eval_count = total_draws;
         return out;
     }
 

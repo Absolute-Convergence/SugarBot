@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "Edge Case Axis Validation (Expected Fail, Smoke Fixed Paths)",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
+  },
+  "series_inputs": [
+    {
+      "key": "main",
+      "path": "../../../../data/BTCUSD_420.csv",
+      "data_spec": "../../../../graphs/dataspec_headered_iso.json"
+    }
+  ],
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "spatial_probe", "op": "spatial.identity", "args": ["c"] },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gt", "args": ["spatial_probe", "zero"] },
+    { "id": "exitL", "op": "cmp.lt", "args": ["spatial_probe", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

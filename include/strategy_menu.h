@@ -1,36 +1,12 @@
 #pragma once
 
 #include <iosfwd>
-
-#include "series.h"
+#include "data_view.h"
 #include "strategy_plan.h" // TradeMode, ExecSettings
-
-// Strategy templates are modular. Some repos/builds may not include all.
-#if __has_include("strategy_donchian_breakout.h")
-#include "strategy_donchian_breakout.h" 
-#define SUGAR_HAS_DONCHIAN 1
-#else
-#define SUGAR_HAS_DONCHIAN 0
-#endif
-
-#include "strategy_gated_diff_cross.h" // Base Template For all Strategies
-
-#if __has_include("strategy_zscore_mean_reversion.h")
-#include "strategy_zscore_mean_reversion.h"
-#define SUGAR_HAS_ZSCORE 1
-#else
-#define SUGAR_HAS_ZSCORE 0
-#endif
-
-#if __has_include("strategy_swing_breakout_validation.h")
-#include "strategy_swing_breakout_validation.h"
-#define SUGAR_HAS_SWING 1
-#else
-#define SUGAR_HAS_SWING 0
-#endif
 
 #include <string>
 
+#include "plan_sweep.h"
 #include "plan_spec.h"
 #include "plan_compiler.h"
 #include "op_registry.h"
@@ -38,43 +14,36 @@
 
 namespace sugar {
 
+    enum class StrategySource {
+        TemplateList = 1,
+        CustomPlanSpec = 2,
+    };
+
     enum class StrategyTemplate {
         Donchian_Breakout = 1,
         Gated_Diff_Cross = 2,
         ZScore_MeanReversion = 3,
         Swing_Breakout_Validation = 4,
-        Custom_User_PlanSpec = 99,
     };
 
     struct StrategyRunOptions {
-        StrategyTemplate templ{ StrategyTemplate::Donchian_Breakout };
         TradeMode mode{ TradeMode::LongShort };
 
-#if SUGAR_HAS_DONCHIAN
-        DonchianSweepRanges donchian_ranges{};
         ExecSettings donchian_exec{};
-#endif
-
-        GatedDiffCrossSweepRanges gated_diff_ranges{};
         ExecSettings gated_diff_exec{};
-
-#if SUGAR_HAS_ZSCORE
-        ZScoreMeanReversionSweepRanges zscore_ranges{};
         ExecSettings zscore_exec{};
-#endif
-
-#if SUGAR_HAS_SWING
-        SwingBreakoutValidationSweepRanges swing_ranges{};
         ExecSettings swing_exec{};
-#endif
+    };
 
-        // Custom User Strategy (PlanSpec JSON)
+    struct CustomPlanSpecRunOptions {
         std::string plan_spec_path{};
         bool override_mode{ false };
-        TradeMode custom_mode{ TradeMode::LongShort };
-        bool override_custom_eval_mode{ false };
-        ExecSettings custom_exec{};
+        TradeMode mode{ TradeMode::LongShort };
+        bool override_eval_mode{ false };
+        ExecSettings exec{};
     };
+
+    StrategySource prompt_strategy_source(std::istream& in, std::ostream& out);
 
     StrategyTemplate prompt_strategy_template(std::istream& in, std::ostream& out);
 
@@ -100,9 +69,23 @@ namespace sugar {
 
     void prompt_custom_user_planspec(std::istream& in,
         std::ostream& out,
-        StrategyRunOptions& opt);
+        CustomPlanSpecRunOptions& opt);
 
-    bool run_strategy_template(const CandleSeries& series,
+    bool load_custom_planspec_runtime(
+        const CustomPlanSpecRunOptions& opt,
+        PlanSpec& out_spec,
+        PlanSweepRuntimeOptions& out_rt,
+        std::string& err);
+
+    // Load default PlanSpec reference for a built-in template from graphs/templates.
+    // Returns false with explicit error if the template is not mapped or file loading fails.
+    bool load_template_planspec(StrategyTemplate templ,
+        PlanSpec& out_spec,
+        std::string& err);
+
+    bool run_strategy_template(const DataView& dv,
+        const ColumnRef& primary,
+        StrategyTemplate templ,
         const StrategyRunOptions& opt,
         std::ostream& out);
 

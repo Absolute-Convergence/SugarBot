@@ -1,6 +1,10 @@
 #include "op_registry.h"
+#include "data_view.h"
+#include "op_modules.h"
+#include "plan_spec_runtime_alias.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -19,6 +23,33 @@ namespace sugar {
         std::string ot(OpType t) {
             return (t == OpType::Numeric) ? "numeric" : "bool";
         }
+        std::string scope_text(OpAxisScope s) {
+            switch (s) {
+            case OpAxisScope::RowWise: return "row_wise";
+            case OpAxisScope::TimeSeries: return "temporal_local";
+            case OpAxisScope::CrossSeries: return "cross_series";
+            case OpAxisScope::SpatialLocal: return "spatial_local";
+            case OpAxisScope::SpatioTemporal: return "spatiotemporal";
+            }
+            return "unknown";
+        }
+        std::string axis_text(AxisKind k) {
+            switch (k) {
+            case AxisKind::Time: return "time";
+            case AxisKind::Entity: return "entity";
+            case AxisKind::Spatial: return "spatial";
+            }
+            return "unknown";
+        }
+        std::string topology_family_text(TopologyFamily family) {
+            return std::string(topology_family_name(family));
+        }
+        std::string topology_query_kind_text(TopologyQueryKind kind) {
+            return std::string(topology_query_kind_name(kind));
+        }
+        std::string locality_subject_kind_text(LocalitySubjectKind kind) {
+            return std::string(locality_subject_kind_name(kind));
+        }
 
         std::string resolved_param_to_string(const ResolvedParam& v) {
             if (std::holds_alternative<std::nullptr_t>(v)) return "null";
@@ -33,482 +64,37 @@ namespace sugar {
             return "?";
         }
 
+        std::string trim_copy(std::string s) {
+            auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+            while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+                s.erase(s.begin());
+            }
+            while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+                s.pop_back();
+            }
+            return s;
+        }
+
         // ------------------ REGISTRATION ------------------
 
         void register_core_ops(OperatorRegistry& r) {
-            {
-                OpEntry e;
-                e.spec = OpSpec{
-                    "core.close",
-                    OpType::Numeric,
-                    {},
-                    ValueType::Num,
-                    {},
-                    "core",
-                    false,
-                    "0"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>&, const ResolvedParamMap&, const CompileEnv&) {
-                    return std::make_shared<CloseIndicator>();
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::size_t(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "value"; p.type = "float"; p.required = true;
-                e.spec = OpSpec{
-                    "core.const",
-                    OpType::Numeric,
-                    {},
-                    ValueType::Num,
-                    {p},
-                    "core",
-                    false,
-                    "0"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>&, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const auto v = as_f64(pm, "value").value_or(0.0);
-                    return constant(v);
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::size_t(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "name"; p.type = "string"; p.required = true;
-                e.spec = OpSpec{
-                    "core.precomputed_num",
-                    OpType::Numeric,
-                    {},
-                    ValueType::Num,
-                    {p},
-                    "core",
-                    false,
-                    "env-defined (typically 0)"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>&, const ResolvedParamMap& pm, const CompileEnv& env) -> IndicatorPtr {
-                    const auto key = as_str(pm, "name").value_or(std::string{});
-                    auto it = env.numeric_leaves.find(key);
-                    if (it == env.numeric_leaves.end()) {
-                        return constant(std::numeric_limits<double>::quiet_NaN());
-                    }
-                    return it->second;
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::size_t(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "value"; p.type = "bool"; p.required = true;
-                e.spec = OpSpec{
-                    "core.bool_const",
-                    OpType::Bool,
-                    {},
-                    ValueType::Bool,
-                    {p},
-                    "core",
-                    false,
-                    "0"
-                };
-                e.build_bool = [](const std::vector<BoolSignalPtr>&, const std::vector<IndicatorPtr>&, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const bool v = as_bool(pm, "value").value_or(false);
-                    return bconst(v);
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>&, const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::size_t(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "name"; p.type = "string"; p.required = true;
-                e.spec = OpSpec{
-                    "core.precomputed_bool",
-                    OpType::Bool,
-                    {},
-                    ValueType::Bool,
-                    {p},
-                    "core",
-                    false,
-                    "env-defined (typically 0)"
-                };
-                e.build_bool = [](const std::vector<BoolSignalPtr>&, const std::vector<IndicatorPtr>&, const ResolvedParamMap& pm, const CompileEnv& env) -> BoolSignalPtr {
-                    const auto key = as_str(pm, "name").value_or(std::string{});
-                    auto it = env.bool_leaves.find(key);
-                    if (it == env.bool_leaves.end()) {
-                        return bconst(false);
-                    }
-                    return it->second;
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>&, const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::size_t(0); };
-                r.add(std::move(e));
-            }
+            op_modules::register_core_ops(r);
         }
 
         void register_ts_ops(OperatorRegistry& r) {
-            auto add_unary_n = [&](const char* name,
-                std::function<IndicatorPtr(IndicatorPtr, std::size_t)> fn,
-                std::function<std::size_t(std::size_t, std::size_t)> warm,
-                const char* warm_desc,
-                const char* param_name) {
+            op_modules::register_ts_ops(r);
+        }
 
-                    OpEntry e;
-                    OpParamSpec p; p.name = param_name; p.type = "int"; p.required = true; p.min_num = 1;
-                    e.spec = OpSpec{
-                        name,
-                        OpType::Numeric,
-                        {ValueType::Num},
-                        ValueType::Num,
-                        {p},
-                        "ts",
-                        false,
-                        warm_desc
-                    };
-                    e.build_num = [fn, param_name](const std::vector<IndicatorPtr>& in, const ResolvedParamMap& pm, const CompileEnv&) {
-                        const auto n = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, param_name).value_or(1)));
-                        return fn(in.at(0), n);
-                        };
-                    e.warmup_num = [warm, param_name](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
-                        const auto n = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, param_name).value_or(1)));
-                        return warm(cw.at(0), n);
-                        };
-                    r.add(std::move(e));
-                };
+        void register_ms_ops(OperatorRegistry& r) {
+            op_modules::register_ms_ops(r);
+        }
 
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "k"; p.type = "int"; p.required = true; p.min_num = 1;
-                e.spec = OpSpec{
-                    "ts.roc",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {p},
-                    "ts",
-                    false,
-                    "child_warmup + k"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const auto k = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, "k").value_or(1)));
-                    return map_roc(in.at(0), k);
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
-                    const auto k = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, "k").value_or(1)));
-                    return cw.at(0) + k;
-                    };
-                r.add(std::move(e));
-            }
-
-            add_unary_n("ts.sma", map_sma, [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
-            add_unary_n("ts.ema", map_ema, [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
-            add_unary_n("ts.roll_max", map_rolling_max, [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
-            add_unary_n("ts.roll_min", map_rolling_min, [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
-            add_unary_n("ts.normalize_minmax", map_normalize_minmax, [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
-
-            {
-                OpEntry e;
-                OpParamSpec p1; p1.name = "k"; p1.type = "int"; p1.required = true; p1.min_num = 0;
-                OpParamSpec p2; p2.name = "fill"; p2.type = "float"; p2.required = false;
-                e.spec = OpSpec{
-                    "ts.shift",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {p1, p2},
-                    "ts",
-                    false,
-                    "child_warmup + k"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const auto k = static_cast<std::size_t>(std::max<std::int64_t>(0, as_i64(pm, "k").value_or(0)));
-                    const auto fill = as_f64(pm, "fill").value_or(std::numeric_limits<double>::quiet_NaN());
-                    return map_shift(in.at(0), k, fill);
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
-                    const auto k = static_cast<std::size_t>(std::max<std::int64_t>(0, as_i64(pm, "k").value_or(0)));
-                    return cw.at(0) + k;
-                    };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                e.spec = OpSpec{
-                    "ts.delta",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    "child_warmup + 1"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return map_delta(in.at(0));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) {
-                    return cw.at(0) + 1;
-                    };
-                r.add(std::move(e));
-            }
-
-            auto add_unary0 = [&](const char* name, std::function<IndicatorPtr(IndicatorPtr)> fn, const char* warm_desc) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    warm_desc
-                };
-                e.build_num = [fn](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return fn(in.at(0));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return cw.at(0); };
-                r.add(std::move(e));
-                };
-            add_unary0("ts.neg", map_negate, "child_warmup");
-            add_unary0("ts.abs", map_abs, "child_warmup");
-            add_unary0("ts.log", map_log, "child_warmup");
-            add_unary0("ts.exp", map_exp, "child_warmup");
-            add_unary0("ts.sqrt", map_sqrt, "child_warmup");
-
-            {
-                OpEntry e;
-                OpParamSpec p; p.name = "p"; p.type = "float"; p.required = true;
-                e.spec = OpSpec{
-                    "ts.pow_const",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {p},
-                    "ts",
-                    false,
-                    "child_warmup"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const auto pwr = as_f64(pm, "p").value_or(1.0);
-                    return map_pow(in.at(0), pwr);
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return cw.at(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                e.spec = OpSpec{
-                    "ts.normalize_minmax_global",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    "child_warmup"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return map_normalize_minmax_global(in.at(0));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return cw.at(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                e.spec = OpSpec{
-                    "ts.ratio_of_ma",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    "child_warmup"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return map_ratio_of_ma(in.at(0));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return cw.at(0); };
-                r.add(std::move(e));
-            }
-
-            auto add_bin = [&](const char* name, std::function<IndicatorPtr(IndicatorPtr, IndicatorPtr)> fn) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Numeric,
-                    {ValueType::Num, ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    "max(child_warmups)"
-                };
-                e.build_num = [fn](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return fn(in.at(0), in.at(1));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return std::max(cw.at(0), cw.at(1)); };
-                r.add(std::move(e));
-                };
-
-            add_bin("ts.add", map_add);
-            add_bin("ts.sub", map_sub);
-            add_bin("ts.mul", map_mul);
-            add_bin("ts.div", map_div);
-            add_bin("ts.min", map_min);
-            add_bin("ts.max", map_max);
-
-            {
-                OpEntry e;
-                OpParamSpec lo; lo.name = "lo"; lo.type = "float"; lo.required = true;
-                OpParamSpec hi; hi.name = "hi"; hi.type = "float"; hi.required = true;
-                e.spec = OpSpec{
-                    "ts.clamp_const",
-                    OpType::Numeric,
-                    {ValueType::Num},
-                    ValueType::Num,
-                    {lo, hi},
-                    "ts",
-                    false,
-                    "child_warmup"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap& pm, const CompileEnv&) {
-                    const double lo = as_f64(pm, "lo").value_or(0.0);
-                    const double hi = as_f64(pm, "hi").value_or(0.0);
-                    return map_clamp_const(in.at(0), lo, hi);
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return cw.at(0); };
-                r.add(std::move(e));
-            }
-
-            {
-                OpEntry e;
-                e.spec = OpSpec{
-                    "ts.clamp",
-                    OpType::Numeric,
-                    {ValueType::Num, ValueType::Num, ValueType::Num},
-                    ValueType::Num,
-                    {},
-                    "ts",
-                    false,
-                    "max(child_warmups)"
-                };
-                e.build_num = [](const std::vector<IndicatorPtr>& in, const ResolvedParamMap&, const CompileEnv&) {
-                    return map_clamp(in.at(0), in.at(1), in.at(2));
-                    };
-                e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap&) { return std::max({ cw.at(0), cw.at(1), cw.at(2) }); };
-                r.add(std::move(e));
-            }
+        void register_spatial_ops(OperatorRegistry& r) {
+            op_modules::register_spatial_ops(r);
         }
 
         void register_logic_ops(OperatorRegistry& r) {
-            auto add_unary_bool = [&](const char* name, std::function<BoolSignalPtr(BoolSignalPtr)> fn) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Bool,
-                    {ValueType::Bool},
-                    ValueType::Bool,
-                    {},
-                    "logic",
-                    false,
-                    "child_warmup"
-                };
-                e.build_bool = [fn](const std::vector<BoolSignalPtr>& b, const std::vector<IndicatorPtr>&, const ResolvedParamMap&, const CompileEnv&) {
-                    return fn(b.at(0));
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>& bw, const std::vector<std::size_t>&, const ResolvedParamMap&) { return bw.at(0); };
-                r.add(std::move(e));
-                };
-            auto add_bin_bool = [&](const char* name, std::function<BoolSignalPtr(BoolSignalPtr, BoolSignalPtr)> fn, const char* warm_desc) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Bool,
-                    {ValueType::Bool, ValueType::Bool},
-                    ValueType::Bool,
-                    {},
-                    "logic",
-                    false,
-                    warm_desc
-                };
-                e.build_bool = [fn](const std::vector<BoolSignalPtr>& b, const std::vector<IndicatorPtr>&, const ResolvedParamMap&, const CompileEnv&) {
-                    return fn(b.at(0), b.at(1));
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>& bw, const std::vector<std::size_t>&, const ResolvedParamMap&) { return std::max(bw.at(0), bw.at(1)); };
-                r.add(std::move(e));
-                };
-
-            add_unary_bool("logic.not", bnot);
-            add_bin_bool("logic.and", band, "max(child_warmups)");
-            add_bin_bool("logic.or", bor, "max(child_warmups)");
-            add_bin_bool("logic.nand", bnand, "max(child_warmups)");
-            add_bin_bool("logic.nor", bnor, "max(child_warmups)");
-
-            auto add_cmp = [&](const char* name, CmpOp op) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Bool,
-                    {ValueType::Num, ValueType::Num},
-                    ValueType::Bool,
-                    {},
-                    "cmp",
-                    false,
-                    "max(child_warmups)"
-                };
-                e.build_bool = [op](const std::vector<BoolSignalPtr>&, const std::vector<IndicatorPtr>& n, const ResolvedParamMap&, const CompileEnv&) {
-                    switch (op) {
-                    case CmpOp::LT: return blt(n.at(0), n.at(1));
-                    case CmpOp::LE: return ble(n.at(0), n.at(1));
-                    case CmpOp::GT: return bgt(n.at(0), n.at(1));
-                    case CmpOp::GE: return bge(n.at(0), n.at(1));
-                    case CmpOp::EQ: return beq(n.at(0), n.at(1));
-                    case CmpOp::NE: return bne(n.at(0), n.at(1));
-                    }
-                    return bconst(false);
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>&, const std::vector<std::size_t>& nw, const ResolvedParamMap&) {
-                    return std::max(nw.at(0), nw.at(1));
-                    };
-                r.add(std::move(e));
-                };
-
-            add_cmp("cmp.lt", CmpOp::LT);
-            add_cmp("cmp.le", CmpOp::LE);
-            add_cmp("cmp.gt", CmpOp::GT);
-            add_cmp("cmp.ge", CmpOp::GE);
-            add_cmp("cmp.eq", CmpOp::EQ);
-            add_cmp("cmp.ne", CmpOp::NE);
-
-            auto add_cross = [&](const char* name, CrossDir dir) {
-                OpEntry e;
-                e.spec = OpSpec{
-                    name,
-                    OpType::Bool,
-                    {ValueType::Num, ValueType::Num},
-                    ValueType::Bool,
-                    {},
-                    "cmp",
-                    false,
-                    "max(child_warmups) + 1 (needs previous bar)"
-                };
-                e.build_bool = [dir](const std::vector<BoolSignalPtr>&, const std::vector<IndicatorPtr>& n, const ResolvedParamMap&, const CompileEnv&) {
-                    return (dir == CrossDir::Up) ? cross_up(n.at(0), n.at(1)) : cross_down(n.at(0), n.at(1));
-                    };
-                e.warmup_bool = [](const std::vector<std::size_t>&, const std::vector<std::size_t>& nw, const ResolvedParamMap&) {
-                    return std::max(nw.at(0), nw.at(1)) + 1;
-                    };
-                r.add(std::move(e));
-                };
-            add_cross("cmp.cross_up", CrossDir::Up);
-            add_cross("cmp.cross_down", CrossDir::Down);
+            op_modules::register_logic_ops(r);
         }
 
         // ------------------ DESCRIPTION DUMP ------------------
@@ -527,6 +113,55 @@ namespace sugar {
 
             if (e.spec.is_macro) os << "  \n  kind: `macro`";
             else os << "  \n  kind: `primitive`";
+            os << "  \n  axis_scope: `" << scope_text(e.spec.axis_scope) << "`";
+            os << "  \n  required_axes: ";
+            if (e.spec.required_axes.empty()) {
+                os << "`(none)`";
+            }
+            else {
+                for (std::size_t i = 0; i < e.spec.required_axes.size(); ++i) {
+                    if (i) os << ", ";
+                    os << "`" << axis_text(e.spec.required_axes[i]) << "`";
+                }
+            }
+            os << "  \n  required_topology_families: ";
+            if (e.spec.required_topology_families.empty()) {
+                os << "`(none)`";
+            }
+            else {
+                for (std::size_t i = 0; i < e.spec.required_topology_families.size(); ++i) {
+                    if (i) os << ", ";
+                    os << "`" << topology_family_text(e.spec.required_topology_families[i]) << "`";
+                }
+            }
+            os << "  \n  required_topology_queries: ";
+            if (e.spec.required_topology_query_kinds.empty()) {
+                os << "`(none)`";
+            }
+            else {
+                for (std::size_t i = 0; i < e.spec.required_topology_query_kinds.size(); ++i) {
+                    if (i) os << ", ";
+                    os << "`" << topology_query_kind_text(e.spec.required_topology_query_kinds[i]) << "`";
+                }
+            }
+            os << "  \n  default_topology: `"
+                << (e.spec.default_topology_name.empty() ? "(none)" : e.spec.default_topology_name)
+                << "`";
+            os << "  \n  topology_binding_param: `"
+                << (e.spec.topology_binding_param.empty() ? "(none)" : e.spec.topology_binding_param)
+                << "`";
+            os << "  \n  default_locality_subject: `"
+                << locality_subject_kind_text(e.spec.default_locality_subject_kind)
+                << "`";
+            if (!e.spec.default_locality_subject_value.empty()) {
+                os << " (`" << e.spec.default_locality_subject_value << "`)";
+            }
+            os << "  \n  bound_locality_subject: `"
+                << locality_subject_kind_text(e.spec.bound_locality_subject_kind)
+                << "`";
+            os << "  \n  locality_subject_binding_param: `"
+                << (e.spec.locality_subject_binding_param.empty() ? "(none)" : e.spec.locality_subject_binding_param)
+                << "`";
 
             os << "  \n  warmup: `" << (e.spec.warmup_desc.empty() ? "unspecified" : e.spec.warmup_desc) << "`";
 
@@ -579,6 +214,8 @@ namespace sugar {
         OperatorRegistry r;
         register_core_ops(r);
         register_ts_ops(r);
+        register_ms_ops(r);
+        register_spatial_ops(r);
         register_logic_ops(r);
         return r;
     }
@@ -617,11 +254,37 @@ namespace sugar {
             os << "Use only this dump as capability truth for this build.\n";
             os << "If a field/op is not documented here, do not infer it.\n\n";
 
+            os << "### Runtime Profiles (important)\n";
+            os << "- `--dump-ops` lists full registered operator catalog by module (`core`, `ts`, `ms`, `cmp`, `logic`, `spatial`, `st`).\n";
+            os << "- Custom PlanSpec runtime is DataView-first and frame-first.\n";
+            os << "- Canonical custom execution consumes caller-supplied `DataView` observations.\n";
+            os << "- Legacy embedded observation inputs (`series_inputs`) are optional compatibility metadata for self-contained legacy/test plans; they are not a primary app/runtime surface and are not required when the caller already provides observations.\n";
+            os << "- When legacy embedded observation inputs are used, they resolve observations through preprocess + time-intersection alignment before runtime.\n";
+            os << "- Custom execution is compile-bridge only (`compile_plan` + registry); legacy evaluator fallback is disabled.\n";
+            os << "- Row-wise ops may have no required axes; temporal/spatial locality and topology requirements are explicit per op in this registry.\n";
+            os << "- Locality ops may declare default built-in topology names now; future named topology bindings will surface through the same contract fields.\n";
+            os << "- In app runtime ingestion, explicit `--data-spec` is authoritative; without it, ingestion may use `--format` or CSV-header auto-detect, and DataSpec `input_profile` can carry equivalent preset intent.\n";
+            os << "- PlanSpec operator support in runtime follows this registry dump; unsupported/unknown ops fail compile explicitly.\n";
+            os << "- `core.close` reads from DataView primary series/column (default `close`, override via PlanSpec param `primary_value_col`).\n";
+            os << "- Series-prefixed column refs (`series:column`) are supported through pre-compile leaf adaptation (`core.precomputed_num`).\n";
+            os << "- Column-ref alias ops (`core.col`, `ms.col`) and shorthand aliases (`diff`, `ratio`, `zscore`, `ts.dc_*`, `ts.stdev*`, `ts.trange*`, `ts.atr_w`) are normalized before compile.\n\n";
+
+            os << "### Alias Ledger (human-readable -> canonical)\n";
+            os << "- `ts` = `time-series` module prefix.\n";
+            os << "- `ms` = `multi-series` (cross-series) module prefix.\n";
+            for (const auto& alias : kPlanSpecRuntimeOpAliases) {
+                os << "- `" << alias.alias << "` -> `" << alias.canonical << "`\n";
+            }
+            os << "- `core.col` -> `core.ref` -> compiler leaf adaptation (`core.precomputed_num`)\n";
+            os << "- `ms.col` -> `core.ref` -> compiler leaf adaptation (`core.precomputed_num`)\n";
+            os << "- Donchian channel primitives: `ts.donchian_upper`, `ts.donchian_lower`, `ts.donchian_mid`, `ts.donchian_width`\n\n";
+
             os << "### Hard Guardrails (must follow)\n";
             os << "- PlanSpec is a strict graph DSL: nodes + ids + bindings.\n";
             os << "- `args[]` must contain exact prior node ids only (plain strings).\n";
             os << "- Unary bool ops (for example `logic.not`) require dedicated nodes.\n";
-            os << "- `op` must exist in this registry; no user-defined ops in PlanSpec JSON.\n";
+            os << "- `op` must exist in this registry (or be a documented alias normalized before compile).\n";
+            os << "- No user-defined ops in PlanSpec JSON.\n";
             os << "- Data input is not limited to OHLC candles; close-only single-value tabular vectors are also supported.\n";
             os << "- core.volume is not supported.\n";
             os << "- core.close produces one numeric, index-aligned 1D time-series vector.\n";
@@ -647,7 +310,7 @@ namespace sugar {
 
             os << "### NodeSpec\n";
             os << "- `id` (string, unique per node list)\n";
-            os << "- `op` (string; must exist in this registry)\n";
+            os << "- `op` (string; must exist in this registry or be a documented alias)\n";
             os << "- `args` (array<string>; order must match op signature)\n";
             os << "- `params` (object; literals or `{ \"ref\": \"paramName\" }`)\n\n";
 
@@ -669,7 +332,7 @@ namespace sugar {
             os << "- Root is valid JSON object (no comments, no trailing garbage).\n";
             os << "- `bindings` exists; each binding value is a string.\n";
             os << "- Node ids are unique per list and all referenced ids exist.\n";
-            os << "- Every `op` exists in this registry and `args` arity/type matches signature.\n";
+            os << "- Every `op` resolves to a registry op (or documented alias) and `args` arity/type matches signature.\n";
             os << "- All strings in every `args[]` array exactly match an earlier node id (plain string, no extra text).\n";
             os << "- Required op params are present with correct types and bounds.\n";
             os << "- Every `{ \"ref\": \"k\" }` resolves to a top-level `params.k` value.\n";
@@ -1009,6 +672,44 @@ namespace sugar {
 )JSON";
             os << "\n";
 
+            os << "### Example 6: ATR + RSI gate (volatility-aware momentum)\n";
+            os << R"JSON(
+{
+  "version": 1,
+  "name": "ATR RSI Gate",
+  "trade_mode": "LongOnly",
+  "params": {
+    "rsi_n": 14,
+    "atr_n": 14,
+    "rsi_entry": 55.0,
+    "rsi_exit": 45.0,
+    "atr_min": 0.5
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "rsi", "op": "ts.rsi", "args": ["c"], "params": { "n": { "ref": "rsi_n" } } },
+    { "id": "atr", "op": "ts.atr", "args": ["c"], "params": { "n": { "ref": "atr_n" } } },
+    { "id": "rsi_e", "op": "core.const", "params": { "value": { "ref": "rsi_entry" } } },
+    { "id": "rsi_x", "op": "core.const", "params": { "value": { "ref": "rsi_exit" } } },
+    { "id": "atr_lo", "op": "core.const", "params": { "value": { "ref": "atr_min" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_core", "op": "cmp.gt", "args": ["rsi", "rsi_e"] },
+    { "id": "exitL", "op": "cmp.lt", "args": ["rsi", "rsi_x"] },
+    { "id": "vol_ok", "op": "cmp.gt", "args": ["atr", "atr_lo"] },
+    { "id": "entryL", "op": "logic.and", "args": ["entry_core", "vol_ok"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": "vol_ok"
+  }
+}
+)JSON";
+            os << "\n";
+
         std::string current_module;
         for (const auto* e : ordered) {
             if (e->spec.module != current_module) {
@@ -1050,6 +751,47 @@ namespace sugar {
             if (std::holds_alternative<double>(v)) return std::get<double>(v);
             if (std::holds_alternative<std::int64_t>(v)) return static_cast<double>(std::get<std::int64_t>(v));
             return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const ParamValue* find_param(const ParamMap& m, const std::string& key);
+
+        bool resolve_optional_string_param_value(const ParamValue& value,
+            const ParamMap& plan_params,
+            const ParamMap* overrides,
+            std::string& out,
+            std::string& err) {
+            if (std::holds_alternative<std::nullptr_t>(value)) {
+                out.clear();
+                return true;
+            }
+            if (std::holds_alternative<std::string>(value)) {
+                out = trim_copy(std::get<std::string>(value));
+                return true;
+            }
+            if (std::holds_alternative<ParamRef>(value)) {
+                const auto& ref = std::get<ParamRef>(value).name;
+                const ParamValue* resolved = nullptr;
+                if (overrides) resolved = find_param(*overrides, ref);
+                if (!resolved) resolved = find_param(plan_params, ref);
+                if (!resolved) {
+                    err = "param ref '" + ref + "' not found";
+                    return false;
+                }
+                if (!std::holds_alternative<std::string>(*resolved) &&
+                    !std::holds_alternative<std::nullptr_t>(*resolved)) {
+                    err = "param ref '" + ref + "' did not resolve to string";
+                    return false;
+                }
+                if (std::holds_alternative<std::nullptr_t>(*resolved)) {
+                    out.clear();
+                    return true;
+                }
+                out = trim_copy(std::get<std::string>(*resolved));
+                return true;
+            }
+
+            err = "expected string or {ref:...}";
+            return false;
         }
     }
 
@@ -1116,6 +858,178 @@ namespace sugar {
             if (!nm || nm->empty()) { err = "core.precomputed_bool requires param 'name'"; return false; }
         }
 
+        return true;
+    }
+
+    bool resolve_bound_topology_name(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        std::string& out,
+        std::string& err) {
+        out = trim_copy(op.spec.default_topology_name);
+        if (op.spec.topology_binding_param.empty()) {
+            return true;
+        }
+
+        const ParamValue* binding = find_param(node_params, op.spec.topology_binding_param);
+        if (!binding) {
+            return true;
+        }
+
+        std::string resolved;
+        if (!resolve_optional_string_param_value(*binding, plan_params, overrides, resolved, err)) {
+            err = "param '" + op.spec.topology_binding_param + "': " + err;
+            return false;
+        }
+
+        if (!resolved.empty()) {
+            out = std::move(resolved);
+        }
+        return true;
+    }
+
+    bool resolve_bound_topology_name(const OpEntry& op,
+        const ResolvedParamMap& params,
+        std::string& out,
+        std::string& err) {
+        out = trim_copy(op.spec.default_topology_name);
+        if (op.spec.topology_binding_param.empty()) {
+            return true;
+        }
+
+        auto it = params.find(op.spec.topology_binding_param);
+        if (it == params.end()) {
+            return true;
+        }
+
+        if (std::holds_alternative<std::nullptr_t>(it->second)) {
+            return true;
+        }
+        if (!std::holds_alternative<std::string>(it->second)) {
+            err = "param '" + op.spec.topology_binding_param + "' must resolve to string";
+            return false;
+        }
+
+        const std::string resolved = trim_copy(std::get<std::string>(it->second));
+        if (!resolved.empty()) {
+            out = resolved;
+        }
+        return true;
+    }
+
+    bool resolve_bound_locality_subject(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        ResolvedLocalitySubject& out,
+        std::string& err) {
+        out = ResolvedLocalitySubject{};
+        out.kind = op.spec.default_locality_subject_kind;
+        out.value = trim_copy(op.spec.default_locality_subject_value);
+        out.explicit_binding = false;
+
+        if (op.spec.locality_subject_binding_param.empty()) {
+            return true;
+        }
+
+        const ParamValue* binding = find_param(node_params, op.spec.locality_subject_binding_param);
+        if (!binding) {
+            return true;
+        }
+
+        std::string resolved;
+        if (!resolve_optional_string_param_value(*binding, plan_params, overrides, resolved, err)) {
+            err = "param '" + op.spec.locality_subject_binding_param + "': " + err;
+            return false;
+        }
+
+        if (!resolved.empty()) {
+            out.kind = op.spec.bound_locality_subject_kind;
+            out.value = std::move(resolved);
+            out.explicit_binding = true;
+        }
+        return true;
+    }
+
+    bool resolve_bound_locality_subject(const OpEntry& op,
+        const ResolvedParamMap& params,
+        ResolvedLocalitySubject& out,
+        std::string& err) {
+        out = ResolvedLocalitySubject{};
+        out.kind = op.spec.default_locality_subject_kind;
+        out.value = trim_copy(op.spec.default_locality_subject_value);
+        out.explicit_binding = false;
+
+        if (op.spec.locality_subject_binding_param.empty()) {
+            return true;
+        }
+
+        auto it = params.find(op.spec.locality_subject_binding_param);
+        if (it == params.end()) {
+            return true;
+        }
+
+        if (std::holds_alternative<std::nullptr_t>(it->second)) {
+            return true;
+        }
+        if (!std::holds_alternative<std::string>(it->second)) {
+            err = "param '" + op.spec.locality_subject_binding_param + "' must resolve to string";
+            return false;
+        }
+
+        const std::string resolved = trim_copy(std::get<std::string>(it->second));
+        if (!resolved.empty()) {
+            out.kind = op.spec.bound_locality_subject_kind;
+            out.value = resolved;
+            out.explicit_binding = true;
+        }
+        return true;
+    }
+
+    bool resolve_runtime_locality_subject(const OpEntry& op,
+        const ParamMap& node_params,
+        const ParamMap& plan_params,
+        const ParamMap* overrides,
+        const DataView& dv,
+        std::string_view compatibility_primary_series,
+        RuntimeLocalitySubject& out,
+        std::string& err) {
+        ResolvedLocalitySubject subject{};
+        if (!resolve_bound_locality_subject(op, node_params, plan_params, overrides, subject, err)) {
+            err = "locality subject binding failed: " + err;
+            return false;
+        }
+
+        try {
+            out = dv.resolve_locality_subject(subject, compatibility_primary_series);
+        }
+        catch (const std::exception& ex) {
+            err = ex.what();
+            return false;
+        }
+        return true;
+    }
+
+    bool resolve_runtime_locality_subject(const OpEntry& op,
+        const ResolvedParamMap& params,
+        const DataView& dv,
+        std::string_view compatibility_primary_series,
+        RuntimeLocalitySubject& out,
+        std::string& err) {
+        ResolvedLocalitySubject subject{};
+        if (!resolve_bound_locality_subject(op, params, subject, err)) {
+            err = "locality subject binding failed: " + err;
+            return false;
+        }
+
+        try {
+            out = dv.resolve_locality_subject(subject, compatibility_primary_series);
+        }
+        catch (const std::exception& ex) {
+            err = ex.what();
+            return false;
+        }
         return true;
     }
 

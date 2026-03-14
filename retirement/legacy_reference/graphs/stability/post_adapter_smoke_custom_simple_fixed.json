@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "name": "Simple ZScore Threshold (Smoke Fixed Paths)",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "eval_mode": "SameBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 }
+  },
+  "series_inputs": [
+    {
+      "key": "main",
+      "path": "../../../../data/BTCUSD_420.csv",
+      "data_spec": "../../../../graphs/dataspec_headered_iso.json"
+    }
+  ],
+  "params": {
+    "z_n": 30,
+    "entry_th": 0.8,
+    "exit_th": 0.0,
+    "neg_entry_th": -0.8,
+    "neg_exit_th": 0.0
+  },
+  "numeric_nodes": [
+    { "id": "close", "op": "core.close" },
+    { "id": "z", "op": "ms.zscore", "args": ["close"], "params": { "n": { "ref": "z_n" } } },
+    { "id": "entry_th", "op": "core.const", "params": { "value": { "ref": "entry_th" } } },
+    { "id": "exit_th", "op": "core.const", "params": { "value": { "ref": "exit_th" } } },
+    { "id": "neg_entry_th", "op": "core.const", "params": { "value": { "ref": "neg_entry_th" } } },
+    { "id": "neg_exit_th", "op": "core.const", "params": { "value": { "ref": "neg_exit_th" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry_long", "op": "cmp.gt", "args": ["z", "entry_th"] },
+    { "id": "exit_long", "op": "cmp.lt", "args": ["z", "exit_th"] },
+    { "id": "entry_short", "op": "cmp.lt", "args": ["z", "neg_entry_th"] },
+    { "id": "exit_short", "op": "cmp.gt", "args": ["z", "neg_exit_th"] },
+    { "id": "allow_trade", "op": "core.bool_const", "params": { "value": true } }
+  ],
+  "bindings": {
+    "entry_long": "entry_long",
+    "exit_long": "exit_long",
+    "entry_short": "entry_short",
+    "exit_short": "exit_short",
+    "allow_trade": "allow_trade"
+  }
+}

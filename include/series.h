@@ -21,6 +21,7 @@ namespace sugar {
         const std::vector<double>& lows() const { return lows_; }
         const std::vector<double>& closes() const { return closes_; }
         const std::vector<double>& volumes() const { return volumes_; }
+        const std::vector<TimeKey>& dates() const { return dates_; }
 
     private:
         // AoS source of truth
@@ -32,6 +33,7 @@ namespace sugar {
         std::vector<double> lows_;
         std::vector<double> closes_;
         std::vector<double> volumes_;
+        std::vector<TimeKey> dates_;
     };
 
 } // namespace sugar
