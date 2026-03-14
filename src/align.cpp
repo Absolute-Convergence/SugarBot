@@ -14,8 +14,8 @@ namespace sugar::align {
         bool schema_compatible(const FrameSchema& a, const FrameSchema& b) {
             const auto& ra = a.columns();
             const auto& rb = b.columns();
-            const std::size_t n = std::min(ra.size(), rb.size());
-            for (std::size_t i = 0; i < n; ++i) {
+            if (ra.size() != rb.size()) return false;
+            for (std::size_t i = 0; i < ra.size(); ++i) {
                 ColumnId id{ static_cast<std::uint32_t>(i) };
                 if (ra.name_by_id(id) != rb.name_by_id(id)) return false;
             }

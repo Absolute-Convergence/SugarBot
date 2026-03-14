@@ -5,6 +5,7 @@ Keep this file focused on implementation boundaries and the contract harness.
 
 ## 0) Scratch Memory (Update First)
 - This section is scratch memory and must be updated after every code change.
+- 2026-03-14: `align.cpp` now fails fast on trailing schema mismatches, `run_pipeline.cpp` maps single-frame legacy embedded provenance to distinct series keys when no entity axis exists, and `observation_capability.cpp` derives pre-alignment row_count from the max entity row count; contract coverage now freezes all three seams.
 - Root `AGENTS.md` is authoritative; this file adds `src/`-local implementation rules only.
 - `src/` runtime is DataView-native end to end and must broaden additively instead of spawning sibling runtimes.
 - `run_pipeline.cpp` is the observation-to-`DataView` seam; legacy embedded observation support is compatibility-only.

@@ -208,6 +208,7 @@ namespace sugar {
                 }
 
                 NumericFrame frame(*schema);
+                std::string selected_entity = "__single__";
                 std::string resolved_entity = "__single__";
                 if (!report.produced_frameset && !si.entity.empty()) {
                     err = idx + " (" + si.key + "): entity was provided but data_spec produced a single frame (no entity split).";
@@ -218,15 +219,19 @@ namespace sugar {
                         err = idx + " (" + si.key + "): entity is required because data_spec path produced multiple entities.";
                         return false;
                     }
-                    resolved_entity = fs.by_entity.begin()->first;
+                    selected_entity = fs.by_entity.begin()->first;
+                    // Single-frame preprocess uses a synthetic internal key; preserve
+                    // distinct provenance per embedded series at the runtime boundary.
+                    resolved_entity = report.produced_frameset ? selected_entity : si.key;
                 }
                 else {
+                    selected_entity = si.entity;
                     resolved_entity = si.entity;
                 }
 
-                auto it = fs.by_entity.find(resolved_entity);
+                auto it = fs.by_entity.find(selected_entity);
                 if (it == fs.by_entity.end()) {
-                    err = idx + " (" + si.key + "): entity '" + resolved_entity + "' not found in preprocessed data.";
+                    err = idx + " (" + si.key + "): entity '" + selected_entity + "' not found in preprocessed data.";
                     return false;
                 }
                 frame = it->second;

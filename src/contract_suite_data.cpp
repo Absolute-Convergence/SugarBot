@@ -725,6 +725,29 @@ namespace sugar::contract_suite_internal {
                 "empty observation temporal failure cites empty row domain");
         }
 
+        {
+            auto schema = std::make_shared<FrameSchema>();
+            FrameSet fs{};
+            fs.schema = schema;
+            fs.by_entity.emplace("empty", NumericFrame(schema, 0));
+            fs.by_entity.emplace("nonempty", NumericFrame(schema, 2));
+
+            PreprocessReport report{};
+            report.produced_frameset = true;
+            report.has_entity_axis = true;
+            report.has_time_axis = false;
+            report.has_spatial_axis = false;
+
+            const auto facts = make_observation_world_facts(fs, report);
+            const auto caps = diagnose_observation_capabilities(facts);
+            const auto* row_domain = find_surface(caps, ObservationSurfaceKind::RowDomain);
+
+            t.expect(facts.row_count == 2,
+                "frameset observation facts derive row_count from a non-empty entity");
+            t.expect(row_domain && row_domain->status == ObservationCapabilityStatus::Valid,
+                "frameset observation facts stay row-domain valid when any entity still has rows");
+        }
+
         return true;
     }
 
@@ -837,6 +860,61 @@ namespace sugar::contract_suite_internal {
                 t.expect(nearly_equal(a[0], 20.0) && nearly_equal(a[1], 40.0), "intersection preserves A overlap values");
                 t.expect(nearly_equal(b[0], 200.0) && nearly_equal(b[1], 400.0), "intersection preserves B overlap values");
             }
+        }
+
+        {
+            auto wider_schema = std::make_shared<FrameSchema>(*schema);
+            ColumnId wider_close_id{};
+            t.expect(wider_schema->columns().find("close", wider_close_id),
+                "wider schema preserves close column id for alignment mismatch test");
+            const ColumnId volume_id = wider_schema->columns().get_or_add("volume");
+
+            NumericFrame wider_frame(*wider_schema, std::vector<TimeKey>{ 1, 2 });
+            wider_frame.ensure_col(wider_close_id);
+            wider_frame.ensure_col(volume_id);
+
+            std::vector<std::pair<std::string, NumericFrame>> extra_input;
+            extra_input.emplace_back("A", wider_frame);
+
+            bool threw = false;
+            std::string err;
+            try {
+                (void)align::align_frames(schema, extra_input, icfg);
+            }
+            catch (const std::invalid_argument& ex) {
+                threw = true;
+                err = ex.what();
+            }
+
+            t.expect(threw, "alignment rejects frames whose schema has extra trailing columns");
+            t.expect(err.find("schema mismatch") != std::string::npos,
+                "extra trailing-column rejection remains explicit at the alignment boundary");
+        }
+
+        {
+            auto wider_schema = std::make_shared<FrameSchema>(*schema);
+            const ColumnId volume_id = wider_schema->columns().get_or_add("volume");
+            (void)volume_id;
+
+            NumericFrame narrower_frame(*schema, std::vector<TimeKey>{ 1, 2 });
+            narrower_frame.ensure_col(close_id);
+
+            std::vector<std::pair<std::string, NumericFrame>> missing_input;
+            missing_input.emplace_back("A", narrower_frame);
+
+            bool threw = false;
+            std::string err;
+            try {
+                (void)align::align_frames(wider_schema, missing_input, icfg);
+            }
+            catch (const std::invalid_argument& ex) {
+                threw = true;
+                err = ex.what();
+            }
+
+            t.expect(threw, "alignment rejects frames whose schema is missing trailing columns");
+            t.expect(err.find("schema mismatch") != std::string::npos,
+                "missing trailing-column rejection remains explicit at the alignment boundary");
         }
 
         return true;
@@ -1467,6 +1545,98 @@ namespace sugar::contract_suite_internal {
             }
             else {
                 t.expect(!err.empty(), "topology runtime-input fixture reports explicit failure text");
+            }
+        }
+
+        {
+            const auto dir = contract_tmp_dir();
+            std::filesystem::create_directories(dir);
+            const auto data_spec_path = dir / "embedded_single_frame_dataspec.json";
+            const auto main_csv = dir / "embedded_single_frame_main.csv";
+            const auto hedge_csv = dir / "embedded_single_frame_hedge.csv";
+            const auto plan_path = dir / "embedded_single_frame_plan.json";
+
+            const std::string data_spec_body =
+                "{\n"
+                "  \"header_policy\": \"RequiredHeaders\",\n"
+                "  \"time_col\": \"date\",\n"
+                "  \"time_kind\": \"YyyyMmDd\",\n"
+                "  \"value_cols\": [\"close\"],\n"
+                "  \"primary_value_col\": \"close\",\n"
+                "  \"sort_by_time\": true,\n"
+                "  \"dedupe\": \"Error\"\n"
+                "}\n";
+            const std::string main_csv_body =
+                "date,close\n"
+                "20240101,100\n"
+                "20240102,101\n";
+            const std::string hedge_csv_body =
+                "date,close\n"
+                "20240101,90\n"
+                "20240102,91\n";
+            const std::string plan_body =
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"name\": \"embedded_single_frame_provenance\",\n"
+                "  \"series_inputs\": [\n"
+                "    {\n"
+                "      \"key\": \"main\",\n"
+                "      \"path\": \"embedded_single_frame_main.csv\",\n"
+                "      \"data_spec\": \"embedded_single_frame_dataspec.json\"\n"
+                "    },\n"
+                "    {\n"
+                "      \"key\": \"hedge\",\n"
+                "      \"path\": \"embedded_single_frame_hedge.csv\",\n"
+                "      \"data_spec\": \"embedded_single_frame_dataspec.json\"\n"
+                "    }\n"
+                "  ],\n"
+                "  \"bindings\": {\n"
+                "    \"entry_long\": \"\",\n"
+                "    \"exit_long\": \"\",\n"
+                "    \"entry_short\": \"\",\n"
+                "    \"exit_short\": \"\",\n"
+                "    \"allow_trade\": \"\"\n"
+                "  }\n"
+                "}\n";
+
+            const bool fixture_ok =
+                write_text_file(data_spec_path, data_spec_body) &&
+                write_text_file(main_csv, main_csv_body) &&
+                write_text_file(hedge_csv, hedge_csv_body) &&
+                write_text_file(plan_path, plan_body);
+            t.expect(fixture_ok, "embedded single-frame runtime provenance fixture is writable");
+            if (!fixture_ok) return true;
+
+            PlanSpec spec{};
+            std::string err;
+            const bool load_ok = load_plan_spec_file(plan_path.string(), spec, err);
+            t.expect(load_ok, "embedded single-frame PlanSpec fixture loads");
+            if (!load_ok) return true;
+
+            ResolvedRuntimeInput runtime{};
+            const bool runtime_ok = build_embedded_plan_observation_compat_runtime(spec, runtime, err);
+            t.expect(runtime_ok, "embedded single-frame legacy runtime compatibility builds successfully");
+            if (runtime_ok) {
+                t.expect(runtime.primary_ref.series == "main",
+                    "embedded single-frame legacy runtime keeps first series as primary");
+                t.expect(runtime.primary_entity_key == "main",
+                    "embedded single-frame legacy runtime preserves primary provenance as series key");
+                t.expect(runtime.series_key_to_entity["main"] == "main",
+                    "embedded single-frame legacy runtime preserves main series provenance distinctly");
+                t.expect(runtime.series_key_to_entity["hedge"] == "hedge",
+                    "embedded single-frame legacy runtime preserves secondary series provenance distinctly");
+
+                const std::size_t main_index = runtime.aligned_bundle->find_series_index("main");
+                const std::size_t hedge_index = runtime.aligned_bundle->find_series_index("hedge");
+                t.expect(main_index != static_cast<std::size_t>(-1) &&
+                    runtime.aligned_bundle->entity_key_for_series_index(main_index) == "main",
+                    "embedded single-frame aligned bundle keeps main entity provenance aligned with series key");
+                t.expect(hedge_index != static_cast<std::size_t>(-1) &&
+                    runtime.aligned_bundle->entity_key_for_series_index(hedge_index) == "hedge",
+                    "embedded single-frame aligned bundle keeps hedge entity provenance aligned with series key");
+            }
+            else {
+                t.expect(!err.empty(), "embedded single-frame runtime compatibility reports explicit failure text");
             }
         }
 

@@ -85,8 +85,11 @@ namespace sugar {
         }
 
         std::size_t derive_frameset_row_count(const FrameSet& fs) {
-            if (fs.by_entity.empty()) return 0;
-            return fs.by_entity.begin()->second.row_count();
+            std::size_t row_count = 0;
+            for (const auto& kv : fs.by_entity) {
+                row_count = std::max(row_count, kv.second.row_count());
+            }
+            return row_count;
         }
 
         bool has_panel_time_support(const ObservationWorldFacts& facts) {
