@@ -168,7 +168,7 @@ namespace sugar {
             for (std::size_t i = 0; i < node.args.size(); ++i) {
                 if (op->spec.inputs[i] != ValueType::Num) {
                     err = "Node '" + id + "' arg #" + std::to_string(i)
-                        + " requires non-numeric input; cannot compile in numeric graph";
+                        + " requires non-numeric input (Bool); cannot satisfy in numeric-only graph";
                     return false;
                 }
                 std::size_t child = 0;
