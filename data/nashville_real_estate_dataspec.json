@@ -1,0 +1,19 @@
+{
+  "time_col": "month_ym",
+  "time_kind": "YearMonth",
+  "header_policy": "RequiredHeaders",
+  "entity_col": "region",
+  "value_cols": [
+    "median_sale_price",
+    "homes_sold",
+    "new_listings",
+    "inventory",
+    "days_on_market",
+    "average_sale_to_list"
+  ],
+  "primary_value_col": "median_sale_price",
+  "missing_tokens": ["", "NA", "null", "N/A"],
+  "missing_default": { "kind": "NaN" },
+  "sort_by_time": true,
+  "dedupe": "Last"
+}

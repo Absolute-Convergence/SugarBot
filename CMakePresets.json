@@ -7,39 +7,108 @@
   },
   "configurePresets": [
     {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "arm64-windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "ARM64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
       "name": "windows-debug",
       "displayName": "Windows Debug",
-      "generator": "Ninja",
+      "inherits": "windows-base",
       "binaryDir": "${sourceDir}/out/build/x64-debug",
       "cacheVariables": {
-        "BUILD_TESTING": "ON",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/x64-debug"
       }
     },
     {
+      "name": "x64-debug",
+      "displayName": "x64 Debug",
+      "inherits": "windows-debug"
+    },
+    {
       "name": "windows-release",
       "displayName": "Windows Release",
-      "generator": "Ninja",
+      "inherits": "windows-base",
       "binaryDir": "${sourceDir}/out/build/x64-release",
       "cacheVariables": {
-        "BUILD_TESTING": "ON",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/x64-release"
       }
     },
     {
-      "name": "linux-debug",
-      "displayName": "Linux Debug",
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/out/build/wsl-gcc-debug",
+      "name": "x64-release",
+      "displayName": "x64 Release",
+      "inherits": "windows-release"
+    },
+    {
+      "name": "arm64-windows-debug",
+      "displayName": "ARM64 Windows Debug",
+      "inherits": "arm64-windows-base",
+      "binaryDir": "${sourceDir}/out/build/arm64-windows-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-windows-debug"
+      }
+    },
+    {
+      "name": "arm64-windows-release",
+      "displayName": "ARM64 Windows Release",
+      "inherits": "arm64-windows-base",
+      "binaryDir": "${sourceDir}/out/build/arm64-windows-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-windows-release"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
       },
       "cacheVariables": {
-        "BUILD_TESTING": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-base",
+      "hidden": true,
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Debug",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/out/build/wsl-gcc-debug",
+      "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/wsl-gcc-debug"
       }
@@ -47,17 +116,53 @@
     {
       "name": "linux-release",
       "displayName": "Linux Release",
-      "generator": "Unix Makefiles",
+      "inherits": "linux-base",
       "binaryDir": "${sourceDir}/out/build/wsl-gcc-release",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      },
       "cacheVariables": {
-        "BUILD_TESTING": "ON",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/wsl-gcc-release"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux ASan",
+      "inherits": "linux-clang-base",
+      "binaryDir": "${sourceDir}/out/build/wsl-clang-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/wsl-clang-asan",
+        "SUGAR_SANITIZER": "address"
+      }
+    },
+    {
+      "name": "linux-tsan",
+      "displayName": "Linux TSan",
+      "inherits": "linux-clang-base",
+      "binaryDir": "${sourceDir}/out/build/wsl-clang-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/wsl-clang-tsan",
+        "SUGAR_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "arm64-linux-debug",
+      "displayName": "ARM64 Linux Debug",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/out/build/arm64-linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-debug"
+      }
+    },
+    {
+      "name": "arm64-linux-release",
+      "displayName": "ARM64 Linux Release",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/out/build/arm64-linux-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-release"
       }
     }
   ],
@@ -67,8 +172,26 @@
       "configurePreset": "windows-debug"
     },
     {
+      "name": "x64-debug",
+      "configurePreset": "x64-debug"
+    },
+    {
       "name": "windows-release",
       "configurePreset": "windows-release"
+    },
+    {
+      "name": "x64-release",
+      "configurePreset": "x64-release"
+    },
+    {
+      "name": "arm64-windows-debug",
+      "configurePreset": "arm64-windows-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "arm64-windows-release",
+      "configurePreset": "arm64-windows-release",
+      "configuration": "RelWithDebInfo"
     },
     {
       "name": "linux-debug",
@@ -77,6 +200,22 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan"
+    },
+    {
+      "name": "linux-tsan",
+      "configurePreset": "linux-tsan"
+    },
+    {
+      "name": "arm64-linux-debug",
+      "configurePreset": "arm64-linux-debug"
+    },
+    {
+      "name": "arm64-linux-release",
+      "configurePreset": "arm64-linux-release"
     }
   ],
   "testPresets": [
@@ -88,8 +227,38 @@
       }
     },
     {
+      "name": "x64-debug",
+      "configurePreset": "x64-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "windows-release",
       "configurePreset": "windows-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-release",
+      "configurePreset": "x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm64-windows-debug",
+      "configurePreset": "arm64-windows-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm64-windows-release",
+      "configurePreset": "arm64-windows-release",
+      "configuration": "RelWithDebInfo",
       "output": {
         "outputOnFailure": true
       }
@@ -104,6 +273,34 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-tsan",
+      "configurePreset": "linux-tsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm64-linux-debug",
+      "configurePreset": "arm64-linux-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm64-linux-release",
+      "configurePreset": "arm64-linux-release",
       "output": {
         "outputOnFailure": true
       }

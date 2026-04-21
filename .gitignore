@@ -1,7 +1,14 @@
 .vs/
 out/
+.sandbox/
+sandbox_build/
+sandbox_asan/
+codex_build/
+codex_asan/
+Testing/
 CMakeBuilds/
 ipch/
+data/ahs2023m.csv
 *.ipch
 *.db
 *.obj

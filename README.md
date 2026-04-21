@@ -1,8 +1,8 @@
 # SugarBot
 
-Last updated: 2026-03-14
+Last updated: 2026-04-19
 
-SugarBot is a C++ strategy experimentation engine for decision-rule research over tabular observations.
+SugarBot is a C++ logical experimentation engine for decision-rule research over tabular observations.
 
 The current engine is built around one DataView-first compiled-program runtime that can carry temporal, spatial, spatiotemporal, and panel-shaped datasets without splitting into separate runtime families.
 
@@ -43,8 +43,8 @@ Current contract highlights:
 Requirements:
 - CMake 3.16+
 - C++20 compiler
-- Windows: MSVC x64
-- Linux/WSL2: GCC or Clang
+- Windows: MSVC x86-64, ARM64 experimental
+- Linux/WSL2: GCC or Clang on x86-64 or ARM64
 
 All shipped presets enable `BUILD_TESTING=ON`.
 
@@ -56,6 +56,14 @@ Run from Visual Studio or a terminal using the Windows Ninja configuration:
 cmake --preset windows-debug
 cmake --build --preset windows-debug
 ```
+
+The preset aliases `x64-debug` and `x64-release` point at the same Windows build trees and are intended to line up more obviously with the Visual Studio folder-mode names `x64-Debug` and `x64-Release`.
+
+Cross-architecture presets are now available for early portability work:
+- `arm64-windows-debug`
+- `arm64-windows-release`
+- `arm64-linux-debug`
+- `arm64-linux-release`
 
 Standard Windows build artifacts are kept under `out/build/x64-debug` or `out/build/x64-release`, with installs under the matching `out/install/...` tree.
 
@@ -72,27 +80,54 @@ cmake --preset linux-release
 cmake --build --preset linux-release
 ```
 
-The configure/build tree for preset builds lives under `out/build/wsl-gcc-debug` or `out/build/wsl-gcc-release`.
+Linux/WSL presets use Ninja. The configure/build tree for preset builds lives under `out/build/wsl-gcc-debug` or `out/build/wsl-gcc-release`.
+
+ARM64 Linux preset builds use `out/build/arm64-linux-debug` or `out/build/arm64-linux-release`.
 
 Visual Studio note:
 - `CMakeSettings.json` is intentionally Windows-local only so the Visual Studio folder workflow does not mix Windows and WSL configurations.
 - WSL remains supported through `CMakePresets.json` and normal CLI/WSL invocations.
 
 By default on Linux/WSL, final runtime artifacts are redirected to:
-`$HOME/devbuild/sugar_Bot/out/Linux/<CONFIG>`
+- x86-64: `$HOME/devbuild/sugar_Bot/out/Linux/<CONFIG>`
+- ARM64: `$HOME/devbuild/sugar_Bot/out/Linux-arm64/<CONFIG>`
 
 Override that location with `SUGAR_OUT_ROOT` if you need a different output root.
+
+### Phase 3 service smoke
+
+The current hosted-service surface is Linux/WSL-first. A real end-to-end Phase 3 loop now exists as:
+
+1. start `sugar_server`
+2. `sugar_client connect`
+3. `sugar_client upload` for layout, logic, and data
+4. `sugar_client validate`
+5. `sugar_client submit`
+6. `sugar_client status`
+7. `sugar_client result`
+8. `sugar_client disconnect`
+
+The transport is a length-prefixed JSON protocol over TCP. The server translates protocol messages into the existing internal service core; it does not call engine code directly from socket handlers.
 
 ## Executables
 
 - `sugarbot`: main CLI and interactive runtime. This is the DataView-first app surface for frame-first ingestion, custom/template runs, panel runs, diagnostics, and contract dispatch.
 - `SB`: generated launcher alias beside `sugarbot` in build and install output.
 - `sugar_contracts`: standalone deterministic contract-suite runner with focused section filtering.
+- `sugar_server`: Linux/WSL TCP server entrypoint over the internal service core.
+- `sugar_client`: Linux/WSL TCP client for connect, catalog listing, upload, validate, submit, status, result, cancel, and disconnect commands against `sugar_server`.
 - `sugar_app_tests`: app-surface wiring suite for CLI/orchestration behavior. This is a build/test target, not an installed end-user binary.
+
+Windows note:
+- `sugar_server` and `sugar_client` still build on MSVC so the repo stays cross-platform, but their socket entrypoints intentionally return a clear Linux/WSL-only message on Windows. The real TCP path is currently validated on WSL/Linux, not on native WinSock.
 
 ## Install For Easy Launch
 
-Use a normal `cmake --install` step from the configured build tree if you want `sugarbot`, `sugar_contracts`, and the `SB` launcher alias under a stable install root such as `out/install/x64-debug/bin` or `out/install/wsl-gcc-release/bin`.
+Use a normal `cmake --install` step from the configured build tree if you want `sugarbot`, `sugar_contracts`, `sugar_server`, `sugar_client`, and the `SB` launcher alias under a stable install root such as `out/install/x64-debug/bin` or `out/install/wsl-gcc-release/bin`.
+
+Supported architecture baseline today:
+- x86-64 on Windows and Linux/WSL
+- ARM64 on Linux, with Windows ARM64 treated as experimental preset support until real host validation is added
 
 For preset builds, that usually means installing the matching preset build directory after configuration and build are complete.
 
@@ -115,27 +150,48 @@ If you want to force the preset-style interpretation without a DataSpec file, us
 ### Frame-first ingestion (recommended)
 
 ```bash
-./sugarbot --data-spec path/to/data_spec.json path/to/data.csv
+./sugarbot --data-spec path/to/layout.json path/to/data.csv
 ```
 
 This is the authoritative ingestion path. `DataSpec` controls parsing, axis roles, optional entity grouping, optional spatial coordinates, header policy, and normalization before everything enters the same DataView runtime.
 
+For the non-interactive `run` / `--obs-report` / `--plan-report` / `--feature-dump` path, `layout.json` may be:
+- a raw `DataSpec` object at the JSON root, or
+- a wrapped `LayoutSpec` object with `ingest`, optional `alignment`, and optional `topologies`.
+
+`{ "data_spec": { ... } }` is not a supported wrapper. Use the raw object directly or wrap it under `ingest`.
+
 For diagnostics before execution, use the same pair of files with `--prep-dump` or `--align-dump`.
+Those shared diagnostic surfaces now also print explicit input warnings plus CSV physical-line, blank-line, and dropped-row counts when available.
 
 ## CLI Modes
 
+- `--help`
+  - Prints the current non-interactive and interactive command surface instead of dropping into the menu flow.
+- `--dump-layout`
+  - Prints the accepted `layout.json` / `DataSpec` contract for non-interactive execution, including supported root shapes, required fields, defaults, valid enum values, and worked examples.
+- `--dump-plan`
+  - Prints the accepted `logic.json` / `PlanSpec` contract for non-interactive execution, including `run.scope`, `exec_settings`, sweep schema, binding rules, and worked examples. `--dump-logic` is accepted as an alias.
+- `run <layout.json> <logic.json> <data.csv>`
+  - Executes the non-interactive `LayoutSpec` + `PlanSpec` pipeline with the same shared observation and plan diagnostics used elsewhere. `layout.json` is usually just a raw `DataSpec` object.
+- `--obs-report <layout.json> <data.csv>`
+  - Builds the observation world and prints shared capability/provenance diagnostics without executing a plan.
+- `--plan-report <layout.json> <logic.json> <data.csv>`
+  - Builds the observation world, resolves the appropriate runtime or facts-only diagnostic path, and prints plan compatibility without executing a full run.
+- `--feature-dump <layout.json> <logic.json> <data.csv>`
+  - Builds the same shared runtime target resolution as `run`, then emits the evaluated numeric-node feature matrix as CSV. This surface is intentionally limited to single-series input or `logic.run.scope=primary_series`; ranked multi-entity runs are rejected explicitly instead of inventing a feature-dump aggregation policy.
 - Default interactive mode: `sugarbot [csv] [--data-spec spec.json] [--format auto|legacy_ohlcv_date|iso_ohlcv_time]`
   - Enters the menu-driven template/custom flow and can reuse shared runtime diagnostics before execution.
-- `--data-spec <data_spec.json> [<csv>]`
-  - Marks the runtime input path as explicit frame-first ingestion for interactive/template/custom execution.
-- `--prep-dump <data_spec.json> <csv>`
-  - Runs preprocess only and prints schema/frame diagnostics plus shared observation-capability output.
-- `--align-dump <data_spec.json> <csv> --series-key-col <col> [--calendar union|intersection]`
-  - Builds aligned multi-series runtime diagnostics and prints shared observation/topology truth before execution.
-- `--run-panel <data_spec.json> <csv> [--primary <col>] [--topk N]`
+- `--data-spec <layout.json> [<csv>]`
+  - Marks the runtime input path as explicit frame-first ingestion for interactive/template/custom execution. This file uses the same raw `DataSpec` schema described by `--dump-layout`.
+- `--prep-dump <layout.json> <csv>`
+  - Runs preprocess only and prints schema/frame diagnostics, explicit input warnings, CSV row-skip counts, and shared observation-capability output.
+- `--align-dump <layout.json> <csv> --series-key-col <col> [--calendar union|intersection]`
+  - Builds aligned multi-series runtime diagnostics and prints shared observation/topology truth plus the same input diagnostics before execution. Treat this as the authoring-time view of what the DAG will actually see: `series_count`, concrete series keys, column coverage, missingness, and time range.
+- `--run-panel <layout.json> <csv> [--primary <col>] [--topk N]`
   - Builds a panel-style runtime package and then runs template or custom PlanSpec flow with the same shared capability reporting used elsewhere.
 - `--dump-ops`
-  - Prints the operator registry and runtime contract metadata, including axis scope, required axes, topology requirements, default topology bindings, and locality-subject binding surface.
+  - Prints the operator registry and runtime contract metadata, including axis scope, required axes, topology requirements, default topology bindings, locality-subject binding surface, and cross-series authoring notes for `ms.*` operators.
 - `--run-contract-suite [--contract-section <key> ...]`
   - Runs the deterministic contract suite from the app binary. Repeating `--contract-section` filters to focused sections such as `runtime_design_loads`, `runtime_overload_rejection`, `metadata_preservation`, `locality_design_loads`, `topology_overload_rejection`, `compile_bridge_design_loads`, or `runtime_gates`.
 
