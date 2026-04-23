@@ -1,9 +1,13 @@
 #include "interactive/app_interactive.h"
 
+#include <filesystem>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
+#include <utility>
 
+#include "commands/app_commands.h"
 #include "reporting/app_reporters.h"
 #include "runtime/app_runtime.h"
 
@@ -12,6 +16,19 @@
 #include "ingest/utils.h"
 
 namespace {
+
+    namespace fs = std::filesystem;
+
+    enum class InteractiveWorkflow {
+        Canceled = 0,
+        RunArtifacts = 1,
+        ObsReport = 2,
+        PlanReport = 3,
+        FeatureDump = 4,
+        AlignDump = 5,
+        StrategyTemplate = 6,
+        CustomPlanSpec = 7,
+    };
 
     void maybe_pause_before_exit(std::istream& in, std::ostream& out) {
 #ifndef _DEBUG
@@ -24,29 +41,53 @@ namespace {
 #endif
     }
 
-    std::string resolve_interactive_csv_path(const sugar::app::InteractiveCommand& cmd,
+    bool is_existing_file_path(const std::string& path) {
+        std::error_code ec;
+        const fs::path p(path);
+        if (!fs::exists(p, ec) || ec) {
+            return false;
+        }
+        ec.clear();
+        return fs::is_regular_file(p, ec) && !ec;
+    }
+
+    void print_missing_file_prompt(std::ostream& out, const std::string& path) {
+        out << "[Info] File not found: " << path
+            << ". Enter an existing file path or q to cancel.\n";
+    }
+
+    bool resolve_interactive_csv_path(const sugar::app::InteractiveCommand& cmd,
         std::istream& in,
-        std::ostream& out)
+        std::ostream& out,
+        std::string& csv_path)
     {
-        std::string csv_path = cmd.csv_path.empty() ?
+        csv_path = cmd.csv_path.empty() ?
             sugar::app::default_csv_path_string() :
             cmd.csv_path;
         csv_path = sugar::normalize_path_for_runtime(std::move(csv_path));
 
-#ifndef _DEBUG
-        out << "CSV file path [default: " << csv_path << "]: \n"
-            << "Enter new path to change default -> ";
-        std::string line;
-        std::getline(in, line);
-        if (!line.empty()) {
-            csv_path = sugar::normalize_path_for_runtime(std::move(line));
-        }
-#else
-        (void)in;
-        (void)out;
-#endif
+        for (;;) {
+            out << "CSV file path [default: " << csv_path << "] (q to cancel): ";
 
-        return csv_path;
+            std::string line;
+            if (!std::getline(in, line)) {
+                return false;
+            }
+            if (sugar::is_cancel_input(line)) {
+                return false;
+            }
+
+            std::string candidate = csv_path;
+            if (!line.empty()) {
+                candidate = sugar::normalize_path_for_runtime(std::move(line));
+            }
+            if (is_existing_file_path(candidate)) {
+                csv_path = std::move(candidate);
+                return true;
+            }
+
+            print_missing_file_prompt(out, candidate);
+        }
     }
 
     void print_interactive_runtime_summary(const sugar::app::InteractiveCommand& cmd,
@@ -80,13 +121,260 @@ namespace {
             &capability_report);
     }
 
+    bool parse_menu_choice(const std::string& line, int min_choice, int max_choice, int& out_choice)
+    {
+        std::istringstream iss(line);
+        int choice = 0;
+        if (!(iss >> choice)) {
+            return false;
+        }
+        std::string trailing;
+        if (iss >> trailing) {
+            return false;
+        }
+        if (choice < min_choice || choice > max_choice) {
+            return false;
+        }
+        out_choice = choice;
+        return true;
+    }
+
+    InteractiveWorkflow prompt_interactive_workflow(std::istream& in, std::ostream& out) {
+        for (;;) {
+            out << "\nChoose interactive workflow:\n";
+            out << "  1) Run layout.json + logic.json + data.csv\n";
+            out << "  2) Observation report\n";
+            out << "  3) Plan report\n";
+            out << "  4) Feature dump\n";
+            out << "  5) Alignment dump\n";
+            out << "  6) Strategy template list\n";
+            out << "  7) Custom User Strategy (PlanSpec JSON)\n";
+            out << "Selection [default: 1, q to quit]: ";
+
+            std::string line;
+            std::getline(in, line);
+            if (sugar::is_cancel_input(line)) {
+                return InteractiveWorkflow::Canceled;
+            }
+            if (line.empty()) {
+                return InteractiveWorkflow::RunArtifacts;
+            }
+
+            int choice = 0;
+            if (parse_menu_choice(line, 1, 7, choice)) {
+                return static_cast<InteractiveWorkflow>(choice);
+            }
+
+            out << "[Info] Invalid selection. Enter 1-7 or q to cancel.\n";
+        }
+    }
+
+    void print_equivalent_cli(std::ostream& out, const std::string& command) {
+        out << "[Info] equivalent CLI: sugarbot " << command << "\n";
+    }
+
+    bool prompt_path(std::istream& in,
+        std::ostream& out,
+        const char* label,
+        const std::string& default_value,
+        std::string& path)
+    {
+        for (;;) {
+            out << label;
+            if (!default_value.empty()) {
+                out << " [default: " << default_value << "]";
+            }
+            out << " (q to cancel): ";
+
+            std::string line;
+            if (!std::getline(in, line)) {
+                return false;
+            }
+            if (sugar::is_cancel_input(line)) {
+                return false;
+            }
+            std::string candidate;
+            if (line.empty()) {
+                if (default_value.empty()) {
+                    out << "[Info] Path is required. Enter a path or q to cancel.\n";
+                    continue;
+                }
+                candidate = sugar::normalize_path_for_runtime(default_value);
+            }
+            else {
+                candidate = sugar::normalize_path_for_runtime(std::move(line));
+            }
+
+            if (!is_existing_file_path(candidate)) {
+                print_missing_file_prompt(out, candidate);
+                continue;
+            }
+
+            path = std::move(candidate);
+            return true;
+        }
+    }
+
+    bool prompt_required_text(std::istream& in,
+        std::ostream& out,
+        const char* label,
+        std::string& value)
+    {
+        for (;;) {
+            out << label << " (q to cancel): ";
+
+            std::string line;
+            if (!std::getline(in, line)) {
+                return false;
+            }
+            if (sugar::is_cancel_input(line)) {
+                return false;
+            }
+            sugar::trim_in_place(line);
+            if (line.empty()) {
+                out << "[Info] Value is required. Enter a value or q to cancel.\n";
+                continue;
+            }
+            value = std::move(line);
+            return true;
+        }
+    }
+
+    int run_interactive_run_command(const sugar::app::InteractiveCommand& interactive,
+        std::istream& in,
+        std::ostream& out,
+        std::ostream& err)
+    {
+        sugar::app::AppCommand run_cmd{};
+        run_cmd.kind = sugar::app::CommandKind::Run;
+
+        if (!prompt_path(in, out, "Layout JSON path", interactive.runtime_data_spec_path, run_cmd.run.layout_path) ||
+            !prompt_path(in, out, "Logic/PlanSpec JSON path", {}, run_cmd.run.logic_path) ||
+            !prompt_path(in, out, "CSV data path", interactive.csv_path, run_cmd.run.csv_path))
+        {
+            out << "[Info] Interactive file run cancelled.\n";
+            return 0;
+        }
+
+        out << "[Info] interactive file run using existing noninteractive pipeline.\n";
+        print_equivalent_cli(out, "run " + run_cmd.run.layout_path + " " + run_cmd.run.logic_path + " " + run_cmd.run.csv_path);
+        return sugar::app::run_unified_cli_command(run_cmd, out, err);
+    }
+
+    int run_interactive_obs_report_command(const sugar::app::InteractiveCommand& interactive,
+        std::istream& in,
+        std::ostream& out,
+        std::ostream& err)
+    {
+        sugar::app::AppCommand report_cmd{};
+        report_cmd.kind = sugar::app::CommandKind::ObsReport;
+
+        if (!prompt_path(in, out, "Layout JSON path", interactive.runtime_data_spec_path, report_cmd.obs_report.layout_path) ||
+            !prompt_path(in, out, "CSV data path", interactive.csv_path, report_cmd.obs_report.csv_path))
+        {
+            out << "[Info] Interactive observation report cancelled.\n";
+            return 0;
+        }
+
+        print_equivalent_cli(out, "--obs-report " + report_cmd.obs_report.layout_path + " " + report_cmd.obs_report.csv_path);
+        return sugar::app::run_obs_report_command(report_cmd, out, err);
+    }
+
+    int run_interactive_plan_report_command(const sugar::app::InteractiveCommand& interactive,
+        std::istream& in,
+        std::ostream& out,
+        std::ostream& err)
+    {
+        sugar::app::AppCommand report_cmd{};
+        report_cmd.kind = sugar::app::CommandKind::PlanReport;
+
+        if (!prompt_path(in, out, "Layout JSON path", interactive.runtime_data_spec_path, report_cmd.plan_report.layout_path) ||
+            !prompt_path(in, out, "Logic/PlanSpec JSON path", {}, report_cmd.plan_report.logic_path) ||
+            !prompt_path(in, out, "CSV data path", interactive.csv_path, report_cmd.plan_report.csv_path))
+        {
+            out << "[Info] Interactive plan report cancelled.\n";
+            return 0;
+        }
+
+        print_equivalent_cli(out, "--plan-report " + report_cmd.plan_report.layout_path + " " +
+            report_cmd.plan_report.logic_path + " " + report_cmd.plan_report.csv_path);
+        return sugar::app::run_plan_report_command(report_cmd, out, err);
+    }
+
+    int run_interactive_feature_dump_command(const sugar::app::InteractiveCommand& interactive,
+        std::istream& in,
+        std::ostream& out,
+        std::ostream& err)
+    {
+        sugar::app::AppCommand dump_cmd{};
+        dump_cmd.kind = sugar::app::CommandKind::FeatureDump;
+
+        if (!prompt_path(in, out, "Layout JSON path", interactive.runtime_data_spec_path, dump_cmd.feature_dump.layout_path) ||
+            !prompt_path(in, out, "Logic/PlanSpec JSON path", {}, dump_cmd.feature_dump.logic_path) ||
+            !prompt_path(in, out, "CSV data path", interactive.csv_path, dump_cmd.feature_dump.csv_path))
+        {
+            out << "[Info] Interactive feature dump cancelled.\n";
+            return 0;
+        }
+
+        print_equivalent_cli(out, "--feature-dump " + dump_cmd.feature_dump.layout_path + " " +
+            dump_cmd.feature_dump.logic_path + " " + dump_cmd.feature_dump.csv_path);
+        return sugar::app::run_feature_dump_command(dump_cmd, out, err);
+    }
+
+    int run_interactive_align_dump_command(const sugar::app::InteractiveCommand& interactive,
+        std::istream& in,
+        std::ostream& out,
+        std::ostream& err)
+    {
+        sugar::app::AppCommand dump_cmd{};
+        dump_cmd.kind = sugar::app::CommandKind::AlignDump;
+        dump_cmd.align_dump.calendar = sugar::align::CalendarPolicy::Intersection;
+
+        if (!prompt_path(in, out, "Layout/DataSpec JSON path", interactive.runtime_data_spec_path, dump_cmd.align_dump.spec_path) ||
+            !prompt_path(in, out, "CSV data path", interactive.csv_path, dump_cmd.align_dump.csv_path) ||
+            !prompt_required_text(in, out, "Series key column", dump_cmd.align_dump.series_key_col))
+        {
+            out << "[Info] Interactive alignment dump cancelled.\n";
+            return 0;
+        }
+
+        print_equivalent_cli(out, "--align-dump " + dump_cmd.align_dump.spec_path + " " +
+            dump_cmd.align_dump.csv_path + " --series-key-col " + dump_cmd.align_dump.series_key_col);
+        return sugar::app::run_align_dump_command(dump_cmd, out, err);
+    }
+
 } // namespace
 
 namespace sugar::app {
 
     int run_interactive_command(const AppCommand& cmd, std::istream& in, std::ostream& out, std::ostream& err) {
-        const sugar::StrategySource strategy_source = sugar::prompt_strategy_source(in, out);
-        if (strategy_source == sugar::StrategySource::CustomPlanSpec) {
+        const InteractiveWorkflow workflow = prompt_interactive_workflow(in, out);
+        if (workflow == InteractiveWorkflow::Canceled) {
+            out << "[Info] Interactive command cancelled.\n";
+            return 0;
+        }
+
+        switch (workflow) {
+        case InteractiveWorkflow::RunArtifacts:
+            return run_interactive_run_command(cmd.interactive, in, out, err);
+        case InteractiveWorkflow::ObsReport:
+            return run_interactive_obs_report_command(cmd.interactive, in, out, err);
+        case InteractiveWorkflow::PlanReport:
+            return run_interactive_plan_report_command(cmd.interactive, in, out, err);
+        case InteractiveWorkflow::FeatureDump:
+            return run_interactive_feature_dump_command(cmd.interactive, in, out, err);
+        case InteractiveWorkflow::AlignDump:
+            return run_interactive_align_dump_command(cmd.interactive, in, out, err);
+        case InteractiveWorkflow::CustomPlanSpec:
+        case InteractiveWorkflow::StrategyTemplate:
+            break;
+        case InteractiveWorkflow::Canceled:
+            out << "[Info] Interactive command cancelled.\n";
+            return 0;
+        }
+
+        if (workflow == InteractiveWorkflow::CustomPlanSpec) {
             sugar::CustomPlanSpecRunOptions custom_opt{};
             sugar::prompt_custom_user_planspec(in, out, custom_opt);
             if (custom_opt.plan_spec_path.empty()) {
@@ -132,7 +420,11 @@ namespace sugar::app {
                 ran = sugar::run_custom_plan_spec(dv, runtime.primary_ref, spec, rt, out);
             }
             else {
-                const std::string csv_path = resolve_interactive_csv_path(cmd.interactive, in, out);
+                std::string csv_path;
+                if (!resolve_interactive_csv_path(cmd.interactive, in, out, csv_path)) {
+                    out << "[Info] Custom strategy cancelled.\n";
+                    return 0;
+                }
 
                 RuntimeSession session{};
                 std::string runtime_err;
@@ -161,6 +453,10 @@ namespace sugar::app {
         }
 
         const sugar::StrategyTemplate templ = sugar::prompt_strategy_template(in, out);
+        if (templ == sugar::StrategyTemplate::Canceled) {
+            out << "[Info] Interactive command cancelled.\n";
+            return 0;
+        }
         sugar::StrategyRunOptions opt{};
         opt.mode = sugar::prompt_trade_mode(in, out, sugar::TradeMode::LongShort);
 
@@ -189,7 +485,11 @@ namespace sugar::app {
             }
         }
 
-        const std::string csv_path = resolve_interactive_csv_path(cmd.interactive, in, out);
+        std::string csv_path;
+        if (!resolve_interactive_csv_path(cmd.interactive, in, out, csv_path)) {
+            out << "[Info] Interactive template execution cancelled.\n";
+            return 0;
+        }
 
         RuntimeSession session{};
         std::string runtime_err;

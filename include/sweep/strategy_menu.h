@@ -15,11 +15,14 @@
 namespace sugar {
 
     enum class StrategySource {
+        Canceled = 0,
         TemplateList = 1,
         CustomPlanSpec = 2,
+        ArtifactRun = 3,
     };
 
     enum class StrategyTemplate {
+        Canceled = 0,
         Donchian_Breakout = 1,
         Gated_Diff_Cross = 2,
         ZScore_MeanReversion = 3,
@@ -43,7 +46,9 @@ namespace sugar {
         ExecSettings exec{};
     };
 
-    StrategySource prompt_strategy_source(std::istream& in, std::ostream& out);
+    StrategySource prompt_strategy_source(std::istream& in,
+        std::ostream& out,
+        bool include_artifact_run = false);
 
     StrategyTemplate prompt_strategy_template(std::istream& in, std::ostream& out);
 

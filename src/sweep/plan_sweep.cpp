@@ -782,6 +782,10 @@ namespace sugar {
                 return false;
             }
 
+            if (best.size() > sw.top_k) {
+                best.resize(sw.top_k);
+            }
+
             out << "\n";
 
             out << "\n=== PlanSpec Sweep Results ===\n";

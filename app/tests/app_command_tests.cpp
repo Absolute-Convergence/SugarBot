@@ -16,8 +16,10 @@ namespace sugar::app::tests {
 
         bool test_dump_ops_dispatch_smoke(TestContext& t) {
             t.out << "[app_dispatch] dump-ops smoke\n";
+            AppCommand cmd{};
+            cmd.kind = CommandKind::DumpOps;
             std::ostringstream out;
-            const int rc = run_dump_ops_command(out);
+            const int rc = run_dump_ops_command(cmd, out);
             const std::string text = out.str();
             t.check(rc == 0, "dump-ops command returns success");
             t.check(text.find("ts.sma") != std::string::npos, "dump-ops output includes ts.sma");
@@ -62,6 +64,60 @@ namespace sugar::app::tests {
                 "dump-ops output includes per-op cross-series authoring notes");
             t.check(text.find("use `ts.sub` instead") != std::string::npos,
                 "dump-ops output suggests ts.sub for same-series subtraction");
+            return t.failed == 0;
+        }
+
+        bool test_dump_ops_module_catalog_example_sections(TestContext& t) {
+            t.out << "[app_dispatch] dump-ops module/catalog/example sections\n";
+
+            AppCommand modules_cmd{};
+            modules_cmd.kind = CommandKind::DumpOps;
+            modules_cmd.dump_ops.section = DumpOpsSection::Modules;
+            std::ostringstream modules_out;
+            const int modules_rc = run_dump_ops_command(modules_cmd, modules_out);
+            const std::string modules_text = modules_out.str();
+            t.check(modules_rc == 0, "dump-ops modules command returns success");
+            t.check(modules_text.find("SugarBot Operator Modules And Rules") != std::string::npos,
+                "dump-ops modules prints module header");
+            t.check(modules_text.find("Node And Evaluation Rules") != std::string::npos,
+                "dump-ops modules prints node evaluation rules");
+            t.check(modules_text.find("core.ref") != std::string::npos,
+                "dump-ops modules explains reference surfaces");
+            t.check(modules_text.find("same-series arithmetic belongs here") != std::string::npos,
+                "dump-ops modules explains ts vs ms arithmetic rule");
+            t.check(modules_text.find("foundational narrow spatial locality") != std::string::npos,
+                "dump-ops modules marks spatial locality as foundational/narrow");
+            t.check(modules_text.find("**ts.sma**") == std::string::npos,
+                "dump-ops modules avoids per-op catalog detail");
+
+            AppCommand ops_cmd{};
+            ops_cmd.kind = CommandKind::DumpOps;
+            ops_cmd.dump_ops.section = DumpOpsSection::Operations;
+            std::ostringstream ops_out;
+            const int ops_rc = run_dump_ops_command(ops_cmd, ops_out);
+            const std::string ops_text = ops_out.str();
+            t.check(ops_rc == 0, "dump-ops ops command returns success");
+            t.check(ops_text.find("SugarBot Operator Catalog") != std::string::npos,
+                "dump-ops ops prints catalog header");
+            t.check(ops_text.find("**ts.sma**") != std::string::npos,
+                "dump-ops ops includes operator detail");
+            t.check(ops_text.find("Example 1:") == std::string::npos,
+                "dump-ops ops avoids working examples");
+
+            AppCommand examples_cmd{};
+            examples_cmd.kind = CommandKind::DumpOps;
+            examples_cmd.dump_ops.section = DumpOpsSection::Examples;
+            std::ostringstream examples_out;
+            const int examples_rc = run_dump_ops_command(examples_cmd, examples_out);
+            const std::string examples_text = examples_out.str();
+            t.check(examples_rc == 0, "dump-ops examples command returns success");
+            t.check(examples_text.find("SugarBot Operator Working Examples") != std::string::npos,
+                "dump-ops examples prints examples header");
+            t.check(examples_text.find("Spatial Radius Mean") != std::string::npos,
+                "dump-ops examples includes spatial example");
+            t.check(examples_text.find("## Module:") == std::string::npos,
+                "dump-ops examples avoids full op catalog");
+
             return t.failed == 0;
         }
 
@@ -325,6 +381,88 @@ namespace sugar::app::tests {
                 "feature-dump output includes the first row");
             t.check(text.find("__single__,__single__,1,20240102,12,11") != std::string::npos,
                 "feature-dump output includes computed feature values");
+            return t.failed == 0;
+        }
+
+        bool test_unified_run_coarse_fine_displays_top_level_topk(TestContext& t) {
+            t.out << "[app_dispatch] coarse-fine sweep top_k display\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "coarse-fine top_k fixture files are created");
+            if (!fixture_ok) return false;
+
+            const auto fixture_dir = app_fixture_dir(fixture_err);
+            t.check(!fixture_dir.empty(), "coarse-fine top_k fixture dir is available");
+            if (fixture_dir.empty()) return false;
+
+            const auto logic_path = fixture_dir / "app_tests_tmp_coarse_fine_topk_logic.json";
+            {
+                std::ofstream logic_out(logic_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(logic_out), "coarse-fine top_k logic file opens");
+                if (!logic_out) return false;
+                logic_out <<
+                    "{\n"
+                    "  \"version\": 1,\n"
+                    "  \"name\": \"app_tests_coarse_fine_topk\",\n"
+                    "  \"trade_mode\": \"LongOnly\",\n"
+                    "  \"params\": { \"threshold\": 0.0 },\n"
+                    "  \"numeric_nodes\": [\n"
+                    "    { \"id\": \"c\", \"op\": \"core.close\" },\n"
+                    "    { \"id\": \"thr\", \"op\": \"core.const\", \"params\": { \"value\": { \"ref\": \"threshold\" } } }\n"
+                    "  ],\n"
+                    "  \"bool_nodes\": [\n"
+                    "    { \"id\": \"entry\", \"op\": \"cmp.gt\", \"args\": [\"c\", \"thr\"] },\n"
+                    "    { \"id\": \"exit\", \"op\": \"cmp.lt\", \"args\": [\"c\", \"thr\"] }\n"
+                    "  ],\n"
+                    "  \"bindings\": {\n"
+                    "    \"entry_long\": \"entry\",\n"
+                    "    \"exit_long\": \"exit\",\n"
+                    "    \"entry_short\": \"\",\n"
+                    "    \"exit_short\": \"\",\n"
+                    "    \"allow_trade\": \"\"\n"
+                    "  },\n"
+                    "  \"sweep\": {\n"
+                    "    \"enabled\": true,\n"
+                    "    \"engine\": \"coarse_fine\",\n"
+                    "    \"top_k\": 2,\n"
+                    "    \"max_evals\": 4,\n"
+                    "    \"params\": {\n"
+                    "      \"threshold\": { \"values\": [0, 5, 10, 12], \"is_int\": true }\n"
+                    "    },\n"
+                    "    \"engine_config\": {\n"
+                    "      \"coarse_fine\": {\n"
+                    "        \"k_stage1\": 4,\n"
+                    "        \"k_stage2\": 4,\n"
+                    "        \"depollute_stage1\": false,\n"
+                    "        \"dedupe_stage2\": true,\n"
+                    "        \"suppression_hops\": 1,\n"
+                    "        \"stage2_hops\": 1\n"
+                    "      }\n"
+                    "    }\n"
+                    "  }\n"
+                    "}\n";
+            }
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Run;
+            cmd.run.layout_path = fixture.layout_path;
+            cmd.run.logic_path = logic_path.string();
+            cmd.run.csv_path = fixture.csv_path;
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_unified_cli_command(cmd, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "coarse-fine run command returns success");
+            t.check(err.str().empty(), "coarse-fine run command produces no error output");
+            t.check(text.find("Engine: coarse_fine") != std::string::npos,
+                "coarse-fine run output reports the selected engine");
+            t.check(text.find("TopK: 2") != std::string::npos,
+                "coarse-fine run output is capped by top-level sweep.top_k");
+            t.check(text.find("TopK: 4") == std::string::npos,
+                "coarse-fine run output does not expose k_stage2 as the final TopK count");
             return t.failed == 0;
         }
 
@@ -790,6 +928,56 @@ namespace sugar::app::tests {
             return t.failed == 0;
         }
 
+        bool test_plan_capability_report_hints_bool_op_node_list(TestContext& t) {
+            t.out << "[app_reporters] bool op in numeric_nodes hint\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "bool-op node-list hint fixture files are created");
+            if (!fixture_ok) return false;
+
+            sugar::LayoutSpec layout{};
+            std::string load_err;
+            const bool layout_ok = sugar::load_layout_spec_file(fixture.layout_path, layout, load_err);
+            t.check(layout_ok, "bool-op node-list hint layout loads");
+            if (!layout_ok) return false;
+
+            sugar::ResolvedObservationWorld world{};
+            const bool world_ok = sugar::build_resolved_observation_world(layout, fixture.csv_path, world, load_err);
+            t.check(world_ok, "bool-op node-list hint observation world builds");
+            if (!world_ok) return false;
+
+            sugar::ResolvedRuntimeInput runtime{};
+            const bool runtime_ok = sugar::bind_resolved_runtime_target(
+                world,
+                layout.ingest.primary_value_col,
+                sugar::RuntimeTargetSpec{},
+                runtime,
+                load_err);
+            t.check(runtime_ok, "bool-op node-list hint runtime binds");
+            if (!runtime_ok) return false;
+
+            sugar::PlanSpec spec{};
+            spec.numeric_nodes = {
+                sugar::NodeSpec{ "c", "core.close", {}, {} },
+                sugar::NodeSpec{ "z", "core.const", {}, { {"value", 0.0} } },
+                sugar::NodeSpec{ "bad", "cmp.gt", { "c", "z" }, {} },
+            };
+            spec.bind = sugar::PlanBindings{};
+
+            std::ostringstream out;
+            sugar::app::print_plan_capability_report(spec, runtime, out);
+            const std::string text = out.str();
+
+            t.check(text.find("operator type mismatch") != std::string::npos,
+                "plan capability report still classifies the node-list type mismatch");
+            t.check(text.find("move this bool operator to `bool_nodes`") != std::string::npos,
+                "plan capability report tells users which node list should contain the bool op");
+            t.check(text.find("core.select") != std::string::npos,
+                "plan capability report points core.select users at the bool-consuming numeric path");
+            return t.failed == 0;
+        }
+
         bool test_layout_parser_rejects_data_spec_wrapper_with_explicit_hint(TestContext& t) {
             t.out << "[layout_spec] unsupported data_spec wrapper hint\n";
             const std::string json =
@@ -825,7 +1013,9 @@ namespace sugar::app::tests {
         tests.push_back(test_plan_report_dispatch_smoke);
         tests.push_back(test_plan_report_reports_multi_entity_missing_scope);
         tests.push_back(test_feature_dump_dispatch_smoke);
+        tests.push_back(test_unified_run_coarse_fine_displays_top_level_topk);
         tests.push_back(test_dump_ops_dispatch_smoke);
+        tests.push_back(test_dump_ops_module_catalog_example_sections);
         tests.push_back(test_prep_dump_dispatch_smoke);
         tests.push_back(test_prep_dump_spatial_output_is_row_domain_honest);
         tests.push_back(test_prep_dump_reports_observation_capabilities);
@@ -837,6 +1027,7 @@ namespace sugar::app::tests {
         tests.push_back(test_plan_capability_report_surfaces_topology_conditions);
         tests.push_back(test_plan_capability_report_surfaces_locality_subject_provenance);
         tests.push_back(test_plan_capability_report_hints_same_series_alternative_for_ms_diff);
+        tests.push_back(test_plan_capability_report_hints_bool_op_node_list);
         tests.push_back(test_layout_parser_rejects_data_spec_wrapper_with_explicit_hint);
     }
 

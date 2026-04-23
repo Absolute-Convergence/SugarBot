@@ -56,46 +56,81 @@ namespace sugar {
 
             return sugar::normalize_path_for_runtime(rel);
         }
+
+        bool parse_numbered_choice(const std::string& line, int min_choice, int max_choice, int& choice) {
+            std::istringstream iss(line);
+            int parsed = 0;
+            if (!(iss >> parsed)) {
+                return false;
+            }
+            std::string trailing;
+            if (iss >> trailing) {
+                return false;
+            }
+            if (parsed < min_choice || parsed > max_choice) {
+                return false;
+            }
+            choice = parsed;
+            return true;
+        }
     } // namespace
 
-    StrategySource prompt_strategy_source(std::istream& in, std::ostream& out) {
-        out << "\nChoose strategy source:\n";
-        out << "  1) Strategy template list\n";
-        out << "  2) Custom User Strategy (PlanSpec JSON)\n";
-        out << "Selection [default: 1]: ";
+    StrategySource prompt_strategy_source(std::istream& in, std::ostream& out, bool include_artifact_run) {
+        const int default_choice = include_artifact_run ? 3 : 1;
+        const int max_choice = include_artifact_run ? 3 : 2;
 
-        std::string line;
-        std::getline(in, line);
+        for (;;) {
+            out << "\nChoose strategy source:\n";
+            out << "  1) Strategy template list\n";
+            out << "  2) Custom User Strategy (PlanSpec JSON)\n";
+            if (include_artifact_run) {
+                out << "  3) Run layout.json + logic.json + data.csv\n";
+            }
+            out << "Selection [default: " << default_choice << ", q to quit]: ";
 
-        int source = 1;
-        if (!line.empty()) {
-            std::istringstream iss(line);
-            iss >> source;
+            std::string line;
+            std::getline(in, line);
+            if (is_cancel_input(line)) {
+                return StrategySource::Canceled;
+            }
+
+            int source = default_choice;
+            if (!line.empty() && !parse_numbered_choice(line, 1, max_choice, source)) {
+                out << "[Info] Invalid selection. Enter 1-" << max_choice << " or q to cancel.\n";
+                continue;
+            }
+            if (source == 2) {
+                return StrategySource::CustomPlanSpec;
+            }
+            if (include_artifact_run && source == 3) {
+                return StrategySource::ArtifactRun;
+            }
+            return StrategySource::TemplateList;
         }
-        if (source == 2 || source == 99) {
-            return StrategySource::CustomPlanSpec;
-        }
-        return StrategySource::TemplateList;
     }
 
     StrategyTemplate prompt_strategy_template(std::istream& in, std::ostream& out) {
-        out << "\nChoose strategy template:\n";
-        out << "  1) Donchian breakout\n";
-        out << "  2) Gated diff cross\n";
-        out << "  3) ZScore mean reversion\n";
-        out << "  4) Swing breakout validation\n";
-        out << "Selection [default: 2]: ";
+        for (;;) {
+            out << "\nChoose strategy template:\n";
+            out << "  1) Donchian breakout\n";
+            out << "  2) Gated diff cross\n";
+            out << "  3) ZScore mean reversion\n";
+            out << "  4) Swing breakout validation\n";
+            out << "Selection [default: 2, q to quit]: ";
 
-        std::string line;
-        std::getline(in, line);
+            std::string line;
+            std::getline(in, line);
+            if (is_cancel_input(line)) {
+                return StrategyTemplate::Canceled;
+            }
 
-        int choice = 2;
-        if (!line.empty()) {
-            std::istringstream iss(line);
-            iss >> choice;
+            int choice = 2;
+            if (!line.empty() && !parse_numbered_choice(line, 1, 4, choice)) {
+                out << "[Info] Invalid selection. Enter 1-4 or q to cancel.\n";
+                continue;
+            }
+            return static_cast<StrategyTemplate>(choice);
         }
-        if (choice < 1 || choice > 4) choice = 2;
-        return static_cast<StrategyTemplate>(choice);
     }
 
     static BarEvalMode prompt_bar_eval_mode(std::istream& in,
@@ -178,6 +213,10 @@ namespace sugar {
         {
             std::string line;
             std::getline(in, line);
+            if (is_cancel_input(line)) {
+                opt.plan_spec_path.clear();
+                return;
+            }
             opt.plan_spec_path = sugar::normalize_path_for_runtime(std::move(line));
         }
 

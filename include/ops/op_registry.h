@@ -91,6 +91,9 @@ namespace sugar {
 
         std::string describe_text(bool include_modules_header = true) const;
         void print_description(std::ostream& os, bool include_modules_header = true) const;
+        void print_modules_summary(std::ostream& os) const;
+        void print_operations_catalog(std::ostream& os) const;
+        void print_working_examples(std::ostream& os) const;
 
     private:
         std::unordered_map<std::string, OpEntry> ops_;

@@ -28,7 +28,8 @@ namespace sugar::app {
         std::ostream& out,
         std::ostream& err);
 
-    int run_dump_ops_command(std::ostream& out);
+    int run_dump_ops_command(const AppCommand& cmd,
+        std::ostream& out);
 
     int run_contract_suite_command(const AppCommand& cmd,
         std::ostream& out,

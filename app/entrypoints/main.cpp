@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
         case sugar::app::CommandKind::DumpPlan:
             return sugar::app::run_dump_plan_command(std::cout);
         case sugar::app::CommandKind::DumpOps:
-            return sugar::app::run_dump_ops_command(std::cout);
+            return sugar::app::run_dump_ops_command(cmd, std::cout);
         case sugar::app::CommandKind::RunContractSuite:
             return sugar::app::run_contract_suite_command(cmd, std::cout, std::cerr);
         case sugar::app::CommandKind::PrepDump:

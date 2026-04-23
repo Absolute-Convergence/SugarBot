@@ -10,6 +10,216 @@ namespace sugar::app::tests {
 
     namespace {
 
+        bool test_interactive_q_cancels_before_default_run(TestContext& t) {
+            t.out << "[app_interactive] q cancels before default run\n";
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in("q\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive q command returns success");
+            t.check(err.str().empty(), "interactive q command produces no error output");
+            t.check(text.find("Interactive command cancelled") != std::string::npos,
+                "interactive q reports cancellation");
+            t.check(text.find("PnL:") == std::string::npos,
+                "interactive q does not fall through into default execution");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_invalid_menu_reprompts_then_cancels(TestContext& t) {
+            t.out << "[app_interactive] invalid menu input reprompts\n";
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in("wat\nq\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive invalid menu cancellation returns success");
+            t.check(err.str().empty(), "interactive invalid menu cancellation produces no error output");
+            t.check(text.find("Invalid selection. Enter 1-7 or q to cancel.") != std::string::npos,
+                "interactive invalid menu input is reported");
+            t.check(text.find("Interactive command cancelled") != std::string::npos,
+                "interactive invalid menu path can still cancel");
+            t.check(text.find("PnL:") == std::string::npos,
+                "interactive invalid menu does not fall through into execution");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_file_run_uses_unified_pipeline(TestContext& t) {
+            t.out << "[app_interactive] file run uses unified pipeline\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "interactive file-run fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in(
+                std::string("\n")
+                + fixture.layout_path + "\n"
+                + fixture.logic_path + "\n"
+                + fixture.csv_path + "\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive file run returns success");
+            t.check(err.str().empty(), "interactive file run produces no error output");
+            t.check(text.find("interactive file run using existing noninteractive pipeline") != std::string::npos,
+                "interactive file run reports shared pipeline");
+            t.check(text.find("equivalent CLI: sugarbot run") != std::string::npos,
+                "interactive file run prints equivalent CLI command");
+            t.check(text.find("noninteractive artifact run active") != std::string::npos,
+                "interactive file run reaches unified run command");
+            t.check(text.find("Plan compatibility") != std::string::npos,
+                "interactive file run emits plan compatibility report");
+            t.check(text.find("PnL:") != std::string::npos,
+                "interactive file run executes the strategy");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_obs_report_delegates_to_command(TestContext& t) {
+            t.out << "[app_interactive] obs-report delegates to command\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "interactive obs-report fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in(
+                std::string("2\n")
+                + fixture.layout_path + "\n"
+                + fixture.csv_path + "\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive obs-report returns success");
+            t.check(err.str().empty(), "interactive obs-report produces no error output");
+            t.check(text.find("equivalent CLI: sugarbot --obs-report") != std::string::npos,
+                "interactive obs-report prints equivalent CLI command");
+            t.check(text.find("[Info] obs-report active.") != std::string::npos,
+                "interactive obs-report reaches obs-report command");
+            t.check(text.find("Observation world provenance") != std::string::npos,
+                "interactive obs-report includes observation-world provenance");
+            t.check(text.find("Plan compatibility") == std::string::npos,
+                "interactive obs-report does not execute plan diagnostics");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_plan_report_delegates_to_command(TestContext& t) {
+            t.out << "[app_interactive] plan-report delegates to command\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "interactive plan-report fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in(
+                std::string("3\n")
+                + fixture.layout_path + "\n"
+                + fixture.logic_path + "\n"
+                + fixture.csv_path + "\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive plan-report returns success");
+            t.check(err.str().empty(), "interactive plan-report produces no error output");
+            t.check(text.find("equivalent CLI: sugarbot --plan-report") != std::string::npos,
+                "interactive plan-report prints equivalent CLI command");
+            t.check(text.find("[Info] plan-report active.") != std::string::npos,
+                "interactive plan-report reaches plan-report command");
+            t.check(text.find("Plan compatibility") != std::string::npos,
+                "interactive plan-report includes plan compatibility");
+            t.check(text.find("PnL:") == std::string::npos,
+                "interactive plan-report does not execute the strategy");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_feature_dump_delegates_to_command(TestContext& t) {
+            t.out << "[app_interactive] feature-dump delegates to command\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_feature_dump_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "interactive feature-dump fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in(
+                std::string("4\n")
+                + fixture.layout_path + "\n"
+                + fixture.logic_path + "\n"
+                + fixture.csv_path + "\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive feature-dump returns success");
+            t.check(err.str().empty(), "interactive feature-dump produces no error output");
+            t.check(text.find("equivalent CLI: sugarbot --feature-dump") != std::string::npos,
+                "interactive feature-dump prints equivalent CLI command");
+            t.check(text.find("series_key,entity_key,row_index,time_key,c,sma2") != std::string::npos,
+                "interactive feature-dump includes feature CSV header");
+            t.check(text.find("__single__,__single__,1,20240102,12,11") != std::string::npos,
+                "interactive feature-dump includes computed feature values");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_align_dump_delegates_to_command(TestContext& t) {
+            t.out << "[app_interactive] align-dump delegates to command\n";
+            std::string spec_path;
+            std::string csv_path;
+            std::string fixture_err;
+            const bool fixture_ok = create_spatial_panel_fixture(spec_path, csv_path, fixture_err, true);
+            t.check(fixture_ok, "interactive align-dump fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in(
+                std::string("5\n")
+                + spec_path + "\n"
+                + csv_path + "\n"
+                + "region\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive align-dump returns success");
+            t.check(err.str().empty(), "interactive align-dump produces no error output");
+            t.check(text.find("equivalent CLI: sugarbot --align-dump") != std::string::npos,
+                "interactive align-dump prints equivalent CLI command");
+            t.check(text.find("Observation capability") != std::string::npos,
+                "interactive align-dump includes observation capability");
+            t.check(text.find("series_count=2") != std::string::npos,
+                "interactive align-dump reports aligned series count");
+            return t.failed == 0;
+        }
+
         bool test_interactive_custom_uses_app_runtime_without_series_inputs(TestContext& t) {
             t.out << "[app_interactive] custom PlanSpec uses app runtime\n";
             PanelFixturePaths fixture{};
@@ -30,10 +240,11 @@ namespace sugar::app::tests {
             cmd.interactive.csv_path = fixture.csv_path;
 
             std::istringstream in(
-                std::string("2\n")
+                std::string("7\n")
                 + plan_path + "\n"
                 + "n\n"
-                + "n\n");
+                + "n\n"
+                + "\n");
             std::ostringstream out;
             std::ostringstream err;
             const int rc = run_interactive_command(cmd, in, out, err);
@@ -55,6 +266,8 @@ namespace sugar::app::tests {
                 "interactive custom command reports spatial-panel conditionality");
             t.check(text.find("custom PlanSpec execution using interactive CSV/DataSpec observations.") != std::string::npos,
                 "interactive custom command executes against app-provided observations");
+            t.check(text.find("CSV file path [default: ") != std::string::npos,
+                "interactive custom command prompts for the CSV data source");
             t.check(text.find("inputs are ignored") == std::string::npos,
                 "interactive custom command no longer claims app inputs are ignored");
             t.check(text.find("series_inputs is required for custom execution") == std::string::npos,
@@ -82,8 +295,9 @@ namespace sugar::app::tests {
             cmd.interactive.csv_path = fixture.csv_path;
 
             std::istringstream in(
-                std::string("2\n")
+                std::string("7\n")
                 + plan_path + "\n"
+                + "n\n"
                 + "n\n"
                 + "n\n"
                 + "\n");
@@ -98,6 +312,63 @@ namespace sugar::app::tests {
                 "interactive custom conflict reports both observation sources");
             t.check(text.find("custom PlanSpec execution using interactive CSV/DataSpec observations.") != std::string::npos,
                 "interactive custom conflict defaults to app-provided observations");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_file_run_reprompts_missing_path(TestContext& t) {
+            t.out << "[app_interactive] file run reprompts missing paths\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "interactive bad-path fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            const std::string missing_layout = fixture.layout_path + ".missing";
+            std::istringstream in(
+                std::string("\n")
+                + missing_layout + "\n"
+                + fixture.layout_path + "\n"
+                + fixture.logic_path + "\n"
+                + fixture.csv_path + "\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive file run succeeds after reprompting missing path");
+            t.check(err.str().empty(), "interactive file run reprompt produces no error output");
+            t.check(text.find("File not found: " + missing_layout) != std::string::npos,
+                "interactive file run reports the missing path at prompt time");
+            t.check(text.find("equivalent CLI: sugarbot run") != std::string::npos,
+                "interactive file run still delegates after a corrected path");
+            t.check(text.find("PnL:") != std::string::npos,
+                "interactive file run executes after path correction");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_template_prompts_for_csv_source(TestContext& t) {
+            t.out << "[app_interactive] template prompts for CSV source\n";
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+
+            std::istringstream in("6\n1\n1\nn\nq\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive template CSV cancellation returns success");
+            t.check(err.str().empty(), "interactive template CSV cancellation produces no error output");
+            t.check(text.find("CSV file path [default: ") != std::string::npos,
+                "interactive template path exposes the active CSV data source");
+            t.check(text.find("Interactive template execution cancelled.") != std::string::npos,
+                "interactive template path can cancel at the CSV prompt");
+            t.check(text.find("data\\BTCUSD_420.csv") == std::string::npos ||
+                    text.find("CSV file path [default: data\\BTCUSD_420.csv]") != std::string::npos,
+                "interactive template default data source is visible when used");
             return t.failed == 0;
         }
 
@@ -231,8 +502,17 @@ namespace sugar::app::tests {
     } // namespace
 
     void register_interactive_tests(AppTestRegistry& tests) {
+        tests.push_back(test_interactive_q_cancels_before_default_run);
+        tests.push_back(test_interactive_invalid_menu_reprompts_then_cancels);
+        tests.push_back(test_interactive_file_run_uses_unified_pipeline);
+        tests.push_back(test_interactive_obs_report_delegates_to_command);
+        tests.push_back(test_interactive_plan_report_delegates_to_command);
+        tests.push_back(test_interactive_feature_dump_delegates_to_command);
+        tests.push_back(test_interactive_align_dump_delegates_to_command);
         tests.push_back(test_interactive_custom_uses_app_runtime_without_series_inputs);
         tests.push_back(test_interactive_custom_conflict_defaults_to_app_runtime);
+        tests.push_back(test_interactive_file_run_reprompts_missing_path);
+        tests.push_back(test_interactive_template_prompts_for_csv_source);
         tests.push_back(test_panel_custom_uses_app_runtime_without_series_inputs);
         tests.push_back(test_panel_template_reports_plan_compatibility);
         tests.push_back(test_panel_custom_reports_missing_runtime_ref_before_execution);

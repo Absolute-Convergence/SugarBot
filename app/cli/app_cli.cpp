@@ -100,6 +100,35 @@ namespace {
         return false;
     }
 
+    int find_dump_ops_flag_index(int argc, char** argv) {
+        const int dash = find_flag_index(argc, argv, "--dump-ops");
+        if (dash >= 0) return dash;
+        const int underscore = find_flag_index(argc, argv, "--dump_ops");
+        if (underscore >= 0) return underscore;
+        return find_flag_index(argc, argv, "--dumpops");
+    }
+
+    bool parse_dump_ops_section(std::string_view s, sugar::app::DumpOpsSection& out) {
+        const std::string x = lower_copy(std::string(s));
+        if (x == "full" || x == "all") {
+            out = sugar::app::DumpOpsSection::Full;
+            return true;
+        }
+        if (x == "modules" || x == "module") {
+            out = sugar::app::DumpOpsSection::Modules;
+            return true;
+        }
+        if (x == "ops" || x == "operations" || x == "catalog") {
+            out = sugar::app::DumpOpsSection::Operations;
+            return true;
+        }
+        if (x == "examples" || x == "example") {
+            out = sugar::app::DumpOpsSection::Examples;
+            return true;
+        }
+        return false;
+    }
+
 } // namespace
 
 namespace sugar::app {
@@ -166,11 +195,15 @@ namespace sugar::app {
             return true;
         }
 
-        if (has_flag(argc, argv, "--dump-ops") ||
-            has_flag(argc, argv, "--dump_ops") ||
-            has_flag(argc, argv, "--dumpops"))
-        {
+        const int dump_ops_i = find_dump_ops_flag_index(argc, argv);
+        if (dump_ops_i >= 0) {
             out.kind = CommandKind::DumpOps;
+            if (dump_ops_i + 1 < argc && !std::string_view(argv[dump_ops_i + 1]).starts_with("--")) {
+                if (!parse_dump_ops_section(argv[dump_ops_i + 1], out.dump_ops.section)) {
+                    err = "--dump-ops mode must be one of full | modules | ops | examples";
+                    return false;
+                }
+            }
             return true;
         }
 

@@ -67,6 +67,9 @@ namespace sugar {
     // Example: "C:\\X\\Y.csv" -> C:\X\Y.csv
     std::string strip_wrapping_quotes(std::string s);
 
+    // True for interactive abort tokens such as q/quit/cancel/exit.
+    bool is_cancel_input(std::string_view s);
+
     // Convert Windows path (C:\\Dev\\X or C:/Dev/X) to WSL path (/mnt/c/Dev/X)
     // when running on Linux. On Windows builds, returns the input unchanged.
     // Always strips wrapping quotes and trims.
@@ -96,6 +99,7 @@ namespace sugar {
 
     // Yes/no prompt.
     // - If the user hits Enter: returns !default_no.
+    // - If the user enters q/quit/cancel/exit: returns false.
     // - Accepts y/Y or n/N as first character; otherwise returns !default_no.
     bool prompt_yes_no(std::istream& in,
         std::ostream& out,

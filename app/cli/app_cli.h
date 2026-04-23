@@ -67,6 +67,17 @@ namespace sugar::app {
         std::string csv_path{};
     };
 
+    enum class DumpOpsSection {
+        Full,
+        Modules,
+        Operations,
+        Examples,
+    };
+
+    struct DumpOpsCommand {
+        DumpOpsSection section{ DumpOpsSection::Full };
+    };
+
     struct InteractiveCommand {
         bool has_runtime_data_spec{ false };
         std::string runtime_data_spec_path{};
@@ -81,6 +92,7 @@ namespace sugar::app {
         ObsReportCommand obs_report{};
         PlanReportCommand plan_report{};
         FeatureDumpCommand feature_dump{};
+        DumpOpsCommand dump_ops{};
         PrepDumpCommand prep_dump{};
         AlignDumpCommand align_dump{};
         RunPanelCommand run_panel{};

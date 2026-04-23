@@ -286,12 +286,21 @@ namespace sugar {
         return in;
     }
 
+    bool is_cancel_input(std::string_view s) {
+        std::string line(s);
+        trim_in_place(line);
+        std::transform(line.begin(), line.end(), line.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return line == "q" || line == "quit" || line == "cancel" || line == "exit";
+    }
+
     bool prompt_yes_no(std::istream& in, std::ostream& out, std::string_view question, bool default_no) {
         out << question << (default_no ? " [y/N]: " : " [Y/n]: ");
         out.flush();
 
         std::string line;
         std::getline(in, line);
+        if (is_cancel_input(line)) return false;
         if (line.empty()) return !default_no;
 
         char c = static_cast<char>(std::tolower(static_cast<unsigned char>(line[0])));

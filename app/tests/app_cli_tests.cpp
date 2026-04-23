@@ -134,6 +134,26 @@ namespace sugar::app::tests {
             t.check(ok, "parse_app_command accepts --dump_ops alias");
             t.check(err.empty(), "dump-ops alias parse has no error");
             t.check(cmd.kind == CommandKind::DumpOps, "dump-ops alias resolves to DumpOps command");
+            t.check(cmd.dump_ops.section == DumpOpsSection::Full,
+                "dump-ops alias defaults to full section");
+            return t.failed == 0;
+        }
+
+        bool test_parse_dump_ops_section(TestContext& t) {
+            t.out << "[app_cli] dump-ops section parsing\n";
+            char arg0[] = "prog";
+            char arg1[] = "--dump-ops";
+            char arg2[] = "ops";
+            char* argv[] = { arg0, arg1, arg2 };
+
+            AppCommand cmd{};
+            std::string err;
+            const bool ok = parse_app_command(3, argv, cmd, err);
+            t.check(ok, "parse_app_command accepts --dump-ops ops");
+            t.check(err.empty(), "dump-ops section parse has no error");
+            t.check(cmd.kind == CommandKind::DumpOps, "dump-ops section resolves to DumpOps command");
+            t.check(cmd.dump_ops.section == DumpOpsSection::Operations,
+                "dump-ops ops resolves to operations section");
             return t.failed == 0;
         }
 
@@ -255,6 +275,7 @@ namespace sugar::app::tests {
         tests.push_back(test_parse_dump_layout_command);
         tests.push_back(test_parse_dump_plan_aliases);
         tests.push_back(test_parse_dump_ops_alias);
+        tests.push_back(test_parse_dump_ops_section);
         tests.push_back(test_parse_unified_run_command);
         tests.push_back(test_parse_contract_sections);
         tests.push_back(test_parse_align_dump_requires_series_key);

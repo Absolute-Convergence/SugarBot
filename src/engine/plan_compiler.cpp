@@ -145,7 +145,8 @@ namespace sugar {
                 return false;
             }
             if (op->spec.op_type != OpType::Numeric) {
-                err = "Op '" + node.op + "' is not a numeric op";
+                err = "Op '" + node.op + "' is not a numeric op; move bool operators to bool_nodes. "
+                    "Numeric nodes can consume bool nodes only through numeric ops that declare bool inputs, such as core.select.";
                 return false;
             }
             if (!compiled_program_supports_numeric_op(node.op)) {
@@ -208,7 +209,7 @@ namespace sugar {
                 return false;
             }
             if (op->spec.op_type != OpType::Bool) {
-                err = "Op '" + node.op + "' is not a bool op";
+                err = "Op '" + node.op + "' is not a bool op; move numeric operators to numeric_nodes.";
                 return false;
             }
             if (!compiled_program_supports_bool_op(node.op)) {

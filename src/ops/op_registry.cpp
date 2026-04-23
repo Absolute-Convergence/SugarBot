@@ -186,6 +186,66 @@ namespace sugar {
             }
             os << "\n";
         }
+
+        std::vector<const OpEntry*> ordered_entries(const std::unordered_map<std::string, OpEntry>& ops) {
+            std::vector<const OpEntry*> ordered;
+            ordered.reserve(ops.size());
+            for (const auto& kv : ops) ordered.push_back(&kv.second);
+
+            std::sort(ordered.begin(), ordered.end(),
+                [](const OpEntry* a, const OpEntry* b) {
+                    if (a->spec.module != b->spec.module) return a->spec.module < b->spec.module;
+                    return a->spec.name < b->spec.name;
+                });
+            return ordered;
+        }
+
+        const char* module_purpose(std::string_view module) {
+            if (module == "core") return "row-wise constants, references, selection, and basic data-flow";
+            if (module == "cmp") return "numeric comparisons and crossover predicates";
+            if (module == "logic") return "boolean composition";
+            if (module == "ts") return "single-series temporal/local rolling and indicator operations";
+            if (module == "ms") return "cross-series operations; requires multiple aligned series/entity lanes";
+            if (module == "spatial") return "foundational narrow spatial locality over built-in 2D metric topology";
+            if (module == "st") return "foundational narrow spatiotemporal locality over built-in composite topology";
+            return "registered operator module";
+        }
+
+        const char* module_rules(std::string_view module) {
+            if (module == "core") {
+                return "rules: row-wise ops do not require time/spatial axes; `core.close` reads the bound primary series/column; `core.ref`/`core.col` are compiler-adapted refs; `core.select` is data-flow selection, not control flow";
+            }
+            if (module == "cmp") {
+                return "rules: comparison ops produce bool nodes from numeric args; crossover predicates are temporal/local and should be used after the referenced numeric nodes exist";
+            }
+            if (module == "logic") {
+                return "rules: logic ops consume bool nodes only; use explicit intermediate nodes for unary/binary composition instead of inline expressions";
+            }
+            if (module == "ts") {
+                return "rules: time-series ops work on one aligned vector lane at a time; rolling/window ops carry warmup; same-series arithmetic belongs here (`ts.sub`, `ts.div`) rather than in `ms.*`";
+            }
+            if (module == "ms") {
+                return "rules: multi-series ops need multiple aligned series/entity lanes; inspect keys with `--align-dump`; do not use `ms.*` for same-series column arithmetic";
+            }
+            if (module == "spatial") {
+                return "rules: spatial locality requires spatial_x/spatial_y layout axes and the built-in spatial metric topology; `subject_series` may redirect the locality subject when the runtime has multiple series";
+            }
+            if (module == "st") {
+                return "rules: spatiotemporal locality requires both time and spatial axes plus the built-in composite topology; support is intentionally narrow in this build";
+            }
+            return "rules: follow each operator signature, params, axis scope, and topology metadata in `--dump-ops ops`";
+        }
+
+        void print_node_evaluation_rules(std::ostream& os) {
+            os << "## Node And Evaluation Rules\n\n";
+            os << "- PlanSpec is a DAG: nodes have stable `id` values, ops are registry names or documented aliases, and `args` are node ids.\n";
+            os << "- `numeric_nodes` produce numeric vectors; `bool_nodes` produce boolean vectors. The compiler preserves dependency order across numeric and bool nodes when a numeric node depends on a bool node, such as `core.select`.\n";
+            os << "- Node args are references to existing nodes, not inline expressions. Build intermediate nodes for `logic.not`, `logic.and`, nested comparisons, and multi-step formulas.\n";
+            os << "- `core.ref`/`core.col` and `ms.col` are reference surfaces. They resolve runtime columns before compile and are adapted into precomputed leaf nodes for evaluation.\n";
+            os << "- Axis and topology requirements are per operator. Row-wise ops can run without a time axis; temporal, cross-series, spatial, and spatiotemporal ops require the matching runtime shape.\n";
+            os << "- Warmup is per operator and propagates through dependencies. Rolling/window nodes may be unavailable at early rows until their inputs have enough history.\n";
+            os << "- Strategy execution consumes the bound bool signal surface (`entry_long`, `exit_long`, `entry_short`, `exit_short`, `allow_trade`) after numeric and bool node evaluation.\n\n";
+        }
     }
 
     bool OperatorRegistry::has(const std::string& op_name) const {
@@ -237,17 +297,114 @@ namespace sugar {
         return oss.str();
     }
 
-    void OperatorRegistry::print_description(std::ostream& os, bool include_modules_header) const {
-        // deterministic order
-        std::vector<const OpEntry*> ordered;
-        ordered.reserve(ops_.size());
-        for (const auto& kv : ops_) ordered.push_back(&kv.second);
+    void OperatorRegistry::print_modules_summary(std::ostream& os) const {
+        os << "# SugarBot Operator Modules And Rules\n\n";
+        os << "Use `--dump-ops ops` for the compact operator catalog, `--dump-ops examples` for working examples, or bare `--dump-ops` for the legacy full dump.\n\n";
+        os << "Spatial/locality support is foundational and intentionally narrow in this build: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n\n";
+        print_node_evaluation_rules(os);
 
-        std::sort(ordered.begin(), ordered.end(),
-            [](const OpEntry* a, const OpEntry* b) {
-                if (a->spec.module != b->spec.module) return a->spec.module < b->spec.module;
-                return a->spec.name < b->spec.name;
-            });
+        const auto ordered = ordered_entries(ops_);
+        os << "## Module Rules\n\n";
+        for (const auto& module : list_modules()) {
+            std::size_t count = 0;
+            std::vector<std::string> scopes;
+            for (const auto* e : ordered) {
+                if (e->spec.module != module) continue;
+                ++count;
+                const std::string scope = scope_text(e->spec.axis_scope);
+                if (std::find(scopes.begin(), scopes.end(), scope) == scopes.end()) {
+                    scopes.push_back(scope);
+                }
+            }
+
+            os << "- `" << module << "`: " << module_purpose(module) << "\n";
+            os << "  " << module_rules(module) << "\n";
+            os << "  ops: " << count << "\n";
+            os << "  axis_scopes: ";
+            for (std::size_t i = 0; i < scopes.size(); ++i) {
+                if (i) os << ", ";
+                os << "`" << scopes[i] << "`";
+            }
+            if (scopes.empty()) os << "`(none)`";
+            os << "\n";
+        }
+    }
+
+    void OperatorRegistry::print_operations_catalog(std::ostream& os) const {
+        os << "# SugarBot Operator Catalog\n\n";
+        os << "Operator metadata only. Use `--dump-ops modules` for module rules and node evaluation guidance, or `--dump-ops examples` for working PlanSpec examples.\n\n";
+        const auto ordered = ordered_entries(ops_);
+        std::string current_module;
+        for (const auto* e : ordered) {
+            if (e->spec.module != current_module) {
+                current_module = e->spec.module;
+                os << "## Module: `" << current_module << "`\n\n";
+            }
+            emit_one_op(os, *e);
+            os << "\n";
+        }
+    }
+
+    void OperatorRegistry::print_working_examples(std::ostream& os) const {
+        os << "# SugarBot Operator Working Examples\n\n";
+        os << "These examples are intentionally smaller than the legacy full dump. Use `--dump-plan` for the complete PlanSpec contract and `--dump-ops ops` for signatures.\n\n";
+        os << "## Temporal SMA Cross\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Interactive-Friendly SMA Cross",
+  "trade_mode": "LongShort",
+  "params": { "fast": 10, "slow": 40 },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "f", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "fast" } } },
+    { "id": "s", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "slow" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.cross_up", "args": ["f", "s"] },
+    { "id": "exitL", "op": "cmp.cross_down", "args": ["f", "s"] },
+    { "id": "entryS", "op": "cmp.cross_down", "args": ["f", "s"] },
+    { "id": "exitS", "op": "cmp.cross_up", "args": ["f", "s"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "exitL",
+    "entry_short": "entryS",
+    "exit_short": "exitS",
+    "allow_trade": ""
+  }
+}
+)JSON";
+        os << "\n";
+        os << "## Spatial Radius Mean (Foundational/Narrow)\n";
+        os << "Requires a layout with `spatial_x_col` and `spatial_y_col`. For row-wise spatial neighborhoods, omit `entity_col`; use entity grouping only when you intentionally want panel-shaped data.\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Spatial Radius Mean Gate",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "local_mean", "op": "spatial.radius_mean", "args": ["c"], "params": { "radius": 2.5 } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gt", "args": ["local_mean", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}
+)JSON";
+        os << "\n";
+    }
+
+    void OperatorRegistry::print_description(std::ostream& os, bool include_modules_header) const {
+        const auto ordered = ordered_entries(ops_);
 
         if (include_modules_header) {
             auto mods = list_modules();
@@ -266,7 +423,7 @@ namespace sugar {
             os << "### Runtime Profiles (important)\n";
             os << "- `--dump-layout` documents the accepted noninteractive `layout.json` / `DataSpec` shapes, defaults, and examples.\n";
             os << "- `--dump-plan` documents the accepted `logic.json` / `PlanSpec` root fields, `run`, `sweep`, `exec_settings`, and worked examples.\n";
-            os << "- `--dump-ops` lists full registered operator catalog by module (`core`, `ts`, `ms`, `cmp`, `logic`, `spatial`, `st`).\n";
+            os << "- `--dump-ops` lists the legacy full operator contract; use `--dump-ops modules`, `--dump-ops ops`, or `--dump-ops examples` for smaller module, catalog, and example slices.\n";
             os << "- `--align-dump <layout.json> <csv> --series-key-col <col>` shows the aligned `series_count`, concrete series keys, column coverage, and missingness before you author cross-series or ranked plans.\n";
             os << "- Custom PlanSpec runtime is DataView-first and frame-first.\n";
             os << "- Canonical custom execution consumes caller-supplied `DataView` observations.\n";
@@ -274,6 +431,7 @@ namespace sugar {
             os << "- When legacy embedded observation inputs are used, they resolve observations through preprocess + time-intersection alignment before runtime.\n";
             os << "- Custom execution is compile-bridge only (`compile_plan` + registry); legacy evaluator fallback is disabled.\n";
             os << "- Row-wise ops may have no required axes; temporal/spatial locality and topology requirements are explicit per op in this registry.\n";
+            os << "- Spatial/locality support is foundational and intentionally narrow today: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n";
             os << "- Locality ops may declare default built-in topology names now; future named topology bindings will surface through the same contract fields.\n";
             os << "- In app runtime ingestion, explicit `--data-spec` is authoritative; without it, ingestion may use `--format` or CSV-header auto-detect, and DataSpec `input_profile` can carry equivalent preset intent.\n";
             os << "- PlanSpec operator support in runtime follows this registry dump; unsupported/unknown ops fail compile explicitly.\n";
@@ -361,10 +519,11 @@ namespace sugar {
             os << "- `sweep.params` (object): map `paramName -> range`\n";
             os << "- `sweep.engine_config` (object, optional)\n";
             os << "  - `coarse_fine`:\n";
-            os << "    - `k_stage1`, `k_stage2` (int > 0)\n";
+            os << "    - `k_stage1` (stage-1 seed count), `k_stage2` (stage-2 candidate breadth, not final output count)\n";
             os << "    - `depollute_stage1`, `dedupe_stage2` (bool)\n";
             os << "    - `suppression_hops`, `stage2_hops` (int > 0)\n";
             os << "    - `stage1_stride` (int >= 0)\n";
+            os << "    - final displayed rows are capped by top-level `sweep.top_k`\n";
             os << "  - `monte_carlo`:\n";
             os << "    - `draws` (int > 0)\n";
             os << "    - `seed` (int >= 0)\n";

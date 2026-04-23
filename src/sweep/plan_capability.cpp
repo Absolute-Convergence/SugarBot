@@ -5,6 +5,7 @@
 #include <exception>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "ops/plan_spec_runtime_alias.h"
@@ -659,12 +660,21 @@ namespace sugar {
 
             if ((kind == PlanNodeKind::Numeric && op->spec.op_type != OpType::Numeric) ||
                 (kind == PlanNodeKind::Bool && op->spec.op_type != OpType::Bool)) {
+                const std::string target_list =
+                    (op->spec.op_type == OpType::Bool) ? "bool_nodes" : "numeric_nodes";
+                std::string hint = std::string("op '") + out.op_name + "' is not valid for " +
+                    std::string(kind == PlanNodeKind::Numeric ? "numeric" : "bool") +
+                    " nodes; move this " +
+                    std::string(op->spec.op_type == OpType::Bool ? "bool" : "numeric") +
+                    " operator to `" + target_list + "`";
+                if (op->spec.op_type == OpType::Bool && kind == PlanNodeKind::Numeric) {
+                    hint += "; numeric nodes can consume bool nodes only through numeric ops that declare bool inputs, such as `core.select`";
+                }
                 add_reason(out.reasons,
                     PlanCapabilityReasonCode::OperatorTypeMismatch,
                     AxisKind::Time,
                     false,
-                    std::string("op '") + out.op_name + "' is not valid for " +
-                        std::string(kind == PlanNodeKind::Numeric ? "numeric" : "bool") + " nodes");
+                    std::move(hint));
             }
 
             for (const auto axis : out.required_axes) {

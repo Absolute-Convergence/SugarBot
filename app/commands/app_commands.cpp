@@ -204,7 +204,7 @@ namespace {
             << "  - If `input_profile` is `auto` and `time_col` is present, `time_kind` is required.\n"
             << "  - If `time_col` is omitted, `time_kind` must also be omitted.\n"
             << "  - `columns_by_index` is required when `header_policy=HeaderlessPositional`.\n"
-            << "  - `entity_col` is optional, but it is the normal way to declare multi-entity or panel inputs.\n"
+            << "  - `entity_col` is optional, but it declares multi-entity or panel inputs; omit it for row-wise spatial neighborhoods.\n"
             << "  - `rename` is optional and is used to normalize incoming CSV header names.\n"
             << "  - `missing_tokens` is optional. Blank cells are still treated as missing even if this list is empty.\n"
             << "\n"
@@ -266,14 +266,14 @@ namespace {
             << "  \"alignment_non_temporal_multi_series\": \"Reject\"\n"
             << "}\n"
             << "\n"
-            << "Example: raw spatial-only `layout.json`\n"
+            << "Example: raw row-wise spatial-only `layout.json`\n"
             << "{\n"
             << "  \"spatial_x_col\": \"x\",\n"
             << "  \"spatial_y_col\": \"y\",\n"
-            << "  \"entity_col\": \"region\",\n"
             << "  \"value_cols\": [\"price_index\"],\n"
             << "  \"primary_value_col\": \"price_index\"\n"
             << "}\n"
+            << "Note: spatial/locality support is foundational and narrow. Add `entity_col` only when you intentionally want panel-shaped spatial data; non-temporal multi-series alignment then needs `alignment_non_temporal_multi_series=EqualLengthRowDomain`.\n"
             << "\n"
             << "Example: wrapped `LayoutSpec` with `ingest`\n"
             << "{\n"
@@ -424,12 +424,13 @@ namespace {
             << "    - stepped range: `{ \"min\": 5, \"max\": 50, \"step\": 5, \"is_int\": true }`\n"
             << "  - `sweep.engine_config.coarse_fine` fields:\n"
             << "    - `k_stage1` (default `25`)\n"
-            << "    - `k_stage2` (default `50`)\n"
+            << "    - `k_stage2` (default `50`; internal stage-2 candidate breadth, not final output count)\n"
             << "    - `depollute_stage1` (default `true`)\n"
             << "    - `dedupe_stage2` (default `true`)\n"
             << "    - `suppression_hops` (default `1`)\n"
             << "    - `stage2_hops` (default `1`)\n"
             << "    - `stage1_stride` (default `0`)\n"
+            << "    - final displayed sweep rows are still capped by top-level `sweep.top_k`\n"
             << "  - `sweep.engine_config.monte_carlo` fields:\n"
             << "    - `draws` (default `10000`)\n"
             << "    - `seed` (default `0`, which means non-deterministic random_device seeding)\n"
@@ -507,7 +508,7 @@ namespace sugar::app {
             << "  sugarbot --help\n"
             << "  sugarbot --dump-layout\n"
             << "  sugarbot --dump-plan\n"
-            << "  sugarbot --dump-ops\n"
+            << "  sugarbot --dump-ops [full|modules|ops|examples]\n"
             << "  sugarbot run <layout.json> <logic.json> <data.csv>\n"
             << "  sugarbot --obs-report <layout.json> <data.csv>\n"
             << "  sugarbot --plan-report <layout.json> <logic.json> <data.csv>\n"
@@ -523,7 +524,7 @@ namespace sugar::app {
             << "  2. `sugarbot --obs-report layout.json data.csv` validates ingestion before strategy work.\n"
             << "  3. `sugarbot --align-dump layout.json data.csv --series-key-col <col>` shows the aligned series/entity shape before you author `ms.*` or ranked plans.\n"
             << "  4. `sugarbot --dump-plan` documents `logic.json` (`PlanSpec`) root fields, `run`, `sweep`, `exec_settings`, and worked examples.\n"
-            << "  5. `sugarbot --dump-ops` prints the operator capability contract for this build.\n"
+            << "  5. `sugarbot --dump-ops modules` explains module rules and node evaluation; `--dump-ops ops` prints signatures; `--dump-ops examples` prints compact working examples.\n"
             << "  6. `sugarbot --plan-report layout.json logic.json data.csv` validates the strategy without running it.\n"
             << "  7. `sugarbot run layout.json logic.json data.csv` executes the noninteractive path.\n"
             << "\n";
@@ -540,7 +541,8 @@ namespace sugar::app {
             << "  - No mode flag enters interactive mode.\n"
             << "  - `run` executes the noninteractive LayoutSpec + PlanSpec path.\n"
             << "  - `--obs-report` and `--plan-report` validate/report without executing a full run.\n"
-            << "  - `--feature-dump` emits the evaluated numeric-node feature matrix as CSV.\n";
+            << "  - `--feature-dump` emits the evaluated numeric-node feature matrix as CSV.\n"
+            << "  - Spatial/locality support is foundational and intentionally narrow: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n";
         return 0;
     }
 
@@ -1007,9 +1009,23 @@ namespace sugar::app {
         return pres.entities_ok > 0 ? 0 : 1;
     }
 
-    int run_dump_ops_command(std::ostream& out) {
+    int run_dump_ops_command(const AppCommand& cmd, std::ostream& out) {
         const auto reg = sugar::make_default_registry();
-        out << reg.describe_text(true);
+        switch (cmd.dump_ops.section) {
+        case DumpOpsSection::Modules:
+            reg.print_modules_summary(out);
+            break;
+        case DumpOpsSection::Operations:
+            reg.print_operations_catalog(out);
+            break;
+        case DumpOpsSection::Examples:
+            reg.print_working_examples(out);
+            break;
+        case DumpOpsSection::Full:
+        default:
+            out << reg.describe_text(true);
+            break;
+        }
         return 0;
     }
 
@@ -1170,6 +1186,10 @@ namespace sugar::app {
 
     int run_panel_command(const AppCommand& cmd, std::istream& in, std::ostream& out, std::ostream& err) {
         const sugar::StrategySource source = sugar::prompt_strategy_source(in, out);
+        if (source == sugar::StrategySource::Canceled) {
+            out << "[Info] Panel command cancelled.\n";
+            return 0;
+        }
         if (source == sugar::StrategySource::CustomPlanSpec) {
             sugar::CustomPlanSpecRunOptions custom_opt{};
             sugar::prompt_custom_user_planspec(in, out, custom_opt);
@@ -1251,6 +1271,10 @@ namespace sugar::app {
         }
 
         const sugar::StrategyTemplate templ = sugar::prompt_strategy_template(in, out);
+        if (templ == sugar::StrategyTemplate::Canceled) {
+            out << "[Info] Panel command cancelled.\n";
+            return 0;
+        }
         const sugar::TradeMode mode = sugar::prompt_trade_mode(in, out, sugar::TradeMode::LongShort);
 
         sugar::PlanSpec spec{};
