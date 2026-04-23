@@ -370,6 +370,7 @@ if (BUILD_TESTING)
   add_test(NAME sugar_contract_multi_entity_runner_overload_rejection COMMAND sugar_contracts --contract-section multi_entity_runner_overload_rejection)
   add_test(NAME sugar_contract_assertion_hygiene COMMAND sugar_contracts --contract-section assertion_hygiene)
   add_test(NAME sugar_contract_service_core COMMAND sugar_contracts --contract-section service_core)
+  add_test(NAME sugar_contract_service_security_abuse COMMAND sugar_contracts --contract-section service_security_abuse)
   add_test(NAME sugar_contract_service_concurrency COMMAND sugar_contracts --contract-section service_concurrency)
   add_test(NAME sugar_contract_service_worker_cancellation COMMAND sugar_contracts --contract-section service_background_worker_cancellation)
   add_test(NAME sugar_contract_service_protocol_surface COMMAND sugar_contracts --contract-section service_protocol_surface)
@@ -399,6 +400,7 @@ if (BUILD_TESTING)
     sugar_contract_multi_entity_runner_overload_rejection
      sugar_contract_assertion_hygiene
      sugar_contract_service_core
+     sugar_contract_service_security_abuse
      sugar_contract_service_concurrency
      sugar_contract_service_worker_cancellation
      sugar_contract_service_protocol_surface

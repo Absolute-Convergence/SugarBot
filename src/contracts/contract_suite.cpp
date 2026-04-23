@@ -349,6 +349,10 @@ namespace sugar {
             { "csv_row_skip_diagnostics", "legacy/raw-table CSV row-skip diagnostics", &test_csv_row_skip_diagnostics_contracts },
             { "json_unicode_policy", "JSON unicode surrogate rejection policy", &test_json_unicode_policy_contracts },
             { "service_invalid_request_rejection", "service-core invalid request rejection", &test_service_invalid_request_rejection_contracts },
+            { "service_upload_path_abuse", "service-core upload and path abuse rejection", &test_service_upload_path_abuse_contracts },
+            { "service_session_object_probe_abuse", "service protocol session and object probe abuse rejection", &test_service_session_object_probe_abuse_contracts },
+            { "service_session_upload_quota_abuse", "service protocol session and upload quota abuse rejection", &test_service_session_upload_quota_abuse_contracts },
+            { "service_expensive_sweep_policy_abuse", "service protocol expensive sweep policy abuse rejection", &test_service_expensive_sweep_policy_abuse_contracts },
             { "service_result_ownership", "service-core result ownership", &test_service_result_ownership_contracts },
             { "service_cancellation", "service-core queued cancellation state transitions", &test_service_cancellation_contracts },
             { "service_running_cancellation", "service-core cooperative running-job cancellation", &test_service_running_cancellation_contracts },
@@ -366,6 +370,8 @@ namespace sugar {
             { "service_protocol_network_socket", "service protocol socket transport behavior", &test_service_protocol_network_socket_contracts },
             { "service_protocol_live_multi_client", "service protocol live multi-client TCP concurrency", &test_service_protocol_live_multi_client_contracts },
             { "service_protocol_live_cancel_polling", "service protocol live TCP cancel and status polling", &test_service_protocol_live_cancel_polling_contracts },
+            { "service_protocol_remote_bind_policy", "service protocol remote-bind policy enforcement", &test_service_protocol_remote_bind_policy_contracts },
+            { "service_protocol_slow_client_resilience", "service protocol slow-client and flood resilience", &test_service_protocol_slow_client_resilience_contracts },
             { "dataspec_input_profile", "DataSpec input_profile contract", &test_dataspec_input_profile_contract },
             { "iso8601_timekeys", "ISO-8601 TimeKey fidelity", &test_iso8601_timekeys },
             { "alignment_calendar_policies", "alignment union/intersection calendar contracts", &test_alignment_calendar_policy_contracts },
@@ -440,6 +446,16 @@ namespace sugar {
                 }
             },
             {
+                "service_security_abuse",
+                "phase-5 service security abuse contracts",
+                {
+                    "service_upload_path_abuse",
+                    "service_session_object_probe_abuse",
+                    "service_session_upload_quota_abuse",
+                    "service_expensive_sweep_policy_abuse"
+                }
+            },
+            {
                 "service_concurrency",
                 "phase-4 fair scheduler and bounded worker-pool service contracts",
                 {
@@ -466,7 +482,9 @@ namespace sugar {
                 {
                     "service_protocol_network_socket",
                     "service_protocol_live_multi_client",
-                    "service_protocol_live_cancel_polling"
+                    "service_protocol_live_cancel_polling",
+                    "service_protocol_remote_bind_policy",
+                    "service_protocol_slow_client_resilience"
                 }
             },
             {

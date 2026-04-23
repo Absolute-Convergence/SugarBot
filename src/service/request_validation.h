@@ -24,9 +24,23 @@ namespace sugar::service {
         ValidationMetadata metadata{};
     };
 
+    [[nodiscard]] std::size_t estimate_sweep_runtime_minutes(
+        std::size_t sweep_candidate_count,
+        const QuotaConfig& quotas);
+    [[nodiscard]] bool metadata_has_long_sweep_warning(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas);
+    [[nodiscard]] std::string make_sweep_budget_warning_message(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas);
+    [[nodiscard]] std::string make_sweep_budget_rejection_message(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas);
+
     bool validate_submit_request_shape(
         const SubmitRequest& request,
         const QuotaConfig& quotas,
+        ValidationMetadata* out_metadata,
         std::string& err);
 
     bool validate_staged_request(

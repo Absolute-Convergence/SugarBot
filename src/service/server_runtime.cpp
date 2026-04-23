@@ -1,5 +1,6 @@
 #include "service/server_runtime.h"
 
+#include <algorithm>
 #include <optional>
 #include <sstream>
 
@@ -42,10 +43,10 @@ namespace sugar::service {
         }
 
         std::string append_progress_callback_detail(
-            std::string detail,
+            std::string_view detail,
             const std::shared_ptr<ProgressCallbackState>& progress_state) {
             if (!progress_state) {
-                return detail;
+                return std::string(detail);
             }
             if (const auto progress_failure = progress_state->get_failure();
                 progress_failure.has_value()) {
@@ -54,7 +55,7 @@ namespace sugar::service {
                     "progress recording failed",
                     *progress_failure);
             }
-            return detail;
+            return std::string(detail);
         }
 
         std::string make_validation_summary(
@@ -69,7 +70,11 @@ namespace sugar::service {
                 << "input_warnings: " << metadata.input_warning_count << "\n"
                 << "incompatible_nodes: " << metadata.incompatible_nodes << "\n"
                 << "incompatible_bindings: " << metadata.incompatible_bindings << "\n"
-                << "sweep_candidates: " << metadata.sweep_candidate_count << "\n";
+                << "sweep_candidates: " << metadata.sweep_candidate_count << "\n"
+                << "estimated_sweep_minutes: " << metadata.estimated_sweep_minutes << "\n";
+            if (metadata.long_sweep_warning) {
+                out << "warning: sweep candidate count exceeds the hosted warning threshold\n";
+            }
             if (detail && !detail->empty()) {
                 out << "detail: " << *detail << "\n";
             }
@@ -105,10 +110,14 @@ namespace sugar::service {
         std::optional<ArtifactRecord> find_artifact(
             const JobStatus& job,
             ArtifactKind kind) {
-            for (const auto& artifact : job.staged_artifacts) {
-                if (artifact.kind == kind) {
-                    return artifact;
-                }
+            const auto it = std::find_if(
+                job.staged_artifacts.begin(),
+                job.staged_artifacts.end(),
+                [kind](const ArtifactRecord& artifact) {
+                    return artifact.kind == kind;
+                });
+            if (it != job.staged_artifacts.end()) {
+                return *it;
             }
             return std::nullopt;
         }
@@ -156,16 +165,24 @@ namespace sugar::service {
         const std::string& session_id,
         const SubmitRequest& request,
         std::string& out_job_id,
+        ValidationMetadata* out_preflight_metadata,
         std::string& err) {
         out_job_id.clear();
+        if (out_preflight_metadata) {
+            *out_preflight_metadata = ValidationMetadata{};
+        }
         if (!ensure_initialized(err)) {
             return false;
         }
         if (!sessions_.ensure_session_exists(session_id, err)) {
             return false;
         }
-        if (!validate_submit_request_shape(request, config_.quotas, err)) {
+        ValidationMetadata preflight_metadata{};
+        if (!validate_submit_request_shape(request, config_.quotas, &preflight_metadata, err)) {
             return false;
+        }
+        if (out_preflight_metadata) {
+            *out_preflight_metadata = preflight_metadata;
         }
         if (!sessions_.begin_job(session_id, err)) {
             return false;
@@ -471,6 +488,9 @@ namespace sugar::service {
         const std::string& job_id,
         JobResult& out,
         std::string& err) const {
+        if (!ensure_owned_job(session_id, job_id, err)) {
+            return false;
+        }
         return results_.fetch_owned(session_id, job_id, out, err);
     }
 

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -156,10 +157,95 @@ namespace sugar::service {
             stream << line;
         }
 
+        SecurityLogFn make_security_logger(std::ostream& stream, std::mutex& mutex) {
+            return [&stream, &mutex](std::string_view line) {
+                log_line(stream, mutex, "SECURITY " + std::string(line) + "\n");
+            };
+        }
+
         void close_socket_quietly(int fd) {
             if (fd >= 0) {
                 ::close(fd);
             }
+        }
+
+        bool parse_u16_option(
+            std::string_view text,
+            const char* label,
+            std::uint16_t& out,
+            std::ostream& err) {
+            try {
+                const unsigned long parsed = std::stoul(std::string(text));
+                if (parsed > std::numeric_limits<std::uint16_t>::max()) {
+                    err << "Error: " << label << " is out of range\n";
+                    return false;
+                }
+                out = static_cast<std::uint16_t>(parsed);
+                return true;
+            }
+            catch (const std::exception&) {
+                err << "Error: " << label << " must be an integer\n";
+                return false;
+            }
+        }
+
+        bool parse_u32_option(
+            std::string_view text,
+            const char* label,
+            std::uint32_t min_value,
+            std::uint32_t max_value,
+            std::uint32_t& out,
+            std::ostream& err) {
+            try {
+                const unsigned long parsed = std::stoul(std::string(text));
+                if (parsed < min_value || parsed > max_value) {
+                    err << "Error: " << label << " must be in [" << min_value << ", " << max_value << "]\n";
+                    return false;
+                }
+                out = static_cast<std::uint32_t>(parsed);
+                return true;
+            }
+            catch (const std::exception&) {
+                err << "Error: " << label << " must be an integer\n";
+                return false;
+            }
+        }
+
+        bool parse_size_option(
+            std::string_view text,
+            const char* label,
+            std::size_t min_value,
+            std::size_t max_value,
+            std::size_t& out,
+            std::ostream& err) {
+            try {
+                const unsigned long long parsed = std::stoull(std::string(text));
+                if (parsed < min_value || parsed > max_value) {
+                    err << "Error: " << label << " must be in [" << min_value << ", " << max_value << "]\n";
+                    return false;
+                }
+                out = static_cast<std::size_t>(parsed);
+                return true;
+            }
+            catch (const std::exception&) {
+                err << "Error: " << label << " must be an integer\n";
+                return false;
+            }
+        }
+
+        bool is_loopback_bind_host(std::string_view host) {
+            in_addr addr{};
+            if (::inet_pton(AF_INET, std::string(host).c_str(), &addr) != 1) {
+                return false;
+            }
+
+            const std::uint32_t host_order = ntohl(addr.s_addr);
+            return (host_order & 0xFF000000u) == 0x7F000000u;
+        }
+
+        bool is_valid_ipv4_bind_host(std::string_view host) {
+            in_addr addr{};
+            return ::inet_pton(AF_INET, std::string(host).c_str(), &addr) == 1;
         }
 
         bool set_socket_timeout(int fd, int optname, std::uint32_t timeout_ms, std::string& err) {
@@ -199,14 +285,34 @@ namespace sugar::service {
     } // namespace
 
     int run_tcp_server(const ServerCliOptions& options, std::ostream& out, std::ostream& err) {
+        if (!is_valid_ipv4_bind_host(options.bind_host)) {
+            err << "Error: invalid bind host '" << options.bind_host << "'\n";
+            return 1;
+        }
+        if (!options.allow_remote_unsafe && !is_loopback_bind_host(options.bind_host)) {
+            err << "Error: non-loopback bind host '" << options.bind_host
+                << "' requires --allow-remote-unsafe\n";
+            return 1;
+        }
+        if (options.allow_remote_unsafe && !is_loopback_bind_host(options.bind_host)) {
+            err << "Warning: non-loopback bind host '" << options.bind_host
+                << "' is running without authentication or transport protection\n";
+        }
+
         ProtocolDispatcherConfig dispatcher_config{};
         dispatcher_config.runtime.storage_root = options.storage_root;
         dispatcher_config.runtime.quotas.server_worker_limit = options.worker_limit;
         dispatcher_config.runtime.quotas.max_total_active_jobs = options.max_active_jobs;
+        dispatcher_config.runtime.quotas.max_live_sessions = options.max_live_sessions;
         dispatcher_config.source_root = options.source_root;
-        ProtocolDispatcher dispatcher(dispatcher_config);
         PendingConnectionQueue pending_connections(options.max_pending_connections);
         std::mutex log_mutex{};
+        dispatcher_config.security_log = make_security_logger(out, log_mutex);
+        ProtocolDispatcher dispatcher(dispatcher_config);
+        if (options.allow_remote_unsafe && !is_loopback_bind_host(options.bind_host)) {
+            dispatcher_config.security_log(
+                "event=remote_bind result=unsafe host=" + options.bind_host);
+        }
 
         const std::size_t connection_worker_limit =
             std::max<std::size_t>(std::size_t{ 1 }, options.connection_worker_limit);
@@ -225,6 +331,7 @@ namespace sugar::service {
                             client_fd,
                             dispatcher,
                             options.max_message_bytes,
+                            dispatcher_config.security_log,
                             connection_err) &&
                         !connection_err.empty()) {
                         log_line(
@@ -361,10 +468,13 @@ namespace sugar::service {
             if (arg == "--host") {
                 if (!require_value("--host", options.bind_host)) return 1;
             }
+            else if (arg == "--allow-remote-unsafe") {
+                options.allow_remote_unsafe = true;
+            }
             else if (arg == "--port") {
                 std::string port_text;
                 if (!require_value("--port", port_text)) return 1;
-                options.port = static_cast<std::uint16_t>(std::stoul(port_text));
+                if (!parse_u16_option(port_text, "--port", options.port, err)) return 1;
             }
             else if (arg == "--storage-root") {
                 std::string path;
@@ -382,27 +492,37 @@ namespace sugar::service {
             else if (arg == "--workers") {
                 std::string worker_text;
                 if (!require_value("--workers", worker_text)) return 1;
-                options.worker_limit = static_cast<std::size_t>(std::stoul(worker_text));
+                if (!parse_size_option(worker_text, "--workers", 1, 256, options.worker_limit, err)) return 1;
             }
             else if (arg == "--max-active-jobs") {
                 std::string limit_text;
                 if (!require_value("--max-active-jobs", limit_text)) return 1;
-                options.max_active_jobs = static_cast<std::size_t>(std::stoul(limit_text));
+                if (!parse_size_option(limit_text, "--max-active-jobs", 1, 256, options.max_active_jobs, err)) return 1;
+            }
+            else if (arg == "--max-live-sessions") {
+                std::string limit_text;
+                if (!require_value("--max-live-sessions", limit_text)) return 1;
+                if (!parse_size_option(limit_text, "--max-live-sessions", 1, 256, options.max_live_sessions, err)) return 1;
             }
             else if (arg == "--connection-workers") {
                 std::string worker_text;
                 if (!require_value("--connection-workers", worker_text)) return 1;
-                options.connection_worker_limit = static_cast<std::size_t>(std::stoul(worker_text));
+                if (!parse_size_option(worker_text, "--connection-workers", 1, 256, options.connection_worker_limit, err)) return 1;
             }
             else if (arg == "--max-pending-connections") {
                 std::string limit_text;
                 if (!require_value("--max-pending-connections", limit_text)) return 1;
-                options.max_pending_connections = static_cast<std::size_t>(std::stoul(limit_text));
+                if (!parse_size_option(limit_text, "--max-pending-connections", 1, 4096, options.max_pending_connections, err)) return 1;
+            }
+            else if (arg == "--max-message-bytes") {
+                std::string limit_text;
+                if (!require_value("--max-message-bytes", limit_text)) return 1;
+                if (!parse_size_option(limit_text, "--max-message-bytes", 256, 64 * 1024 * 1024, options.max_message_bytes, err)) return 1;
             }
             else if (arg == "--socket-timeout-ms") {
                 std::string timeout_text;
                 if (!require_value("--socket-timeout-ms", timeout_text)) return 1;
-                options.socket_timeout_ms = static_cast<std::uint32_t>(std::stoul(timeout_text));
+                if (!parse_u32_option(timeout_text, "--socket-timeout-ms", 1, 600000, options.socket_timeout_ms, err)) return 1;
             }
             else {
                 err << "Error: unknown server option '" << arg << "'\n";

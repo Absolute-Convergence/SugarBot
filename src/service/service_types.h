@@ -48,11 +48,19 @@ namespace sugar::service {
         std::size_t max_upload_size_bytes{ 1024 * 1024 }; // 1 MiB per uploaded artifact.
         std::size_t max_parsed_row_count{ 250000 }; // Conservative hosted-service validation cap.
         std::size_t max_sweep_candidate_count{ 10000 }; // Bound exhaustive sweep expansion on shared servers.
+        std::size_t max_live_sessions{ 4 }; // Hosted default matches the intended small-server client budget.
+        std::size_t max_staged_uploads_per_session{ 24 }; // Bound retained pre-submit uploads per client session.
+        std::size_t max_staged_upload_bytes_per_session{ 8 * 1024 * 1024 }; // Bound retained upload bytes per session.
         std::size_t max_concurrent_jobs_per_session{ 4 }; // Prevent one client from monopolizing workers.
-        std::size_t max_total_active_jobs{ 0 }; // 0 keeps server-wide active-job backpressure disabled.
+        std::size_t max_total_active_jobs{ 4 }; // Bound total hosted jobs to the intended small-server envelope.
         std::size_t max_retained_result_bytes{ 1024 * 1024 }; // Bound each retained summary payload.
         std::size_t max_retained_results{ 256 }; // Bound terminal result count for long-lived servers.
         std::size_t server_worker_limit{ 1 }; // Serial by default; raise explicitly for hosted concurrency.
+        std::size_t sweep_warning_minutes{ 15 }; // Warn before queued work starts to look expensive for hosted mode.
+        std::size_t sweep_reject_minutes{ 30 }; // Reject hosted sweeps that exceed the configured candidate budget.
+        std::size_t expensive_sweep_reject_disconnect_streak{ 3 }; // Disconnect after 3 over-budget submits in a row.
+        std::size_t expensive_sweep_reject_pair_disconnect_count{ 3 }; // Or after three separate 2-in-a-row episodes.
+        std::size_t expensive_sweep_reject_total_before_disconnect{ 8 }; // Or after more than 8 over-budget rejects in one session.
     };
 
     struct RuntimeConfig {
@@ -106,6 +114,8 @@ namespace sugar::service {
         std::size_t incompatible_nodes{ 0 };
         std::size_t incompatible_bindings{ 0 };
         std::size_t sweep_candidate_count{ 0 };
+        std::size_t estimated_sweep_minutes{ 0 };
+        bool long_sweep_warning{ false };
     };
 
     struct ResultMetadata {

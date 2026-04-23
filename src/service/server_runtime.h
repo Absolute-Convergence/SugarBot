@@ -28,7 +28,15 @@ namespace sugar::service {
             const std::string& session_id,
             const SubmitRequest& request,
             std::string& out_job_id,
+            ValidationMetadata* out_preflight_metadata,
             std::string& err);
+        [[nodiscard]] bool submit_job(
+            const std::string& session_id,
+            const SubmitRequest& request,
+            std::string& out_job_id,
+            std::string& err) {
+            return submit_job(session_id, request, out_job_id, nullptr, err);
+        }
         [[nodiscard]] bool process_next_queued_job(std::string& out_job_id, std::string& err);
         [[nodiscard]] bool process_job(const std::string& job_id, std::string& err);
         [[nodiscard]] bool cancel_job(const std::string& session_id, const std::string& job_id, std::string& err);

@@ -27,6 +27,7 @@ namespace sugar::contract_suite_internal {
             config.quotas.max_upload_size_bytes = 64 * 1024;
             config.quotas.max_parsed_row_count = 256;
             config.quotas.max_sweep_candidate_count = max_sweep_candidate_count;
+            config.quotas.max_live_sessions = 32;
             config.quotas.max_concurrent_jobs_per_session = max_concurrent_jobs_per_session;
             config.quotas.max_total_active_jobs = max_total_active_jobs;
             config.quotas.max_retained_result_bytes = 64 * 1024;

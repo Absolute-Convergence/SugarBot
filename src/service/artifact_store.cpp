@@ -29,6 +29,12 @@ namespace sugar::service {
             }
             return ".bin";
         }
+
+        bool canonical_path_has_prefix(
+            const std::filesystem::path& path,
+            const std::filesystem::path& prefix) {
+            return path_has_prefix(path.lexically_normal(), prefix.lexically_normal());
+        }
     } // namespace
 
     ArtifactStore::ArtifactStore(std::filesystem::path root, const QuotaConfig& quotas)
@@ -116,7 +122,11 @@ namespace sugar::service {
             err = "failed to create service storage root";
             return false;
         }
-        root_ = std::filesystem::absolute(root_).lexically_normal();
+        root_ = std::filesystem::weakly_canonical(root_, ec);
+        if (ec) {
+            err = "failed to canonicalize service storage root";
+            return false;
+        }
         initialized_ = true;
         err.clear();
         return true;
@@ -134,6 +144,15 @@ namespace sugar::service {
         std::filesystem::create_directories(workspace, ec);
         if (ec) {
             err = "failed to create job workspace";
+            return false;
+        }
+        const auto canonical_workspace = std::filesystem::weakly_canonical(workspace, ec);
+        if (ec) {
+            err = "failed to canonicalize job workspace";
+            return false;
+        }
+        if (!canonical_path_has_prefix(canonical_workspace, root_)) {
+            err = "job workspace escapes the service storage root";
             return false;
         }
         out_workspace = workspace;
@@ -155,7 +174,12 @@ namespace sugar::service {
             return false;
         }
 
-        const auto workspace = std::filesystem::absolute(job_workspace_path(job_id)).lexically_normal();
+        std::error_code ec;
+        const auto workspace = std::filesystem::weakly_canonical(job_workspace_path(job_id), ec);
+        if (ec) {
+            err = "failed to canonicalize job workspace";
+            return false;
+        }
         const std::filesystem::path relative(relative_name);
         if (relative.is_absolute()) {
             err = "artifact relative path must not be absolute";
@@ -163,11 +187,17 @@ namespace sugar::service {
         }
 
         const auto candidate = (workspace / relative).lexically_normal();
-        if (!path_has_prefix(candidate, workspace)) {
+        const auto canonical_parent = std::filesystem::weakly_canonical(candidate.parent_path(), ec);
+        if (ec) {
+            err = "failed to canonicalize artifact parent path";
+            return false;
+        }
+        const auto canonical_candidate = (canonical_parent / candidate.filename()).lexically_normal();
+        if (!canonical_path_has_prefix(canonical_candidate, workspace)) {
             err = "artifact path escapes the job workspace";
             return false;
         }
-        out_path = candidate;
+        out_path = canonical_candidate;
         err.clear();
         return true;
     }

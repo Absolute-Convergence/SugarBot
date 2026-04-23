@@ -7,6 +7,11 @@ namespace sugar::service {
 
     bool SessionManager::create_session(SessionInfo& out, std::string& err) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (quotas_.max_live_sessions > 0 &&
+            sessions_.size() >= quotas_.max_live_sessions) {
+            err = "server exceeded max live sessions";
+            return false;
+        }
         err.clear();
         SessionInfo session{};
         session.session_id = next_session_id();

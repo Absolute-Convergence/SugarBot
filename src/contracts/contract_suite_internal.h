@@ -80,6 +80,10 @@ namespace sugar::contract_suite_internal {
     bool test_csv_row_skip_diagnostics_contracts(ContractAsserts& t);
     bool test_json_unicode_policy_contracts(ContractAsserts& t);
     bool test_service_invalid_request_rejection_contracts(ContractAsserts& t);
+    bool test_service_upload_path_abuse_contracts(ContractAsserts& t);
+    bool test_service_session_object_probe_abuse_contracts(ContractAsserts& t);
+    bool test_service_session_upload_quota_abuse_contracts(ContractAsserts& t);
+    bool test_service_expensive_sweep_policy_abuse_contracts(ContractAsserts& t);
     bool test_service_result_ownership_contracts(ContractAsserts& t);
     bool test_service_cancellation_contracts(ContractAsserts& t);
     bool test_service_running_cancellation_contracts(ContractAsserts& t);
@@ -97,6 +101,8 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_network_socket_contracts(ContractAsserts& t);
     bool test_service_protocol_live_multi_client_contracts(ContractAsserts& t);
     bool test_service_protocol_live_cancel_polling_contracts(ContractAsserts& t);
+    bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t);
+    bool test_service_protocol_slow_client_resilience_contracts(ContractAsserts& t);
     bool test_dataspec_input_profile_contract(ContractAsserts& t);
     bool test_iso8601_timekeys(ContractAsserts& t);
     bool test_alignment_calendar_policy_contracts(ContractAsserts& t);

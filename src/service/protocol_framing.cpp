@@ -166,6 +166,8 @@ namespace sugar::service {
             append_json_u64_field(out, "incompatible_nodes", static_cast<std::uint64_t>(metadata.incompatible_nodes), first);
             append_json_u64_field(out, "incompatible_bindings", static_cast<std::uint64_t>(metadata.incompatible_bindings), first);
             append_json_u64_field(out, "sweep_candidate_count", static_cast<std::uint64_t>(metadata.sweep_candidate_count), first);
+            append_json_u64_field(out, "estimated_sweep_minutes", static_cast<std::uint64_t>(metadata.estimated_sweep_minutes), first);
+            append_json_bool_field(out, "long_sweep_warning", metadata.long_sweep_warning, first);
             out << "}";
         }
 
@@ -195,7 +197,6 @@ namespace sugar::service {
             append_json_bool_field(out, "canceled", panel.canceled, first);
             append_json_string_field(out, "cancel_message", panel.cancel_message, first);
             if (!first) out << ",";
-            first = false;
             out << "\"topk\":[";
             for (std::size_t i = 0; i < panel.topk.size(); ++i) {
                 if (i != 0) out << ",";
@@ -225,7 +226,6 @@ namespace sugar::service {
                 append_json_string_field(out, "result_id", *status.result_id, first);
             }
             if (!first) out << ",";
-            first = false;
             out << "\"staged_artifacts\":[";
             for (std::size_t i = 0; i < status.staged_artifacts.size(); ++i) {
                 if (i != 0) out << ",";
@@ -248,11 +248,7 @@ namespace sugar::service {
             append_json_string_field(out, "job_id", result.job_id, first);
             append_json_string_field(out, "summary_text", result.summary_text, first);
             if (!first) out << ",";
-            first = false;
             out << "\"metadata\":{";
-            bool meta_first = true;
-            if (!meta_first) out << ",";
-            meta_first = false;
             out << "\"validation\":";
             append_validation_metadata_json(out, result.metadata.validation);
             if (result.metadata.primary_backtest.has_value()) {
@@ -335,7 +331,6 @@ namespace sugar::service {
         }
         if (request.command == ProtocolCommand::UploadArtifact) {
             if (!first) out << ",";
-            first = false;
             out << "\"artifact\":{";
             bool artifact_first = true;
             append_json_string_field(out, "kind", artifact_kind_name(request.upload_kind), artifact_first);
@@ -346,7 +341,6 @@ namespace sugar::service {
         if (request.command == ProtocolCommand::ValidateRequest ||
             request.command == ProtocolCommand::SubmitJob) {
             if (!first) out << ",";
-            first = false;
             out << "\"uploads\":{";
             bool uploads_first = true;
             append_json_string_field(out, "layout_upload_id", request.layout_upload_id, uploads_first);
@@ -371,6 +365,9 @@ namespace sugar::service {
         }
         if (!response.job_id.empty()) {
             append_json_string_field(out, "job_id", response.job_id, first);
+        }
+        if (response.close_connection) {
+            append_json_bool_field(out, "close_connection", true, first);
         }
         if (response.upload.has_value()) {
             if (!first) out << ",";
@@ -406,7 +403,6 @@ namespace sugar::service {
         }
         if (response.job_result.has_value()) {
             if (!first) out << ",";
-            first = false;
             out << "\"job_result\":";
             append_job_result_json(out, *response.job_result);
         }

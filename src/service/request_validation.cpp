@@ -8,6 +8,58 @@
 namespace sugar::service {
 
     namespace {
+        bool plan_spec_has_sweep(const PlanSpec& plan);
+
+        std::size_t sweep_warning_candidate_count(const QuotaConfig& quotas) {
+            if (quotas.max_sweep_candidate_count == 0 ||
+                quotas.sweep_warning_minutes == 0 ||
+                quotas.sweep_reject_minutes == 0 ||
+                quotas.sweep_warning_minutes >= quotas.sweep_reject_minutes) {
+                return 0;
+            }
+            const std::size_t numerator =
+                quotas.max_sweep_candidate_count * quotas.sweep_warning_minutes;
+            return numerator / quotas.sweep_reject_minutes;
+        }
+
+        bool fill_sweep_policy_metadata(
+            const PlanSpec& plan,
+            const QuotaConfig& quotas,
+            ValidationMetadata& metadata,
+            std::string& err) {
+            metadata.sweep_candidate_count = 0;
+            metadata.estimated_sweep_minutes = 0;
+            metadata.long_sweep_warning = false;
+
+            if (!plan_spec_has_sweep(plan)) {
+                err.clear();
+                return true;
+            }
+
+            PlanSpecSweepDims dims{};
+            if (!build_planspec_sweep_dims(*plan.sweep, dims, err)) {
+                err = "logic sweep is invalid: " + err;
+                return false;
+            }
+
+            std::size_t candidate_count = dims.total_combinations();
+            if (plan.sweep->max_evals > 0 && candidate_count > plan.sweep->max_evals) {
+                candidate_count = plan.sweep->max_evals;
+            }
+            metadata.sweep_candidate_count = candidate_count;
+            metadata.estimated_sweep_minutes = estimate_sweep_runtime_minutes(candidate_count, quotas);
+            metadata.long_sweep_warning = metadata_has_long_sweep_warning(metadata, quotas);
+
+            if (quotas.max_sweep_candidate_count > 0 &&
+                candidate_count > quotas.max_sweep_candidate_count) {
+                err = make_sweep_budget_rejection_message(metadata, quotas);
+                return false;
+            }
+
+            err.clear();
+            return true;
+        }
+
         bool payload_name_is_safe_leaf(
             const ArtifactPayload& payload,
             const char* label,
@@ -20,6 +72,11 @@ namespace sugar::service {
             const std::filesystem::path path(payload.client_name);
             if (path.is_absolute()) {
                 err = std::string(label) + " artifact client name must not be absolute";
+                return false;
+            }
+            if (payload.client_name.find('/') != std::string::npos ||
+                payload.client_name.find('\\') != std::string::npos) {
+                err = std::string(label) + " artifact client name must be a single filename";
                 return false;
             }
             if (path.has_parent_path()) {
@@ -141,10 +198,73 @@ namespace sugar::service {
         }
     } // namespace
 
+    std::size_t estimate_sweep_runtime_minutes(
+        std::size_t sweep_candidate_count,
+        const QuotaConfig& quotas) {
+        if (sweep_candidate_count == 0 ||
+            quotas.max_sweep_candidate_count == 0 ||
+            quotas.sweep_reject_minutes == 0) {
+            return 0;
+        }
+        const std::size_t numerator =
+            (sweep_candidate_count * quotas.sweep_reject_minutes) +
+            (quotas.max_sweep_candidate_count - 1);
+        return numerator / quotas.max_sweep_candidate_count;
+    }
+
+    bool metadata_has_long_sweep_warning(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas) {
+        const std::size_t warning_candidates = sweep_warning_candidate_count(quotas);
+        return warning_candidates > 0 &&
+            metadata.sweep_candidate_count > warning_candidates &&
+            metadata.sweep_candidate_count <= quotas.max_sweep_candidate_count;
+    }
+
+    std::string make_sweep_budget_warning_message(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas) {
+        if (!metadata_has_long_sweep_warning(metadata, quotas)) {
+            return {};
+        }
+
+        return
+            "warning: estimated sweep duration " +
+            std::to_string(metadata.estimated_sweep_minutes) +
+            " minutes exceeds the hosted warning threshold of " +
+            std::to_string(quotas.sweep_warning_minutes) +
+            " minutes (candidate-count estimate: " +
+            std::to_string(metadata.sweep_candidate_count) +
+            " of " +
+            std::to_string(quotas.max_sweep_candidate_count) +
+            ")";
+    }
+
+    std::string make_sweep_budget_rejection_message(
+        const ValidationMetadata& metadata,
+        const QuotaConfig& quotas) {
+        return
+            "request exceeds hosted sweep budget: estimated sweep duration " +
+            std::to_string(metadata.estimated_sweep_minutes) +
+            " minutes exceeds the " +
+            std::to_string(quotas.sweep_reject_minutes) +
+            "-minute limit (candidate-count estimate: " +
+            std::to_string(metadata.sweep_candidate_count) +
+            " of " +
+            std::to_string(quotas.max_sweep_candidate_count) +
+            ")";
+    }
+
     bool validate_submit_request_shape(
         const SubmitRequest& request,
         const QuotaConfig& quotas,
+        ValidationMetadata* out_metadata,
         std::string& err) {
+        ValidationMetadata metadata{};
+        if (out_metadata) {
+            *out_metadata = ValidationMetadata{};
+        }
+
         auto require_payload = [&](const ArtifactPayload& payload, const char* label) -> bool {
             if (payload.content.empty()) {
                 err = std::string(label) + " artifact content is empty";
@@ -184,6 +304,18 @@ namespace sugar::service {
             return false;
         }
 
+        PlanSpec plan{};
+        if (!parse_plan_spec_json(request.logic.content, plan, err)) {
+            err = "failed to parse logic spec: " + err;
+            return false;
+        }
+        if (!fill_sweep_policy_metadata(plan, quotas, metadata, err)) {
+            return false;
+        }
+
+        if (out_metadata) {
+            *out_metadata = metadata;
+        }
         err.clear();
         return true;
     }
@@ -232,21 +364,8 @@ namespace sugar::service {
         }
 
         const bool has_sweep = plan_spec_has_sweep(out.plan);
-        if (has_sweep) {
-            PlanSpecSweepDims dims{};
-            if (!build_planspec_sweep_dims(*out.plan.sweep, dims, err)) {
-                err = "logic sweep is invalid: " + err;
-                return false;
-            }
-            std::size_t candidate_count = dims.total_combinations();
-            if (out.plan.sweep->max_evals > 0 && candidate_count > out.plan.sweep->max_evals) {
-                candidate_count = out.plan.sweep->max_evals;
-            }
-            out.metadata.sweep_candidate_count = candidate_count;
-            if (candidate_count > quotas.max_sweep_candidate_count) {
-                err = "request exceeds max sweep candidate count";
-                return false;
-            }
+        if (!fill_sweep_policy_metadata(out.plan, quotas, out.metadata, err)) {
+            return false;
         }
 
         if (!out.plan.run.has_value()) {

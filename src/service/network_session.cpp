@@ -15,6 +15,7 @@ namespace sugar::service {
         int,
         ProtocolDispatcher&,
         std::size_t,
+        const SecurityLogFn&,
         std::string& err) {
         err = "socket transport is unsupported on Windows builds";
         return false;
@@ -164,6 +165,7 @@ namespace sugar::service {
         int fd,
         ProtocolDispatcher& dispatcher,
         std::size_t max_message_bytes,
+        const SecurityLogFn& security_log,
         std::string& err) {
         const FramedReadResult read_result = read_one_framed_message(fd, max_message_bytes);
         if (read_result.state == FramedReadState::PeerClosed) {
@@ -176,6 +178,9 @@ namespace sugar::service {
             dispatcher.handle_json_request(read_result.payload, response_json);
         }
         else {
+            if (security_log) {
+                security_log("event=malformed_frame result=reject detail=" + read_result.detail);
+            }
             response_json = make_protocol_error_json(ProtocolErrorCode::MalformedRequest, read_result.detail);
         }
 

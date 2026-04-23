@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,47 @@ namespace sugar::service {
 namespace sugar::service {
 
     namespace {
+        bool parse_u16_option(
+            std::string_view text,
+            const char* label,
+            std::uint16_t& out,
+            std::ostream& err) {
+            try {
+                const unsigned long parsed = std::stoul(std::string(text));
+                if (parsed > std::numeric_limits<std::uint16_t>::max()) {
+                    err << "Error: " << label << " is out of range\n";
+                    return false;
+                }
+                out = static_cast<std::uint16_t>(parsed);
+                return true;
+            }
+            catch (const std::exception&) {
+                err << "Error: " << label << " must be an integer\n";
+                return false;
+            }
+        }
+
+        bool parse_u32_option(
+            std::string_view text,
+            const char* label,
+            std::uint32_t min_value,
+            std::uint32_t max_value,
+            std::uint32_t& out,
+            std::ostream& err) {
+            try {
+                const unsigned long parsed = std::stoul(std::string(text));
+                if (parsed < min_value || parsed > max_value) {
+                    err << "Error: " << label << " must be in [" << min_value << ", " << max_value << "]\n";
+                    return false;
+                }
+                out = static_cast<std::uint32_t>(parsed);
+                return true;
+            }
+            catch (const std::exception&) {
+                err << "Error: " << label << " must be an integer\n";
+                return false;
+            }
+        }
 
         bool set_socket_timeout(int fd, int optname, std::uint32_t timeout_ms, std::string& err) {
             timeval timeout{};
@@ -205,12 +247,12 @@ namespace sugar::service {
             else if (arg == "--port") {
                 std::string port_text;
                 if (!require_value(i, "--port", port_text)) return 1;
-                options.port = static_cast<std::uint16_t>(std::stoul(port_text));
+                if (!parse_u16_option(port_text, "--port", options.port, err)) return 1;
             }
             else if (arg == "--socket-timeout-ms") {
                 std::string timeout_text;
                 if (!require_value(i, "--socket-timeout-ms", timeout_text)) return 1;
-                options.socket_timeout_ms = static_cast<std::uint32_t>(std::stoul(timeout_text));
+                if (!parse_u32_option(timeout_text, "--socket-timeout-ms", 1, 600000, options.socket_timeout_ms, err)) return 1;
             }
             else if (arg == "--session") {
                 if (!require_value(i, "--session", request.session_id)) return 1;

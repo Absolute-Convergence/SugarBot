@@ -37,6 +37,16 @@ namespace sugar::contract_suite_internal {
         return true;
     }
 
+    bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t) {
+        t.out << "[service_protocol_remote_bind_policy] skipped on Windows stub builds\n";
+        return true;
+    }
+
+    bool test_service_protocol_slow_client_resilience_contracts(ContractAsserts& t) {
+        t.out << "[service_protocol_slow_client_resilience] skipped on Windows stub builds\n";
+        return true;
+    }
+
 } // namespace sugar::contract_suite_internal
 
 #else
@@ -545,7 +555,9 @@ namespace sugar::contract_suite_internal {
                     return false;
                 }
 
-                options.bind_host = "127.0.0.1";
+                if (options.bind_host.empty()) {
+                    options.bind_host = "127.0.0.1";
+                }
                 options.port = port_;
                 stop_requested_ = std::make_shared<std::atomic_bool>(false);
                 options.stop_requested = stop_requested_;
@@ -589,6 +601,10 @@ namespace sugar::contract_suite_internal {
 
             std::string stderr_text() const {
                 return server_err_.str();
+            }
+
+            std::string stdout_text() const {
+                return server_out_.str();
             }
 
         private:
@@ -656,6 +672,33 @@ namespace sugar::contract_suite_internal {
             std::string& err) {
             std::string ignored_response_json;
             return send_tcp_protocol_request(port, request, out_response, ignored_response_json, err);
+        }
+
+        bool open_connected_loopback_socket(std::uint16_t port, int& out_fd, std::string& err) {
+            out_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (out_fd < 0) {
+                err = "failed to create raw client socket";
+                return false;
+            }
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+                ::close(out_fd);
+                out_fd = -1;
+                err = "failed to encode client loopback address";
+                return false;
+            }
+            if (::connect(out_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+                ::close(out_fd);
+                out_fd = -1;
+                err = "failed to connect raw client socket";
+                return false;
+            }
+
+            err.clear();
+            return true;
         }
 
         bool connect_session(std::uint16_t port, std::string& out_session_id, std::string& err) {
@@ -827,7 +870,7 @@ namespace sugar::contract_suite_internal {
 
             std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
-                fds[1], dispatcher, kSocketContractFrameLimit, err);
+                fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles valid framed request");
 
             std::string response_json;
@@ -862,7 +905,7 @@ namespace sugar::contract_suite_internal {
 
             std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
-                fds[1], dispatcher, kSocketContractFrameLimit, err);
+                fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles truncated request without crashing server loop");
 
             std::string response_json;
@@ -895,7 +938,7 @@ namespace sugar::contract_suite_internal {
 
             std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
-                fds[1], dispatcher, kSocketContractFrameLimit, err);
+                fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles zero-length frame without crashing server loop");
 
             std::string response_json;
@@ -928,7 +971,7 @@ namespace sugar::contract_suite_internal {
 
             std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
-                fds[1], dispatcher, kSocketContractFrameLimit, err);
+                fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles oversized frame header without crashing server loop");
 
             std::string response_json;
@@ -963,7 +1006,7 @@ namespace sugar::contract_suite_internal {
 
             std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
-                fds[1], dispatcher, kSocketContractFrameLimit, err);
+                fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles partial frame header without crashing server loop");
 
             std::string response_json;
@@ -994,6 +1037,7 @@ namespace sugar::contract_suite_internal {
         options.storage_root = contract_tmp_case_dir("service_protocol_live_multi_client");
         options.source_root = std::filesystem::current_path();
         options.worker_limit = 3;
+        options.max_live_sessions = 16;
         options.connection_worker_limit = 4;
         options.max_pending_connections = 16;
         options.max_active_jobs = 32;
@@ -1252,6 +1296,8 @@ namespace sugar::contract_suite_internal {
         std::mutex poll_mutex{};
         std::vector<sugar::service::JobState> polled_states;
         std::vector<std::string> poll_errors;
+        std::size_t result_poll_count = 0;
+        std::vector<std::string> result_poll_errors;
         constexpr std::size_t kPollerCount = 3;
         std::vector<std::thread> pollers;
         pollers.reserve(kPollerCount);
@@ -1305,6 +1351,48 @@ namespace sugar::contract_suite_internal {
                 }
             });
         }
+        constexpr std::size_t kResultPollerCount = 2;
+        std::vector<std::thread> result_pollers;
+        result_pollers.reserve(kResultPollerCount);
+        for (std::size_t i = 0; i < kResultPollerCount; ++i) {
+            result_pollers.emplace_back([&, i] {
+                using namespace std::chrono_literals;
+
+                const auto deadline = std::chrono::steady_clock::now() + kTcpCancelPollerTimeout;
+                while (!stop_pollers.load(std::memory_order_relaxed) &&
+                    std::chrono::steady_clock::now() < deadline) {
+                    sugar::service::ProtocolRequest result_request{};
+                    result_request.command = sugar::service::ProtocolCommand::RetrieveResults;
+                    result_request.session_id = owner_session_id;
+                    result_request.job_id = job_id;
+
+                    ParsedProtocolResponse result_response{};
+                    std::string local_err;
+                    if (!send_tcp_protocol_request(server.port(), result_request, result_response, local_err)) {
+                        std::lock_guard lock(poll_mutex);
+                        result_poll_errors.push_back("result poller " + std::to_string(i + 1) + ": " + local_err);
+                        stop_pollers.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+
+                    {
+                        std::lock_guard lock(poll_mutex);
+                        ++result_poll_count;
+                    }
+
+                    if (result_response.ok ||
+                        result_response.error_code != sugar::service::ProtocolErrorCode::InvalidState) {
+                        std::lock_guard lock(poll_mutex);
+                        result_poll_errors.push_back(
+                            "result poller " + std::to_string(i + 1) + ": unexpected result response");
+                        stop_pollers.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+
+                    std::this_thread::sleep_for(kTcpPollInterval);
+                }
+            });
+        }
 
         const auto active_deadline = std::chrono::steady_clock::now() + kTcpCancelActiveWaitTimeout;
         while (!saw_active_state.load(std::memory_order_relaxed) &&
@@ -1335,17 +1423,23 @@ namespace sugar::contract_suite_internal {
         for (auto& poller : pollers) {
             poller.join();
         }
+        for (auto& poller : result_pollers) {
+            poller.join();
+        }
 
         bool pollers_clean = true;
         {
             std::lock_guard lock(poll_mutex);
-            pollers_clean = poll_errors.empty();
+            pollers_clean = poll_errors.empty() && result_poll_errors.empty();
         }
-        t.expect(pollers_clean, "live TCP cancel-polling path keeps repeated status polling stable under cancellation");
+        t.expect(pollers_clean, "live TCP cancel-polling path keeps repeated status and result polling stable under cancellation");
         if (!pollers_clean) {
             std::lock_guard lock(poll_mutex);
             for (const auto& poll_error : poll_errors) {
                 t.out << "  poll error: " << poll_error << "\n";
+            }
+            for (const auto& poll_error : result_poll_errors) {
+                t.out << "  result poll error: " << poll_error << "\n";
             }
         }
 
@@ -1363,6 +1457,8 @@ namespace sugar::contract_suite_internal {
         }
         t.expect(observed_poll_count >= kPollerCount,
             "live TCP cancel-polling path performs repeated status reads instead of a single terminal fetch");
+        t.expect(result_poll_count >= kResultPollerCount,
+            "live TCP cancel-polling path performs repeated result reads while cancellation is in flight");
 
         sugar::service::JobState final_state = sugar::service::JobState::Queued;
         bool saw_final_active_state = false;
@@ -1415,6 +1511,131 @@ namespace sugar::contract_suite_internal {
         if (server.exit_code() != 0) {
             t.out << "  server stderr:\n" << server.stderr_text();
         }
+
+        return true;
+    }
+
+    bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t) {
+        t.out << "[service_protocol_remote_bind_policy] live TCP remote-bind policy enforcement\n";
+
+        {
+            sugar::service::ServerCliOptions options{};
+            options.bind_host = "0.0.0.0";
+            options.storage_root = contract_tmp_case_dir("service_protocol_remote_bind_policy_reject");
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int exit_code = sugar::service::run_tcp_server(options, out, err);
+            t.expect(exit_code != 0,
+                "server rejects non-loopback bind without the explicit unsafe flag");
+            t.expect(err.str().find("--allow-remote-unsafe") != std::string::npos,
+                "server explains that non-loopback bind requires the explicit unsafe flag");
+        }
+
+        ScopedLiveTcpServer server{};
+        sugar::service::ServerCliOptions options{};
+        options.bind_host = "0.0.0.0";
+        options.allow_remote_unsafe = true;
+        options.storage_root = contract_tmp_case_dir("service_protocol_remote_bind_policy_allow");
+        options.source_root = std::filesystem::current_path();
+
+        std::string err;
+        const bool started = server.start(options, err);
+        t.expect(started, "server starts on a non-loopback bind when the unsafe flag is explicit");
+        if (!started) {
+            return true;
+        }
+
+        ParsedProtocolResponse response{};
+        sugar::service::ProtocolRequest request{};
+        request.command = sugar::service::ProtocolCommand::Connect;
+        std::string response_json;
+        const bool replied = send_tcp_protocol_request(server.port(), request, response, response_json, err);
+        t.expect(replied && response.ok && !response.session_id.empty(),
+            "client can still connect through loopback after an explicit unsafe remote bind");
+
+        server.stop();
+        t.expect(server.exit_code() == 0, "unsafe remote-bind server stops cleanly after explicit remote-bind connect");
+        t.expect(server.stderr_text().find("without authentication or transport protection") != std::string::npos,
+            "server emits a loud warning when non-loopback bind is allowed explicitly");
+
+        return true;
+    }
+
+    bool test_service_protocol_slow_client_resilience_contracts(ContractAsserts& t) {
+        t.out << "[service_protocol_slow_client_resilience] live TCP slow-client and flood resilience\n";
+
+        ScopedLiveTcpServer server{};
+        sugar::service::ServerCliOptions options{};
+        options.storage_root = contract_tmp_case_dir("service_protocol_slow_client_resilience");
+        options.source_root = std::filesystem::current_path();
+        options.worker_limit = 1;
+        options.connection_worker_limit = 1;
+        options.max_pending_connections = 1;
+        options.socket_timeout_ms = 100;
+
+        std::string err;
+        const bool started = server.start(options, err);
+        t.expect(started, "live TCP server starts for slow-client resilience test");
+        if (!started) {
+            return true;
+        }
+
+        int slow_header_fd = -1;
+        int slow_body_fd = -1;
+        std::vector<int> idle_fds;
+        const bool opened_header = open_connected_loopback_socket(server.port(), slow_header_fd, err);
+        const bool opened_body = open_connected_loopback_socket(server.port(), slow_body_fd, err);
+        t.expect(opened_header && opened_body,
+            "slow-client resilience test opens raw slow-header and slow-body sockets");
+        if (opened_header) {
+            const char partial_header[2]{ 0, 0 };
+            t.expect(write_all(slow_header_fd, partial_header, sizeof(partial_header)),
+                "slow-client resilience test writes a partial frame header");
+        }
+        if (opened_body) {
+            const char full_header[4]{ 0, 0, 0, 8 };
+            const char partial_body[2]{ '{', '}' };
+            t.expect(write_all(slow_body_fd, full_header, sizeof(full_header)),
+                "slow-client resilience test writes a full frame header");
+            t.expect(write_all(slow_body_fd, partial_body, sizeof(partial_body)),
+                "slow-client resilience test writes only part of the declared frame body");
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            int idle_fd = -1;
+            if (open_connected_loopback_socket(server.port(), idle_fd, err)) {
+                idle_fds.push_back(idle_fd);
+            }
+        }
+        t.expect(!idle_fds.empty(), "slow-client resilience test opens several idle flood sockets");
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+
+        std::string session_id;
+        err.clear();
+        const bool connected = connect_session(server.port(), session_id, err);
+        t.expect(connected && !session_id.empty(),
+            "server remains responsive after slow-header, slow-body, and idle-flood pressure");
+        if (connected) {
+            std::string disconnect_err;
+            (void)disconnect_session(server.port(), session_id, disconnect_err);
+        }
+
+        if (slow_header_fd >= 0) {
+            ::close(slow_header_fd);
+        }
+        if (slow_body_fd >= 0) {
+            ::close(slow_body_fd);
+        }
+        for (const int fd : idle_fds) {
+            ::close(fd);
+        }
+
+        server.stop();
+        t.expect(server.exit_code() == 0, "slow-client resilience server stops cleanly after timeout pressure");
+        t.expect(server.stdout_text().find("SECURITY event=malformed_frame") != std::string::npos,
+            "slow-client resilience path records malformed-frame security events");
 
         return true;
     }
