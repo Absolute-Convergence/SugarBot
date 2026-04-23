@@ -1,6 +1,8 @@
 .vs/
 out/
 .sandbox/
+AI_Log/
+Expansion_Plan/
 sandbox_build/
 sandbox_asan/
 codex_build/
