@@ -241,6 +241,36 @@ namespace sugar::app::tests {
             return t.failed == 0;
         }
 
+        bool test_parse_rejects_unknown_interactive_flag(TestContext& t) {
+            t.out << "[app_cli] unknown interactive flag rejection\n";
+            char arg0[] = "prog";
+            char arg1[] = "--xyz-unknown";
+            char* argv[] = { arg0, arg1 };
+
+            AppCommand cmd{};
+            std::string err;
+            const bool ok = parse_app_command(2, argv, cmd, err);
+            t.check(!ok, "parse_app_command rejects unknown interactive flags");
+            t.check(err == "unknown argument '--xyz-unknown'",
+                "unknown interactive flag error is explicit");
+            return t.failed == 0;
+        }
+
+        bool test_parse_interactive_format_requires_value(TestContext& t) {
+            t.out << "[app_cli] interactive format requires value\n";
+            char arg0[] = "prog";
+            char arg1[] = "--format";
+            char* argv[] = { arg0, arg1 };
+
+            AppCommand cmd{};
+            std::string err;
+            const bool ok = parse_app_command(2, argv, cmd, err);
+            t.check(!ok, "parse_app_command rejects --format without a value");
+            t.check(err == "--format requires <auto|legacy_ohlcv_date|iso_ohlcv_time>",
+                "--format missing-value error is explicit");
+            return t.failed == 0;
+        }
+
         bool test_parse_unified_run_command(TestContext& t) {
             t.out << "[app_cli] unified run parsing\n";
             char arg0[] = "prog";
@@ -281,6 +311,8 @@ namespace sugar::app::tests {
         tests.push_back(test_parse_align_dump_requires_series_key);
         tests.push_back(test_parse_panel_topk_validation);
         tests.push_back(test_parse_interactive_data_spec_mode);
+        tests.push_back(test_parse_rejects_unknown_interactive_flag);
+        tests.push_back(test_parse_interactive_format_requires_value);
     }
 
 } // namespace sugar::app::tests

@@ -1697,6 +1697,11 @@ namespace sugar::contract_suite_internal {
                 "multi-entity runner preserves explicit pnl ranking metric");
             t.expect(result.topk.size() == 2, "multi-entity runner keeps requested top-k when both entities succeed");
             t.expect(result.failures.empty(), "multi-entity runner design-load fixture has no failures");
+            const PanelReport report = build_panel_report(result);
+            t.expect(report.resolved_objective.primary.name == "pnl",
+                "panel report resolves pnl ranking objective");
+            t.expect(report.top_rows.size() == result.topk.size(),
+                "panel report preserves ranked row count");
             if (result.topk.size() == 2) {
                 t.expect(result.topk[0].entity_key == "entity.A" || result.topk[1].entity_key == "entity.A",
                     "multi-entity runner preserves entity identity distinct from series keys");
@@ -1708,6 +1713,9 @@ namespace sugar::contract_suite_internal {
                     nearly_equal(result.topk[1].ranking_score, result.topk[1].metrics.pnl);
                 t.expect(pnl_metric_ok, "multi-entity runner records pnl metric on each ranked row");
                 t.expect(pnl_score_ok, "multi-entity runner scores pnl ranking directly from pnl");
+                t.expect(report.top_rows[0].run.objective.rankability == RunRankabilityState::Rankable &&
+                        report.top_rows[1].run.objective.rankability == RunRankabilityState::Rankable,
+                    "panel report classifies pnl-ranked rows as rankable");
             }
         }
 
@@ -1728,6 +1736,9 @@ namespace sugar::contract_suite_internal {
                 "multi-entity runner preserves explicit pnl_dd ranking metric");
             t.expect(nearly_equal(result.ranking.dd_weight, 0.5),
                 "multi-entity runner preserves explicit pnl_dd drawdown weight");
+            const PanelReport report = build_panel_report(result);
+            t.expect(report.resolved_objective.penalties.size() == 1,
+                "panel report preserves pnl_dd penalty structure");
             if (result.topk.size() == 2) {
                 const bool pnl_dd_metric_ok =
                     result.topk[0].ranking_metric == PanelRankingMetric::PnlDd &&
@@ -1741,6 +1752,9 @@ namespace sugar::contract_suite_internal {
                         result.topk[1].metrics.pnl - 0.5 * result.topk[1].metrics.max_drawdown);
                 t.expect(pnl_dd_metric_ok, "multi-entity runner records pnl_dd metric on each ranked row");
                 t.expect(pnl_dd_score_ok, "multi-entity runner scores pnl_dd ranking from explicit drawdown-weighted formula");
+                t.expect(nearly_equal(report.top_rows[0].run.objective.score, result.topk[0].ranking_score) &&
+                        nearly_equal(report.top_rows[1].run.objective.score, result.topk[1].ranking_score),
+                    "panel report preserves per-row resolved objective scores");
             }
         }
 
@@ -1795,6 +1809,9 @@ namespace sugar::contract_suite_internal {
             "multi-entity runner keeps top-k empty when primary column is missing for every series");
         t.expect(invalid_col_result.failures.size() == 2,
             "multi-entity runner records a failure per series when primary column is missing");
+        const PanelReport invalid_col_report = build_panel_report(invalid_col_result);
+        t.expect(invalid_col_report.failures.size() == invalid_col_result.failures.size(),
+            "panel report preserves missing-column failure count");
         if (invalid_col_result.failures.size() == 2) {
             t.expect(invalid_col_result.failures[0].series_key == "A" ||
                     invalid_col_result.failures[1].series_key == "A",
@@ -1802,6 +1819,9 @@ namespace sugar::contract_suite_internal {
             t.expect(invalid_col_result.failures[0].entity_key == "entity.A" ||
                     invalid_col_result.failures[1].entity_key == "entity.A",
                 "multi-entity runner failure records preserve failing entity keys");
+            t.expect(invalid_col_report.failures[0].kind == PanelFailureKind::MissingPrimaryColumn &&
+                    invalid_col_report.failures[1].kind == PanelFailureKind::MissingPrimaryColumn,
+                "panel report classifies missing-primary-column failures explicitly");
         }
 
         const auto bad_subject_result = run_ranked_multi_entity_custom_planspec_over_dataview(
@@ -1815,12 +1835,16 @@ namespace sugar::contract_suite_internal {
             "multi-entity runner keeps top-k empty when custom execution fails for every series");
         t.expect(bad_subject_result.failures.size() == 2,
             "multi-entity runner records execution failure per series");
+        const PanelReport bad_subject_report = build_panel_report(bad_subject_result);
         if (bad_subject_result.failures.size() == 2) {
             const bool reason_ok =
                 bad_subject_result.failures[0].reason.find("missing.series") != std::string::npos &&
                 bad_subject_result.failures[1].reason.find("missing.series") != std::string::npos;
             t.expect(reason_ok,
                 "multi-entity runner preserves per-series execution failure reason text");
+            t.expect(bad_subject_report.failures[0].kind == PanelFailureKind::ExecutionFailed &&
+                    bad_subject_report.failures[1].kind == PanelFailureKind::ExecutionFailed,
+                "panel report classifies execution failures explicitly");
         }
 
         return true;

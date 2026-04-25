@@ -162,36 +162,6 @@ namespace sugar::service {
             return true;
         }
 
-        bool resolve_run_ranking_spec(
-            const PlanRunSpec& run,
-            PanelRankingSpec& out,
-            std::string& err) {
-            const PlanRunRankingMetric metric =
-                run.ranking_metric.value_or(PlanRunRankingMetric::Pnl);
-            switch (metric) {
-            case PlanRunRankingMetric::Pnl:
-                if (run.ranking_dd_weight.has_value()) {
-                    err = "logic.run.ranking_dd_weight applies only when logic.run.ranking_metric=pnl_dd";
-                    return false;
-                }
-                out.metric = PanelRankingMetric::Pnl;
-                out.dd_weight = 0.0;
-                err.clear();
-                return true;
-            case PlanRunRankingMetric::PnlDd:
-                if (!run.ranking_dd_weight.has_value()) {
-                    err = "logic.run.ranking_dd_weight is required when logic.run.ranking_metric=pnl_dd";
-                    return false;
-                }
-                out.metric = PanelRankingMetric::PnlDd;
-                out.dd_weight = *run.ranking_dd_weight;
-                err.clear();
-                return true;
-            }
-            err = "logic.run.ranking_metric is invalid";
-            return false;
-        }
-
         bool plan_spec_has_sweep(const PlanSpec& plan) {
             return plan.sweep.has_value() &&
                 (plan.sweep->enabled || !plan.sweep->params.empty());
@@ -405,8 +375,8 @@ namespace sugar::service {
 
         const PlanRunSpec& run = *out.plan.run;
         if (run.scope == PlanRunScope::PrimarySeries) {
-            if (run.top_k.has_value() || run.ranking_metric.has_value() || run.ranking_dd_weight.has_value()) {
-                err = "logic.run.top_k and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked";
+            if (run.top_k.has_value() || run.objective_spec.has_value()) {
+                err = "logic.run.top_k, logic.run.objective, and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked";
                 return false;
             }
 
@@ -464,7 +434,7 @@ namespace sugar::service {
         }
 
         PanelRankingSpec ranking{};
-        if (!resolve_run_ranking_spec(run, ranking, err)) {
+        if (!build_panel_ranking_spec(run, ranking, err)) {
             return false;
         }
 

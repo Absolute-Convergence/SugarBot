@@ -24,7 +24,10 @@ namespace sugar::app {
         std::ostream& out,
         std::string_view prefix = {});
 
-    void print_panel_result(const sugar::PanelResult& r, std::ostream& out);
+    void print_panel_result(
+        const sugar::PanelResult& r,
+        std::ostream& out,
+        const sugar::RunProvenanceSummary* provenance = nullptr);
 
     void print_align_dump(const sugar::align::AlignedBundle& b, std::ostream& out);
 

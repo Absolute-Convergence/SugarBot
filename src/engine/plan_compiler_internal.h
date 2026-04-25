@@ -37,10 +37,17 @@ namespace sugar {
         CompiledProgram program{};
     };
 
-    struct FeatureDumpNumericOutput {
+    struct NamedNumericOutput {
         std::string node_id{};
         std::size_t output_slot{ 0 };
     };
+
+    bool compile_plan_template_with_numeric_outputs(const PlanSpec& spec,
+        const OperatorRegistry& registry,
+        const CompileEnv& env,
+        CompiledPlanTemplate& out,
+        std::vector<NamedNumericOutput>& numeric_outputs,
+        std::string& err);
 
     bool compile_plan_template(const PlanSpec& spec,
         const OperatorRegistry& registry,
@@ -52,7 +59,7 @@ namespace sugar {
         const OperatorRegistry& registry,
         const CompileEnv& env,
         CompiledPlanTemplate& out,
-        std::vector<FeatureDumpNumericOutput>& numeric_outputs,
+        std::vector<NamedNumericOutput>& numeric_outputs,
         std::string& err);
 
     bool instantiate_compiled_plan(const CompiledPlanTemplate& plan_template,

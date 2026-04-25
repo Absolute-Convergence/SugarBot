@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "sweep/strategy_plan.h" // TradeMode + ExecSettings
+#include "sweep/metrics.h"
 #include "ingest/json_min.h"
 
 namespace sugar {
@@ -95,6 +96,7 @@ namespace sugar {
         //  - "pnl_dd"   : maximize pnl - dd_weight * max_drawdown
         std::string objective{ "pnl" };
         double dd_weight{ 1.0 };
+        std::optional<RankingObjectiveSpec> objective_spec{};
 
         // Engine selector for custom strategy sweeps.
         PlanSweepEngineKind engine{ PlanSweepEngineKind::Exhaustive };
@@ -110,17 +112,11 @@ namespace sugar {
         PerEntityRanked = 1,
     };
 
-    enum class PlanRunRankingMetric : std::uint8_t {
-        Pnl = 0,
-        PnlDd = 1,
-    };
-
     struct PlanRunSpec {
         PlanRunScope scope{ PlanRunScope::PrimarySeries };
         std::string target_entity{};
         std::optional<std::size_t> top_k{};
-        std::optional<PlanRunRankingMetric> ranking_metric{};
-        std::optional<double> ranking_dd_weight{};
+        std::optional<RankingObjectiveSpec> objective_spec{};
     };
 
     struct PlanSpec {
@@ -154,7 +150,6 @@ namespace sugar {
     };
 
     std::string_view plan_run_scope_name(PlanRunScope scope);
-    std::string_view plan_run_ranking_metric_name(PlanRunRankingMetric metric);
 
     bool parse_plan_spec_json(std::string_view json,
         PlanSpec& out,

@@ -101,6 +101,7 @@ add_library(sugar_ingest
   src/ingest/utils.cpp
   src/ingest/json_min.cpp
   src/ingest/plan_spec.cpp
+  src/ingest/plan_capability_strings.cpp
   src/ingest/data_spec.cpp
   src/ingest/layout_spec.cpp
   src/ingest/observation_capability.cpp
@@ -146,6 +147,7 @@ sugar_apply_defaults(sugar_engine)
 
 # --- Library: sugar_sweep -----------------------------------------------
 add_library(sugar_sweep
+  src/sweep/metrics.cpp
   src/sweep/sweep.cpp
   src/sweep/sweep_session.cpp
   src/sweep/plan_capability.cpp

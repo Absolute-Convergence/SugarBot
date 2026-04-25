@@ -83,26 +83,33 @@ namespace sugar::service {
 
         std::string make_primary_run_summary(
             const ValidationMetadata& metadata,
-            const BacktestResult& result) {
+            const BacktestResult& result,
+            const RunProvenanceSummary* provenance = nullptr) {
             std::ostringstream out;
             out << make_validation_summary(metadata, "Execution completed");
-            print_backtest_summary(result, out);
+            print_run_report_summary(build_run_report(result, nullptr, provenance), out);
             return out.str();
         }
 
         std::string make_panel_summary(
             const ValidationMetadata& metadata,
-            const PanelResult& result) {
+            const PanelResult& result,
+            const RunProvenanceSummary* provenance = nullptr) {
+            const PanelReport report = build_panel_report(result, provenance);
             std::ostringstream out;
             out << make_validation_summary(metadata, "Panel execution completed");
-            out << "entities_total: " << result.entities_total << "\n"
-                << "entities_ok: " << result.entities_ok << "\n"
-                << "entities_failed: " << result.entities_failed << "\n"
-                << "topk_count: " << result.topk.size() << "\n";
-            if (!result.topk.empty()) {
-                out << "top_entity: " << result.topk.front().entity_key << "\n"
-                    << "top_series: " << result.topk.front().series_key << "\n"
-                    << "top_ranking_score: " << result.topk.front().ranking_score << "\n";
+            out << "entities_total: " << report.entities_total << "\n"
+                << "entities_ok: " << report.entities_ok << "\n"
+                << "entities_failed: " << report.entities_failed << "\n"
+                << "topk_count: " << report.top_rows.size() << "\n"
+                << "ranking_objective: " << describe_ranking_objective(report.resolved_objective) << "\n";
+            print_run_provenance_summary(report.run_provenance, out);
+            if (!report.top_rows.empty()) {
+                out << "top_entity: " << report.top_rows.front().entity_key << "\n"
+                    << "top_series: " << report.top_rows.front().series_key << "\n"
+                    << "top_ranking_score: " << report.top_rows.front().ranking_score << "\n"
+                    << "top_objective_rankability: "
+                    << run_rankability_state_name(report.top_rows.front().run.objective.rankability) << "\n";
             }
             return out.str();
         }
@@ -333,10 +340,17 @@ namespace sugar::service {
         };
         runtime_options.progress_cb = [this, job_id, progress_state](const SweepProgress& progress) {
             std::string progress_err;
+            std::string progress_message = "execution progress";
+            const auto stage_name = sweep_progress_stage_name(progress.stage);
+            if (!stage_name.empty()) {
+                progress_message += " (";
+                progress_message += stage_name;
+                progress_message += ")";
+            }
             if (!jobs_.record_progress(
                 job_id,
                 JobState::Running,
-                "execution progress",
+                progress_message,
                 progress.done,
                 progress.total,
                 progress_err)) {
@@ -347,6 +361,8 @@ namespace sugar::service {
 
         if (validated.runtime.has_value()) {
             const DataView dv(*validated.runtime->aligned_bundle);
+            const auto run_provenance =
+                build_run_provenance_summary(validated.runtime->run_manifest);
             BacktestResult backtest{};
             std::ostringstream run_log;
             if (!run_custom_plan_spec(
@@ -355,7 +371,9 @@ namespace sugar::service {
                     validated.plan,
                     runtime_options,
                     run_log,
-                    &backtest)) {
+                    &backtest,
+                    nullptr,
+                    &run_provenance)) {
                 const std::string detail = append_progress_callback_detail(
                     run_log.str().empty() ? "execution failed" : run_log.str(),
                     progress_state);
@@ -382,7 +400,11 @@ namespace sugar::service {
             result.job_id = job_id;
             result.metadata.validation = validated.metadata;
             result.metadata.primary_backtest = backtest;
-            result.summary_text = make_primary_run_summary(validated.metadata, backtest);
+            result.metadata.run_provenance = run_provenance;
+            result.summary_text = make_primary_run_summary(
+                validated.metadata,
+                backtest,
+                &run_provenance);
 
             ArtifactRecord summary_artifact{};
             std::string artifact_err;
@@ -401,6 +423,8 @@ namespace sugar::service {
         }
 
         const DataView dv(*validated.world.aligned_bundle);
+        const auto panel_provenance =
+            build_run_provenance_summary(validated.world.run_manifest);
         const auto panel = run_ranked_multi_entity_custom_planspec_over_dataview(
             dv,
             validated.plan,
@@ -442,7 +466,8 @@ namespace sugar::service {
         result.job_id = job_id;
         result.metadata.validation = validated.metadata;
         result.metadata.panel = panel;
-        result.summary_text = make_panel_summary(validated.metadata, panel);
+        result.metadata.run_provenance = panel_provenance;
+        result.summary_text = make_panel_summary(validated.metadata, panel, &panel_provenance);
 
         ArtifactRecord summary_artifact{};
         std::string artifact_err;

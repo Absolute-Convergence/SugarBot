@@ -93,6 +93,15 @@ namespace sugar {
             return h ^ (x + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
         }
 
+        std::size_t count_active_signals(const BoolBuffer& buffer) {
+            return static_cast<std::size_t>(std::count_if(
+                buffer.begin(),
+                buffer.end(),
+                [](std::uint8_t value) {
+                    return value != 0u;
+                }));
+        }
+
     } // namespace
 
     bool StrategyExecutor::run(
@@ -135,6 +144,17 @@ namespace sugar {
             err = "execution canceled";
             return false;
         }
+
+        out.rows_evaluated = n;
+        out.warmup_rows =
+            (plan.first_valid_index != StrategyPlan::npos)
+            ? std::min<std::size_t>(plan.first_valid_index, n)
+            : 0;
+        out.signal_counts.allow_trade = count_active_signals(signals.allow_trade);
+        out.signal_counts.entry_long = count_active_signals(signals.entry_long);
+        out.signal_counts.exit_long = count_active_signals(signals.exit_long);
+        out.signal_counts.entry_short = count_active_signals(signals.entry_short);
+        out.signal_counts.exit_short = count_active_signals(signals.exit_short);
 
         const auto open = find_series_col(dv, primary.series, "open");
         const auto time_axis = dv.time_axis();

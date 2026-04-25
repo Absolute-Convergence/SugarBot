@@ -340,32 +340,48 @@ namespace sugar {
         return true;
     }
 
-    bool compile_feature_dump_template(const PlanSpec& spec,
+    bool compile_plan_template_with_numeric_outputs(const PlanSpec& spec,
         const OperatorRegistry& registry,
         const CompileEnv& env,
         CompiledPlanTemplate& out,
-        std::vector<FeatureDumpNumericOutput>& numeric_outputs,
+        std::vector<NamedNumericOutput>& numeric_outputs,
         std::string& err) {
         initialize_plan_template(spec, env, out);
         numeric_outputs.clear();
 
         TemplateBuildCtx ctx{ spec, registry, out };
         if (!seed_template_ctx(ctx, err)) return false;
-        if (spec.numeric_nodes.empty()) {
-            err = "feature-dump requires at least one numeric node";
-            return false;
-        }
 
         numeric_outputs.reserve(spec.numeric_nodes.size());
         for (const auto& node : spec.numeric_nodes) {
             std::size_t output_slot = 0;
             if (!build_numeric_template(ctx, node.id, output_slot, err)) {
-                err = "feature-dump node '" + node.id + "': " + err;
+                err = "numeric output '" + node.id + "': " + err;
                 return false;
             }
-            numeric_outputs.push_back(FeatureDumpNumericOutput{ node.id, output_slot });
+            numeric_outputs.push_back(NamedNumericOutput{ node.id, output_slot });
         }
+
+        if (!bind_bool_template(ctx, spec.bind.entry_long, out.program.entry_long_slot, err)) return false;
+        if (!bind_bool_template(ctx, spec.bind.exit_long, out.program.exit_long_slot, err)) return false;
+        if (!bind_bool_template(ctx, spec.bind.entry_short, out.program.entry_short_slot, err)) return false;
+        if (!bind_bool_template(ctx, spec.bind.exit_short, out.program.exit_short_slot, err)) return false;
+        if (!bind_bool_template(ctx, spec.bind.allow_trade, out.program.allow_trade_slot, err)) return false;
+
         return true;
+    }
+
+    bool compile_feature_dump_template(const PlanSpec& spec,
+        const OperatorRegistry& registry,
+        const CompileEnv& env,
+        CompiledPlanTemplate& out,
+        std::vector<NamedNumericOutput>& numeric_outputs,
+        std::string& err) {
+        if (spec.numeric_nodes.empty()) {
+            err = "feature-dump requires at least one numeric node";
+            return false;
+        }
+        return compile_plan_template_with_numeric_outputs(spec, registry, env, out, numeric_outputs, err);
     }
 
     bool instantiate_compiled_plan(const CompiledPlanTemplate& plan_template,

@@ -483,8 +483,15 @@ bool test_ts_alias_runtime_parity_contracts(ContractAsserts& t) {
             if (!abs_delta_ok) t.out << "    ts.abs(ts.delta) equivalence error: " << abs_delta_log << "\n";
             if (tr_ohlc_ok && abs_delta_ok) {
                 t.expect(tr_ohlc_out.trades > 0, "ts.true_range_ohlc representative equivalence case produces trades");
-                t.expect(backtest_equal(tr_ohlc_out, abs_delta_out),
+                const bool equivalent = backtest_equal(tr_ohlc_out, abs_delta_out);
+                t.expect(equivalent,
                     "ts.true_range_ohlc remains runtime-equivalent to abs(delta) on identical OHLC inputs");
+                if (!equivalent) {
+                    t.out << "    ts.true_range_ohlc summary:\n";
+                    print_backtest_summary(tr_ohlc_out, t.out, "      ");
+                    t.out << "    ts.abs(ts.delta) summary:\n";
+                    print_backtest_summary(abs_delta_out, t.out, "      ");
+                }
             }
         }
 

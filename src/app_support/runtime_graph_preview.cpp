@@ -16,6 +16,25 @@ namespace sugar {
 
     namespace {
 
+        class StreamFormatGuard {
+        public:
+            explicit StreamFormatGuard(std::ostream& stream)
+                : stream_(stream),
+                flags_(stream.flags()),
+                precision_(stream.precision()) {
+            }
+
+            ~StreamFormatGuard() {
+                stream_.flags(flags_);
+                stream_.precision(precision_);
+            }
+
+        private:
+            std::ostream& stream_;
+            std::ios::fmtflags flags_;
+            std::streamsize precision_;
+        };
+
         const char* time_kind_name(TimeKind kind) {
             switch (kind) {
             case TimeKind::YyyyMmDd: return "YyyyMmDd";
@@ -252,6 +271,7 @@ namespace sugar {
         std::ostream& out,
         std::size_t graph_width,
         const ObservationCapabilityReport* capability_report) {
+        StreamFormatGuard format_guard(out);
         const auto& bundle = dv.bundle();
         const auto time = dv.time();
         const bool has_time_axis = manifest.preprocess.has_time_axis && !time.empty();

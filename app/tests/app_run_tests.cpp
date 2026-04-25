@@ -118,12 +118,12 @@ namespace sugar::app::tests {
                 "unified ranked run reports observation-world provenance");
             t.check(text.find("semantic.regime.test") != std::string::npos,
                 "unified ranked run reports declared layout topology metadata");
-            t.check(text.find("[Info] run scope: per_entity_ranked top_k=2 ranking_metric=pnl") != std::string::npos,
+            t.check(text.find("[Info] run scope: per_entity_ranked top_k=2 ranking_objective=maximize reported_metric:pnl") != std::string::npos,
                 "unified ranked run reports ranked scope derived from logic.json");
             t.check(text.find("Panel result") != std::string::npos,
                 "unified ranked run prints ranked panel summary");
-            t.check(text.find("ranking_metric=pnl") != std::string::npos,
-                "unified ranked run preserves explicit ranking metric in output");
+            t.check(text.find("ranking_objective=maximize reported_metric:pnl") != std::string::npos,
+                "unified ranked run reports canonical ranking objective output");
             return t.failed == 0;
         }
 

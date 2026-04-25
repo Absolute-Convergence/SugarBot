@@ -513,8 +513,10 @@ namespace sugar {
             os << "- `sweep.enabled` (bool, optional)\n";
             os << "- `sweep.top_k` (int > 0, optional)\n";
             os << "- `sweep.max_evals` (int > 0, optional)\n";
-            os << "- `sweep.objective` (string: `pnl` | `pnl_dd`, optional)\n";
-            os << "- `sweep.dd_weight` (float, optional; used for `pnl_dd`)\n";
+            os << "- `sweep.objective` (optional): either legacy string `pnl` | `pnl_dd`, or object form\n";
+            os << "  with `value.source` (`reported_metric` | `numeric_node_output`), `value.name`,\n";
+            os << "  `direction`, optional `penalties`, and optional `tie_breaks`\n";
+            os << "- `sweep.dd_weight` (float, optional; used by legacy `pnl_dd`)\n";
             os << "- `sweep.engine` (string: `exhaustive` | `coarse_fine` | `monte_carlo`, optional)\n";
             os << "- `sweep.params` (object): map `paramName -> range`\n";
             os << "- `sweep.engine_config` (object, optional)\n";

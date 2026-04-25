@@ -176,10 +176,9 @@ namespace {
 namespace sugar::app {
 
     // Returns a suggested default CSV path for the interactive prompt.
-    // Callers must validate existence before use.
+    // Empty means interactive callers should require an explicit user path.
     std::string default_csv_path_string() {
-        fs::path rel = fs::path("data") / "BTCUSD_420.csv";
-        return rel.string();
+        return {};
     }
 
     bool preprocess_to_frameset(const DataSpec& spec,

@@ -29,6 +29,10 @@ namespace {
             flag == "--contract-section";
     }
 
+    bool is_allowed_interactive_flag(std::string_view flag) {
+        return flag == "--data-spec" || flag == "--format";
+    }
+
     std::string first_non_option_arg(int argc, char** argv) {
         for (int i = 1; i < argc; ++i) {
             std::string_view a(argv[i]);
@@ -124,6 +128,24 @@ namespace {
         }
         if (x == "examples" || x == "example") {
             out = sugar::app::DumpOpsSection::Examples;
+            return true;
+        }
+        return false;
+    }
+
+    bool find_unknown_interactive_flag(int argc, char** argv, std::string& unknown_flag) {
+        for (int i = 1; i < argc; ++i) {
+            const std::string_view arg(argv[i]);
+            if (!arg.starts_with("--")) {
+                continue;
+            }
+            if (is_allowed_interactive_flag(arg)) {
+                if (is_flag_with_value(arg) && i + 1 < argc) {
+                    ++i;
+                }
+                continue;
+            }
+            unknown_flag = std::string(arg);
             return true;
         }
         return false;
@@ -301,6 +323,12 @@ namespace sugar::app {
             return true;
         }
 
+        std::string unknown_flag;
+        if (find_unknown_interactive_flag(argc, argv, unknown_flag)) {
+            err = "unknown argument '" + unknown_flag + "'";
+            return false;
+        }
+
         out.kind = CommandKind::Interactive;
         const int data_spec_i = find_flag_index(argc, argv, "--data-spec");
         out.interactive.has_runtime_data_spec = (data_spec_i >= 0);
@@ -311,6 +339,12 @@ namespace sugar::app {
             }
             out.interactive.runtime_data_spec_path =
                 sugar::normalize_path_for_runtime(std::string(argv[data_spec_i + 1]));
+        }
+
+        const int format_i = find_flag_index(argc, argv, "--format");
+        if (format_i >= 0 && format_i + 1 >= argc) {
+            err = "--format requires <auto|legacy_ohlcv_date|iso_ohlcv_time>";
+            return false;
         }
 
         std::string fmt_arg;

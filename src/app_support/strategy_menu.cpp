@@ -73,6 +73,237 @@ namespace sugar {
             choice = parsed;
             return true;
         }
+
+        SweepParamRange make_int_range(std::int64_t min_value,
+            std::int64_t max_value,
+            std::int64_t step)
+        {
+            SweepParamRange range{};
+            range.min = static_cast<double>(min_value);
+            range.max = static_cast<double>(max_value);
+            range.step = static_cast<double>(step);
+            range.is_int = true;
+            return range;
+        }
+
+        SweepParamRange make_float_values(std::initializer_list<double> values) {
+            SweepParamRange range{};
+            range.values.assign(values.begin(), values.end());
+            range.is_int = false;
+            return range;
+        }
+
+        RankingObjectiveSpec make_default_template_objective(const PlanSweepSpec& sweep) {
+            RankingObjectiveSpec objective{};
+            objective.primary.source = ObjectiveValueSource::ReportedMetric;
+            objective.primary.name = "pnl";
+            objective.direction = ObjectiveDirection::Maximize;
+            if (sweep.objective == "pnl_dd") {
+                ObjectivePenaltySpec penalty{};
+                penalty.value.source = ObjectiveValueSource::ReportedMetric;
+                penalty.value.name = "max_drawdown";
+                penalty.weight = sweep.dd_weight;
+                objective.penalties.push_back(std::move(penalty));
+            }
+            return objective;
+        }
+
+        PlanSweepSpec make_template_sweep_spec(
+            StrategyTemplate templ,
+            TemplateSweepPreset preset)
+        {
+            PlanSweepSpec sweep{};
+            sweep.enabled = true;
+            sweep.top_k = 5;
+            sweep.objective = "pnl_dd";
+            sweep.dd_weight = 0.25;
+            sweep.engine = PlanSweepEngineKind::Exhaustive;
+
+            switch (preset) {
+            case TemplateSweepPreset::Focused:
+                sweep.max_evals = 1000;
+                break;
+            case TemplateSweepPreset::Broad:
+                sweep.max_evals = 25000;
+                break;
+            case TemplateSweepPreset::Standard:
+            default:
+                sweep.max_evals = 10000;
+                break;
+            }
+
+            switch (templ) {
+            case StrategyTemplate::Donchian_Breakout:
+                switch (preset) {
+                case TemplateSweepPreset::Focused:
+                    sweep.params["n"] = make_int_range(5, 500, 1);
+                    break;
+                case TemplateSweepPreset::Broad:
+                    sweep.params["n"] = make_int_range(5, 20000, 1);
+                    break;
+                case TemplateSweepPreset::Standard:
+                default:
+                    sweep.params["n"] = make_int_range(5, 3500, 1);
+                    break;
+                }
+                break;
+
+            case StrategyTemplate::Gated_Diff_Cross:
+                switch (preset) {
+                case TemplateSweepPreset::Focused:
+                    sweep.params["n_fast"] = make_int_range(3, 15, 1);
+                    sweep.params["n_slow"] = make_int_range(20, 90, 2);
+                    break;
+                case TemplateSweepPreset::Broad:
+                    sweep.params["n_fast"] = make_int_range(2, 60, 1);
+                    sweep.params["n_slow"] = make_int_range(10, 400, 1);
+                    break;
+                case TemplateSweepPreset::Standard:
+                default:
+                    sweep.params["n_fast"] = make_int_range(3, 40, 1);
+                    sweep.params["n_slow"] = make_int_range(20, 200, 1);
+                    break;
+                }
+                break;
+
+            case StrategyTemplate::ZScore_MeanReversion:
+                switch (preset) {
+                case TemplateSweepPreset::Focused:
+                    sweep.params["n"] = make_int_range(5, 80, 5);
+                    sweep.params["entry_z_long"] = make_float_values({ -0.75, -1.0, -1.25, -1.5, -1.75 });
+                    sweep.params["entry_z_short"] = make_float_values({ 0.75, 1.0, 1.25, 1.5, 1.75 });
+                    break;
+                case TemplateSweepPreset::Broad:
+                    sweep.params["n"] = make_int_range(5, 250, 1);
+                    sweep.params["entry_z_long"] = make_float_values({ -0.25, -0.5, -0.75, -1.0, -1.25, -1.5, -1.75, -2.0, -2.25, -2.5 });
+                    sweep.params["entry_z_short"] = make_float_values({ 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5 });
+                    break;
+                case TemplateSweepPreset::Standard:
+                default:
+                    sweep.params["n"] = make_int_range(5, 150, 1);
+                    sweep.params["entry_z_long"] = make_float_values({ -0.5, -0.75, -1.0, -1.25, -1.5, -1.75, -2.0, -2.25 });
+                    sweep.params["entry_z_short"] = make_float_values({ 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25 });
+                    break;
+                }
+                break;
+
+            case StrategyTemplate::Swing_Breakout_Validation:
+                switch (preset) {
+                case TemplateSweepPreset::Focused:
+                    sweep.params["n_break"] = make_int_range(5, 35, 2);
+                    sweep.params["n_trend"] = make_int_range(20, 100, 5);
+                    break;
+                case TemplateSweepPreset::Broad:
+                    sweep.params["n_break"] = make_int_range(5, 150, 1);
+                    sweep.params["n_trend"] = make_int_range(60, 400, 2);
+                    break;
+                case TemplateSweepPreset::Standard:
+                default:
+                    sweep.params["n_break"] = make_int_range(5, 80, 1);
+                    sweep.params["n_trend"] = make_int_range(40, 240, 5);
+                    break;
+                }
+                break;
+
+            default:
+                break;
+            }
+
+            return sweep;
+        }
+
+        std::string format_template_sweep_param_names(const PlanSpecSweepDims& dims) {
+            std::ostringstream oss;
+            for (std::size_t i = 0; i < dims.names.size(); ++i) {
+                if (i) {
+                    oss << ", ";
+                }
+                oss << dims.names[i];
+            }
+            return oss.str();
+        }
+
+        std::size_t estimate_template_candidate_count(
+            StrategyTemplate templ,
+            TemplateSweepPreset preset)
+        {
+            const PlanSweepSpec sweep = make_template_sweep_spec(templ, preset);
+            PlanSpecSweepDims dims{};
+            std::string err;
+            if (!build_planspec_sweep_dims(sweep, dims, err)) {
+                return 0;
+            }
+            return build_planspec_sweep_points(dims, sweep.max_evals).size();
+        }
+
+        TemplateSweepPreset prompt_template_sweep_preset(
+            std::istream& in,
+            std::ostream& out,
+            StrategyTemplate templ,
+            TemplateSweepPreset def)
+        {
+            const auto focused_count = estimate_template_candidate_count(templ, TemplateSweepPreset::Focused);
+            const auto standard_count = estimate_template_candidate_count(templ, TemplateSweepPreset::Standard);
+            const auto broad_count = estimate_template_candidate_count(templ, TemplateSweepPreset::Broad);
+
+            out << "\nSweep search profile:\n";
+            out << "  1) Focused  (" << focused_count << " candidates; fast sanity sweep)\n";
+            out << "  2) Standard (" << standard_count << " candidates; recommended)\n";
+            out << "  3) Broad    (" << broad_count << " candidates; wider search)\n";
+            out << "Selection [default: " << static_cast<int>(def) << "]: ";
+
+            std::string line;
+            std::getline(in, line);
+
+            int choice = static_cast<int>(def);
+            if (!line.empty()) {
+                std::istringstream iss(line);
+                iss >> choice;
+            }
+
+            if (choice == 1) {
+                return TemplateSweepPreset::Focused;
+            }
+            if (choice == 3) {
+                return TemplateSweepPreset::Broad;
+            }
+            return TemplateSweepPreset::Standard;
+        }
+
+        bool configure_template_sweep(
+            StrategyTemplate templ,
+            TemplateSweepPreset preset,
+            PlanSpec& spec,
+            std::ostream& out)
+        {
+            spec.sweep = make_template_sweep_spec(templ, preset);
+            if (!spec.sweep.has_value()) {
+                out << "Template sweep error: no sweep preset is available for this template.\n";
+                return false;
+            }
+
+            PlanSpecSweepDims dims{};
+            std::string err;
+            if (!build_planspec_sweep_dims(*spec.sweep, dims, err)) {
+                out << "Template sweep error: " << err << "\n";
+                return false;
+            }
+
+            const auto points = build_planspec_sweep_points(dims, spec.sweep->max_evals);
+            const auto total_combos = dims.total_combinations();
+            const auto objective = make_default_template_objective(*spec.sweep);
+
+            out << "[Info] template sweep configured: engine=exhaustive"
+                << " objective=" << describe_ranking_objective(objective)
+                << " top_k=" << spec.sweep->top_k
+                << " candidate_space=" << points.size();
+            if (total_combos != points.size()) {
+                out << " of " << total_combos;
+            }
+            out << "\n";
+            out << "[Info] sweep params: " << format_template_sweep_param_names(dims) << "\n";
+            return true;
+        }
     } // namespace
 
     StrategySource prompt_strategy_source(std::istream& in, std::ostream& out, bool include_artifact_run) {
@@ -181,6 +412,11 @@ namespace sugar {
         StrategyRunOptions& opt)
     {
         opt.donchian_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.donchian_exec.eval_mode);
+        opt.sweep_preset = prompt_template_sweep_preset(
+            in,
+            out,
+            StrategyTemplate::Donchian_Breakout,
+            opt.sweep_preset);
     }
 
     void prompt_gated_diff_cross_sweep(std::istream& in,
@@ -188,6 +424,11 @@ namespace sugar {
         StrategyRunOptions& opt)
     {
         opt.gated_diff_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.gated_diff_exec.eval_mode);
+        opt.sweep_preset = prompt_template_sweep_preset(
+            in,
+            out,
+            StrategyTemplate::Gated_Diff_Cross,
+            opt.sweep_preset);
     }
 
     void prompt_zscore_mean_reversion_sweep_ranges(std::istream& in,
@@ -195,6 +436,11 @@ namespace sugar {
         StrategyRunOptions& opt)
     {
         opt.zscore_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.zscore_exec.eval_mode);
+        opt.sweep_preset = prompt_template_sweep_preset(
+            in,
+            out,
+            StrategyTemplate::ZScore_MeanReversion,
+            opt.sweep_preset);
     }
 
     void prompt_swing_breakout_validation_sweep(std::istream& in,
@@ -202,6 +448,11 @@ namespace sugar {
         StrategyRunOptions& opt)
     {
         opt.swing_exec.eval_mode = prompt_bar_eval_mode(in, out, opt.swing_exec.eval_mode);
+        opt.sweep_preset = prompt_template_sweep_preset(
+            in,
+            out,
+            StrategyTemplate::Swing_Breakout_Validation,
+            opt.sweep_preset);
     }
 
     void prompt_custom_user_planspec(std::istream& in,
@@ -318,10 +569,14 @@ namespace sugar {
                 out << "Template PlanSpec error: " << e << "\n";
                 return false;
             }
+            if (!configure_template_sweep(templ, opt.sweep_preset, spec, out)) {
+                return false;
+            }
 
             PlanSweepRuntimeOptions rt{};
             rt.override_mode = true;
             rt.custom_mode = opt.mode;
+            rt.ostream_progress_throttle_ms = 0;
 
             // Keep per-template eval-mode prompts behavior while routing execution through PlanSpec.
             switch (templ) {

@@ -122,6 +122,7 @@ namespace sugar::service {
         ValidationMetadata validation{};
         std::optional<BacktestResult> primary_backtest{};
         std::optional<PanelResult> panel{};
+        std::optional<RunProvenanceSummary> run_provenance{};
     };
 
     struct JobResult {

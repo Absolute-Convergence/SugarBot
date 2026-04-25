@@ -7,8 +7,10 @@ sandbox_build/
 sandbox_asan/
 codex_build/
 codex_asan/
+docs/security/
 Testing/
 CMakeBuilds/
+CMakeUserPresets.json
 ipch/
 data/ahs2023m.csv
 *.ipch
@@ -21,4 +23,3 @@ data/ahs2023m.csv
 *.zip
 
 release/
-

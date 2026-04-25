@@ -8,6 +8,7 @@
 #include "ingest/layout_spec.h"
 #include "reporting/app_reporters.h"
 #include "runtime/app_runtime.h"
+#include "sweep/metrics.h"
 #include "sweep/runtime_graph_preview.h"
 
 namespace sugar::app::tests {
@@ -150,6 +151,12 @@ namespace sugar::app::tests {
                 "help output warns about the unsupported data_spec wrapper");
             t.check(text.find("--align-dump layout.json data.csv --series-key-col <col>") != std::string::npos,
                 "help output promotes align-dump as a planning tool");
+            t.check(text.find("Reports and diagnostics:") != std::string::npos,
+                "help output includes a reporting/discovery section");
+            t.check(text.find("final execution report for the selected path") != std::string::npos,
+                "help output explains that run emits the final report surface");
+            t.check(text.find("interactive mode exposes these same report surfaces") != std::string::npos,
+                "help output ties report discovery into interactive mode");
             return t.failed == 0;
         }
 
@@ -192,6 +199,8 @@ namespace sugar::app::tests {
                 "dump-plan output includes primary-series scope");
             t.check(text.find("per_entity_ranked") != std::string::npos,
                 "dump-plan output includes ranked scope");
+            t.check(text.find("run.objective") != std::string::npos,
+                "dump-plan output documents canonical run objective shape");
             t.check(text.find("`--align-dump`") != std::string::npos,
                 "dump-plan output points users to align-dump before cross-series authoring");
             t.check(text.find("`ts.sub`") != std::string::npos,
@@ -463,6 +472,10 @@ namespace sugar::app::tests {
                 "coarse-fine run output is capped by top-level sweep.top_k");
             t.check(text.find("TopK: 4") == std::string::npos,
                 "coarse-fine run output does not expose k_stage2 as the final TopK count");
+            t.check(text.find("Ranked candidate reports:") != std::string::npos,
+                "coarse-fine run output advertises the candidate report section");
+            t.check(text.find("Run report:") != std::string::npos,
+                "coarse-fine run output prints candidate details through the run report seam");
             return t.failed == 0;
         }
 
@@ -978,6 +991,117 @@ namespace sugar::app::tests {
             return t.failed == 0;
         }
 
+        bool test_plan_capability_report_hints_bool_node_numeric_bridge(TestContext& t) {
+            t.out << "[app_reporters] bool node used in numeric arg hint\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "bool-node numeric-bridge fixture files are created");
+            if (!fixture_ok) return false;
+
+            sugar::LayoutSpec layout{};
+            std::string load_err;
+            const bool layout_ok = sugar::load_layout_spec_file(fixture.layout_path, layout, load_err);
+            t.check(layout_ok, "bool-node numeric-bridge layout loads");
+            if (!layout_ok) return false;
+
+            sugar::ResolvedObservationWorld world{};
+            const bool world_ok = sugar::build_resolved_observation_world(layout, fixture.csv_path, world, load_err);
+            t.check(world_ok, "bool-node numeric-bridge observation world builds");
+            if (!world_ok) return false;
+
+            sugar::ResolvedRuntimeInput runtime{};
+            const bool runtime_ok = sugar::bind_resolved_runtime_target(
+                world,
+                layout.ingest.primary_value_col,
+                sugar::RuntimeTargetSpec{},
+                runtime,
+                load_err);
+            t.check(runtime_ok, "bool-node numeric-bridge runtime binds");
+            if (!runtime_ok) return false;
+
+            sugar::PlanSpec spec{};
+            spec.numeric_nodes = {
+                sugar::NodeSpec{ "c", "core.close", {}, {} },
+                sugar::NodeSpec{ "z", "core.const", {}, { {"value", 0.0} } },
+                sugar::NodeSpec{ "bad", "ts.sma", { "flag" }, { {"n", 2.0} } },
+            };
+            spec.bool_nodes = {
+                sugar::NodeSpec{ "flag", "cmp.gt", { "c", "z" }, {} },
+            };
+            spec.bind = sugar::PlanBindings{};
+
+            std::ostringstream out;
+            sugar::app::print_plan_capability_report(spec, runtime, out);
+            const std::string text = out.str();
+
+            t.check(text.find("flag is a bool node; to use bool output in a numeric context, use `core.select`") != std::string::npos,
+                "plan capability report explains how to bridge bool nodes into numeric context");
+            t.check(text.find("unknown numeric node: flag") == std::string::npos,
+                "plan capability report avoids the misleading unknown-numeric-node wording for bool references");
+            return t.failed == 0;
+        }
+
+        bool test_runtime_graph_preview_restores_stream_formatting_for_run_reports(TestContext& t) {
+            t.out << "[app_reporters] runtime preview restores stream formatting\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_single_series_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "runtime-preview formatting fixture files are created");
+            if (!fixture_ok) return false;
+
+            sugar::LayoutSpec layout{};
+            std::string load_err;
+            const bool layout_ok = sugar::load_layout_spec_file(fixture.layout_path, layout, load_err);
+            t.check(layout_ok, "runtime-preview formatting layout loads");
+            if (!layout_ok) return false;
+
+            sugar::ResolvedObservationWorld world{};
+            const bool world_ok = sugar::build_resolved_observation_world(layout, fixture.csv_path, world, load_err);
+            t.check(world_ok, "runtime-preview formatting observation world builds");
+            if (!world_ok) return false;
+
+            sugar::ResolvedRuntimeInput runtime{};
+            const bool runtime_ok = sugar::bind_resolved_runtime_target(
+                world,
+                layout.ingest.primary_value_col,
+                sugar::RuntimeTargetSpec{},
+                runtime,
+                load_err);
+            t.check(runtime_ok, "runtime-preview formatting runtime binds");
+            if (!runtime_ok) return false;
+
+            sugar::BacktestResult result{};
+            result.pnl = 12.5;
+            result.trades = 20;
+            result.max_drawdown = 3.25;
+            result.best_start_date = 20211123;
+            result.has_best_start_date = true;
+
+            const sugar::DataView dv(*runtime.aligned_bundle);
+            std::ostringstream out;
+            sugar::print_runtime_graph_preview(
+                dv,
+                runtime.primary_ref,
+                runtime.run_manifest,
+                "formatting-test",
+                out,
+                8,
+                nullptr);
+            sugar::print_backtest_summary(result, out);
+            const std::string text = out.str();
+
+            t.check(text.find("Trades: 20\n") != std::string::npos,
+                "run summary keeps integer trade counts after runtime preview output");
+            t.check(text.find("trades [core_metric]: 20\n") != std::string::npos,
+                "metric catalog keeps integer trade counts after runtime preview output");
+            t.check(text.find("first_usable_signal_time_key [core_metric]: 20211123\n") != std::string::npos,
+                "metric catalog prints time-key metrics without scientific notation");
+            t.check(text.find("20.0000") == std::string::npos,
+                "runtime preview formatting no longer leaks fixed precision into later run reports");
+            return t.failed == 0;
+        }
+
         bool test_layout_parser_rejects_data_spec_wrapper_with_explicit_hint(TestContext& t) {
             t.out << "[layout_spec] unsupported data_spec wrapper hint\n";
             const std::string json =
@@ -1028,6 +1152,8 @@ namespace sugar::app::tests {
         tests.push_back(test_plan_capability_report_surfaces_locality_subject_provenance);
         tests.push_back(test_plan_capability_report_hints_same_series_alternative_for_ms_diff);
         tests.push_back(test_plan_capability_report_hints_bool_op_node_list);
+        tests.push_back(test_plan_capability_report_hints_bool_node_numeric_bridge);
+        tests.push_back(test_runtime_graph_preview_restores_stream_formatting_for_run_reports);
         tests.push_back(test_layout_parser_rejects_data_spec_wrapper_with_explicit_hint);
     }
 

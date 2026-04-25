@@ -29,8 +29,15 @@ namespace sugar {
         Swing_Breakout_Validation = 4,
     };
 
+    enum class TemplateSweepPreset {
+        Focused = 1,
+        Standard = 2,
+        Broad = 3,
+    };
+
     struct StrategyRunOptions {
         TradeMode mode{ TradeMode::LongShort };
+        TemplateSweepPreset sweep_preset{ TemplateSweepPreset::Standard };
 
         ExecSettings donchian_exec{};
         ExecSettings gated_diff_exec{};

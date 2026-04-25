@@ -50,16 +50,248 @@ namespace sugar {
             return false;
         }
 
-        bool parse_run_ranking_metric(const std::string& s, PlanRunRankingMetric& out) {
-            if (s == "pnl") {
-                out = PlanRunRankingMetric::Pnl;
+        bool parse_objective_value_source(const std::string& s, ObjectiveValueSource& out) {
+            if (s == "reported_metric") {
+                out = ObjectiveValueSource::ReportedMetric;
                 return true;
             }
-            if (s == "pnl_dd") {
-                out = PlanRunRankingMetric::PnlDd;
+            if (s == "numeric_node_output") {
+                out = ObjectiveValueSource::NumericNodeOutput;
                 return true;
             }
             return false;
+        }
+
+        bool parse_objective_direction(const std::string& s, ObjectiveDirection& out) {
+            if (s == "maximize") {
+                out = ObjectiveDirection::Maximize;
+                return true;
+            }
+            if (s == "minimize") {
+                out = ObjectiveDirection::Minimize;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_numeric_node_summary_mode(const std::string& s, NumericNodeSummaryMode& out) {
+            if (s == "last_finite") {
+                out = NumericNodeSummaryMode::LastFiniteValue;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_objective_value_spec(const Value& v, ObjectiveValueSpec& out, std::string& err) {
+            if (!v.is_obj()) {
+                err = "objective value must be an object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+
+            auto* source = obj_get(o, "source");
+            if (!source || !source->is_str()) {
+                err = "objective value.source must be string";
+                return false;
+            }
+            if (!parse_objective_value_source(source->as_str(), out.source)) {
+                err = "objective value.source must be reported_metric or numeric_node_output";
+                return false;
+            }
+
+            auto* name = obj_get(o, "name");
+            if (!name || !name->is_str()) {
+                err = "objective value.name must be string";
+                return false;
+            }
+            out.name = name->as_str();
+            if (out.name.empty()) {
+                err = "objective value.name must not be empty";
+                return false;
+            }
+
+            if (auto* summary = obj_get(o, "summary")) {
+                if (!summary->is_str()) {
+                    err = "objective value.summary must be string";
+                    return false;
+                }
+                if (!parse_numeric_node_summary_mode(summary->as_str(), out.summary_mode)) {
+                    err = "objective value.summary must be last_finite";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        RankingObjectiveSpec make_default_run_objective_spec() {
+            RankingObjectiveSpec objective{};
+            objective.primary.source = ObjectiveValueSource::ReportedMetric;
+            objective.primary.name = "pnl";
+            objective.direction = ObjectiveDirection::Maximize;
+            return objective;
+        }
+
+        bool parse_compat_run_objective_spec(
+            const Object& o,
+            RankingObjectiveSpec& out,
+            std::string& err) {
+            const auto* ranking_metric = obj_get(o, "ranking_metric");
+            const auto* ranking_dd_weight = obj_get(o, "ranking_dd_weight");
+            if (!ranking_metric && !ranking_dd_weight) {
+                return false;
+            }
+
+            if (!ranking_metric) {
+                err = "run.ranking_dd_weight requires compatibility run.ranking_metric=pnl_dd";
+                return false;
+            }
+            if (!ranking_metric->is_str()) {
+                err = "run.ranking_metric must be string";
+                return false;
+            }
+
+            const std::string metric = ranking_metric->as_str();
+            if (metric == "pnl") {
+                if (ranking_dd_weight) {
+                    err = "run.ranking_dd_weight applies only when compatibility run.ranking_metric=pnl_dd";
+                    return false;
+                }
+                out = make_default_run_objective_spec();
+                return true;
+            }
+
+            if (metric == "pnl_dd") {
+                if (!ranking_dd_weight || !ranking_dd_weight->is_num()) {
+                    err = "run.ranking_dd_weight is required when compatibility run.ranking_metric=pnl_dd";
+                    return false;
+                }
+                out = make_default_run_objective_spec();
+                ObjectivePenaltySpec penalty{};
+                penalty.value.source = ObjectiveValueSource::ReportedMetric;
+                penalty.value.name = "max_drawdown";
+                penalty.weight = ranking_dd_weight->number_as_f64();
+                out.penalties.push_back(std::move(penalty));
+                return true;
+            }
+
+            err = "run.ranking_metric must be pnl or pnl_dd";
+            return false;
+        }
+
+        bool parse_objective_penalty_spec(const Value& v, ObjectivePenaltySpec& out, std::string& err) {
+            if (!v.is_obj()) {
+                err = "objective penalty must be an object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+            auto* value = obj_get(o, "value");
+            if (!value) {
+                err = "objective penalty.value is required";
+                return false;
+            }
+            if (!parse_objective_value_spec(*value, out.value, err)) {
+                err = "objective penalty.value: " + err;
+                return false;
+            }
+            auto* weight = obj_get(o, "weight");
+            if (!weight || !weight->is_num()) {
+                err = "objective penalty.weight must be number";
+                return false;
+            }
+            out.weight = weight->number_as_f64();
+            return true;
+        }
+
+        bool parse_objective_tie_break_spec(const Value& v, ObjectiveTieBreakSpec& out, std::string& err) {
+            if (!v.is_obj()) {
+                err = "objective tie_break must be an object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+            auto* value = obj_get(o, "value");
+            if (!value) {
+                err = "objective tie_break.value is required";
+                return false;
+            }
+            if (!parse_objective_value_spec(*value, out.value, err)) {
+                err = "objective tie_break.value: " + err;
+                return false;
+            }
+            auto* direction = obj_get(o, "direction");
+            if (!direction || !direction->is_str()) {
+                err = "objective tie_break.direction must be string";
+                return false;
+            }
+            if (!parse_objective_direction(direction->as_str(), out.direction)) {
+                err = "objective tie_break.direction must be maximize or minimize";
+                return false;
+            }
+            return true;
+        }
+
+        bool parse_ranking_objective_object_spec(
+            const Value& v,
+            const char* field_name,
+            RankingObjectiveSpec& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = std::string(field_name) + " must be object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+
+            auto* primary = obj_get(o, "value");
+            if (!primary) {
+                err = std::string(field_name) + ".value is required";
+                return false;
+            }
+            if (!parse_objective_value_spec(*primary, out.primary, err)) {
+                err = std::string(field_name) + ".value: " + err;
+                return false;
+            }
+
+            auto* direction = obj_get(o, "direction");
+            if (!direction || !direction->is_str()) {
+                err = std::string(field_name) + ".direction must be string";
+                return false;
+            }
+            if (!parse_objective_direction(direction->as_str(), out.direction)) {
+                err = std::string(field_name) + ".direction must be maximize or minimize";
+                return false;
+            }
+
+            if (auto* penalties = obj_get(o, "penalties")) {
+                if (!penalties->is_arr()) {
+                    err = std::string(field_name) + ".penalties must be array";
+                    return false;
+                }
+                out.penalties.clear();
+                for (const auto& item : penalties->as_arr()) {
+                    ObjectivePenaltySpec penalty{};
+                    if (!parse_objective_penalty_spec(item, penalty, err)) {
+                        return false;
+                    }
+                    out.penalties.push_back(std::move(penalty));
+                }
+            }
+
+            if (auto* tie_breaks = obj_get(o, "tie_breaks")) {
+                if (!tie_breaks->is_arr()) {
+                    err = std::string(field_name) + ".tie_breaks must be array";
+                    return false;
+                }
+                out.tie_breaks.clear();
+                for (const auto& item : tie_breaks->as_arr()) {
+                    ObjectiveTieBreakSpec tie_break{};
+                    if (!parse_objective_tie_break_spec(item, tie_break, err)) {
+                        return false;
+                    }
+                    out.tie_breaks.push_back(std::move(tie_break));
+                }
+            }
+
+            return true;
         }
 
         bool parse_exec_settings(const Value& v, ExecSettings& out, std::string& err) {
@@ -264,8 +496,20 @@ namespace sugar {
                 out.max_evals = static_cast<std::size_t>(x);
             }
             if (auto* p = obj_get(o, "objective")) {
-                if (!p->is_str()) { err = "sweep.objective must be string"; return false; }
-                out.objective = p->as_str();
+                if (p->is_str()) {
+                    out.objective = p->as_str();
+                }
+                else if (p->is_obj()) {
+                    RankingObjectiveSpec objective{};
+                    if (!parse_ranking_objective_object_spec(*p, "sweep.objective", objective, err)) {
+                        return false;
+                    }
+                    out.objective_spec = std::move(objective);
+                }
+                else {
+                    err = "sweep.objective must be string or object";
+                    return false;
+                }
             }
             if (auto* p = obj_get(o, "dd_weight")) {
                 if (!p->is_num()) { err = "sweep.dd_weight must be number"; return false; }
@@ -411,25 +655,23 @@ namespace sugar {
                 out.top_k = static_cast<std::size_t>(x);
             }
 
-            if (auto* p = obj_get(o, "ranking_metric")) {
-                if (!p->is_str()) {
-                    err = "run.ranking_metric must be string";
+            if (auto* p = obj_get(o, "objective")) {
+                RankingObjectiveSpec objective{};
+                if (!parse_ranking_objective_object_spec(*p, "run.objective", objective, err)) {
                     return false;
                 }
-                PlanRunRankingMetric metric{};
-                if (!parse_run_ranking_metric(p->as_str(), metric)) {
-                    err = "run.ranking_metric must be pnl or pnl_dd";
+                if (obj_get(o, "ranking_metric") || obj_get(o, "ranking_dd_weight")) {
+                    err = "run.objective may not be combined with compatibility run.ranking_metric or run.ranking_dd_weight";
                     return false;
                 }
-                out.ranking_metric = metric;
-            }
-
-            if (auto* p = obj_get(o, "ranking_dd_weight")) {
-                if (!p->is_num()) {
-                    err = "run.ranking_dd_weight must be number";
+                out.objective_spec = std::move(objective);
+            } else {
+                RankingObjectiveSpec compatibility_objective{};
+                if (parse_compat_run_objective_spec(o, compatibility_objective, err)) {
+                    out.objective_spec = std::move(compatibility_objective);
+                } else if (!err.empty()) {
                     return false;
                 }
-                out.ranking_dd_weight = p->number_as_f64();
             }
 
             return true;
@@ -442,16 +684,6 @@ namespace sugar {
             return "primary_series";
         case PlanRunScope::PerEntityRanked:
             return "per_entity_ranked";
-        }
-        return "unknown";
-    }
-
-    std::string_view plan_run_ranking_metric_name(PlanRunRankingMetric metric) {
-        switch (metric) {
-        case PlanRunRankingMetric::Pnl:
-            return "pnl";
-        case PlanRunRankingMetric::PnlDd:
-            return "pnl_dd";
         }
         return "unknown";
     }

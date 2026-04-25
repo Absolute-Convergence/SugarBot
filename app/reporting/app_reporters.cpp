@@ -356,40 +356,11 @@ namespace sugar::app {
         print_missing_stats(f, out, std::string(prefix));
     }
 
-    void print_panel_result(const sugar::PanelResult& r, std::ostream& out) {
-        out << "Panel result\n";
-        out << "  entities_total=" << r.entities_total
-            << " ok=" << r.entities_ok
-            << " failed=" << r.entities_failed << "\n";
-        out << "  ranking_metric=" << sugar::panel_ranking_metric_name(r.ranking.metric);
-        if (r.ranking.metric == sugar::PanelRankingMetric::PnlDd) {
-            out << " dd_weight=" << r.ranking.dd_weight;
-        }
-        out << "\n";
-
-        for (std::size_t i = 0; i < r.topk.size(); ++i) {
-            const auto& row = r.topk[i];
-            out << "  [" << i << "] series=" << row.series_key;
-            if (row.entity_key != row.series_key) {
-                out << " entity=" << row.entity_key;
-            }
-            out << " metric=" << sugar::panel_ranking_metric_name(row.ranking_metric);
-            out << " ranking_score=" << row.ranking_score
-                << " pnl=" << row.metrics.pnl
-                << " trades=" << row.metrics.trades
-                << "\n";
-        }
-
-        if (!r.failures.empty()) {
-            out << "  failures:\n";
-            for (const auto& f : r.failures) {
-                out << "    series=" << f.series_key;
-                if (f.entity_key != f.series_key) {
-                    out << " entity=" << f.entity_key;
-                }
-                out << ": " << f.reason << "\n";
-            }
-        }
+    void print_panel_result(
+        const sugar::PanelResult& r,
+        std::ostream& out,
+        const sugar::RunProvenanceSummary* provenance) {
+        print_panel_report_summary(build_panel_report(r, provenance), out);
     }
 
     void print_align_dump(const sugar::align::AlignedBundle& b, std::ostream& out) {

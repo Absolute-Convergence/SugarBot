@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 8,
   "cmakeMinimumRequired": {
     "major": 3,
     "minor": 16,
@@ -91,7 +91,8 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "SUGAR_OUT_ROOT": "${sourceDir}/out/Linux"
       }
     },
     {
@@ -152,7 +153,8 @@
       "binaryDir": "${sourceDir}/out/build/arm64-linux-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-debug"
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-debug",
+        "SUGAR_OUT_ROOT": "${sourceDir}/out/Linux-arm64"
       }
     },
     {
@@ -162,7 +164,8 @@
       "binaryDir": "${sourceDir}/out/build/arm64-linux-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-release"
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/arm64-linux-release",
+        "SUGAR_OUT_ROOT": "${sourceDir}/out/Linux-arm64"
       }
     }
   ],

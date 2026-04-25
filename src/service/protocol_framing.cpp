@@ -171,7 +171,64 @@ namespace sugar::service {
             out << "}";
         }
 
-        void append_backtest_json(std::ostringstream& out, const BacktestResult& result) {
+        bool run_provenance_has_data(const RunProvenanceSummary& provenance) {
+            return !provenance.primary_series_key.empty() ||
+                !provenance.primary_selection_mode.empty() ||
+                !provenance.time_kind.empty() ||
+                !provenance.time_resolution.empty() ||
+                provenance.series_count > 0 ||
+                provenance.has_time_axis ||
+                provenance.has_entity_axis ||
+                provenance.has_spatial_axis ||
+                provenance.input_warning_count > 0 ||
+                provenance.alignment_applied ||
+                !provenance.alignment_calendar.empty() ||
+                !provenance.alignment_missing.empty() ||
+                !provenance.alignment_non_temporal_multi_series.empty() ||
+                !provenance.topology_names.empty() ||
+                provenance.topology_usage_count > 0;
+        }
+
+        void append_run_provenance_json(std::ostringstream& out, const RunProvenanceSummary& provenance) {
+            bool first = true;
+            out << "{";
+            append_json_string_field(out, "primary_series_key", provenance.primary_series_key, first);
+            append_json_string_field(out, "primary_selection_mode", provenance.primary_selection_mode, first);
+            append_json_string_field(out, "time_kind", provenance.time_kind, first);
+            append_json_string_field(out, "time_resolution", provenance.time_resolution, first);
+            append_json_u64_field(out, "series_count", static_cast<std::uint64_t>(provenance.series_count), first);
+            append_json_bool_field(out, "has_time_axis", provenance.has_time_axis, first);
+            append_json_bool_field(out, "has_entity_axis", provenance.has_entity_axis, first);
+            append_json_bool_field(out, "has_spatial_axis", provenance.has_spatial_axis, first);
+            append_json_u64_field(out, "input_warning_count", static_cast<std::uint64_t>(provenance.input_warning_count), first);
+            append_json_bool_field(out, "alignment_applied", provenance.alignment_applied, first);
+            append_json_string_field(out, "alignment_calendar", provenance.alignment_calendar, first);
+            append_json_string_field(out, "alignment_missing", provenance.alignment_missing, first);
+            append_json_string_field(
+                out,
+                "alignment_non_temporal_multi_series",
+                provenance.alignment_non_temporal_multi_series,
+                first);
+            append_json_u64_field(
+                out,
+                "topology_usage_count",
+                static_cast<std::uint64_t>(provenance.topology_usage_count),
+                first);
+            if (!first) out << ",";
+            out << "\"topology_names\":[";
+            for (std::size_t i = 0; i < provenance.topology_names.size(); ++i) {
+                if (i != 0) out << ",";
+                out << "\"" << escape_json_string(provenance.topology_names[i]) << "\"";
+            }
+            out << "]";
+            out << "}";
+        }
+
+        void append_backtest_json(
+            std::ostringstream& out,
+            const BacktestResult& result,
+            const RunProvenanceSummary* provenance = nullptr) {
+            const RunReport report = build_run_report(result, nullptr, provenance);
             bool first = true;
             out << "{";
             append_json_double_field(out, "pnl", result.pnl, first);
@@ -182,36 +239,116 @@ namespace sugar::service {
             append_json_double_field(out, "pnl_long", result.pnl_long, first);
             append_json_double_field(out, "pnl_short", result.pnl_short, first);
             append_json_u64_field(out, "trade_hash", static_cast<std::uint64_t>(result.trade_hash), first);
+            append_json_u64_field(out, "rows_evaluated", static_cast<std::uint64_t>(result.rows_evaluated), first);
+            append_json_u64_field(out, "warmup_rows", static_cast<std::uint64_t>(result.warmup_rows), first);
             if (result.has_best_start_date) {
                 append_json_u64_field(out, "best_start_date", static_cast<std::uint64_t>(result.best_start_date), first);
+            }
+            if (!first) out << ",";
+            out << "\"signal_counts\":{";
+            bool signal_first = true;
+            append_json_u64_field(out, "allow_trade", static_cast<std::uint64_t>(result.signal_counts.allow_trade), signal_first);
+            append_json_u64_field(out, "entry_long", static_cast<std::uint64_t>(result.signal_counts.entry_long), signal_first);
+            append_json_u64_field(out, "exit_long", static_cast<std::uint64_t>(result.signal_counts.exit_long), signal_first);
+            append_json_u64_field(out, "entry_short", static_cast<std::uint64_t>(result.signal_counts.entry_short), signal_first);
+            append_json_u64_field(out, "exit_short", static_cast<std::uint64_t>(result.signal_counts.exit_short), signal_first);
+            out << "}";
+            if (!result.reported_values.empty()) {
+                if (!first) out << ",";
+                out << "\"reported_values\":[";
+                for (std::size_t i = 0; i < result.reported_values.size(); ++i) {
+                    if (i != 0) out << ",";
+                    bool value_first = true;
+                    out << "{";
+                    append_json_string_field(out, "name", result.reported_values[i].name, value_first);
+                    append_json_double_field(out, "value", result.reported_values[i].value, value_first);
+                    out << "}";
+                }
+                out << "]";
+            }
+            if (!report.metric_catalog.values.empty()) {
+                if (!first) out << ",";
+                out << "\"metric_catalog\":[";
+                for (std::size_t i = 0; i < report.metric_catalog.values.size(); ++i) {
+                    if (i != 0) out << ",";
+                    bool metric_first = true;
+                    out << "{";
+                    append_json_string_field(out, "name", report.metric_catalog.values[i].name, metric_first);
+                    append_json_string_field(out, "kind", result_metric_kind_name(report.metric_catalog.values[i].kind), metric_first);
+                    append_json_double_field(out, "value", report.metric_catalog.values[i].value, metric_first);
+                    append_json_bool_field(out, "is_finite", report.metric_catalog.values[i].is_finite, metric_first);
+                    out << "}";
+                }
+                out << "]";
+            }
+            if (!report.metric_catalog.non_finite_metric_names.empty()) {
+                if (!first) out << ",";
+                out << "\"non_finite_metric_names\":[";
+                for (std::size_t i = 0; i < report.metric_catalog.non_finite_metric_names.size(); ++i) {
+                    if (i != 0) out << ",";
+                    out << "\"" << escape_json_string(report.metric_catalog.non_finite_metric_names[i]) << "\"";
+                }
+                out << "]";
+            }
+            if (run_provenance_has_data(report.provenance)) {
+                if (!first) out << ",";
+                out << "\"provenance\":";
+                append_run_provenance_json(out, report.provenance);
             }
             out << "}";
         }
 
-        void append_panel_json(std::ostringstream& out, const PanelResult& panel) {
+        void append_panel_json(
+            std::ostringstream& out,
+            const PanelResult& panel,
+            const RunProvenanceSummary* provenance = nullptr) {
+            const PanelReport report = build_panel_report(panel, provenance);
             bool first = true;
             out << "{";
-            append_json_u64_field(out, "entities_total", static_cast<std::uint64_t>(panel.entities_total), first);
-            append_json_u64_field(out, "entities_ok", static_cast<std::uint64_t>(panel.entities_ok), first);
-            append_json_u64_field(out, "entities_failed", static_cast<std::uint64_t>(panel.entities_failed), first);
-            append_json_bool_field(out, "canceled", panel.canceled, first);
-            append_json_string_field(out, "cancel_message", panel.cancel_message, first);
+            append_json_u64_field(out, "entities_total", static_cast<std::uint64_t>(report.entities_total), first);
+            append_json_u64_field(out, "entities_ok", static_cast<std::uint64_t>(report.entities_ok), first);
+            append_json_u64_field(out, "entities_failed", static_cast<std::uint64_t>(report.entities_failed), first);
+            append_json_bool_field(out, "canceled", report.canceled, first);
+            append_json_string_field(out, "cancel_message", report.cancel_message, first);
+            append_json_string_field(out, "ranking_objective", describe_ranking_objective(report.resolved_objective), first);
+            if (run_provenance_has_data(report.run_provenance)) {
+                if (!first) out << ",";
+                out << "\"run_provenance\":";
+                append_run_provenance_json(out, report.run_provenance);
+            }
             if (!first) out << ",";
             out << "\"topk\":[";
-            for (std::size_t i = 0; i < panel.topk.size(); ++i) {
+            for (std::size_t i = 0; i < report.top_rows.size(); ++i) {
                 if (i != 0) out << ",";
                 bool row_first = true;
                 out << "{";
-                append_json_string_field(out, "entity_key", panel.topk[i].entity_key, row_first);
-                append_json_string_field(out, "series_key", panel.topk[i].series_key, row_first);
-                append_json_string_field(out, "ranking_metric", panel_ranking_metric_name(panel.topk[i].ranking_metric), row_first);
-                append_json_double_field(out, "ranking_score", panel.topk[i].ranking_score, row_first);
-                append_json_double_field(out, "pnl", panel.topk[i].metrics.pnl, row_first);
-                append_json_u64_field(out, "trades", static_cast<std::uint64_t>(panel.topk[i].metrics.trades), row_first);
-                append_json_double_field(out, "max_drawdown", panel.topk[i].metrics.max_drawdown, row_first);
+                append_json_string_field(out, "entity_key", report.top_rows[i].entity_key, row_first);
+                append_json_string_field(out, "series_key", report.top_rows[i].series_key, row_first);
+                append_json_double_field(out, "ranking_score", report.top_rows[i].ranking_score, row_first);
+                append_json_string_field(out, "run_outcome", run_outcome_state_name(report.top_rows[i].run.outcome), row_first);
+                append_json_string_field(out, "objective_rankability", run_rankability_state_name(report.top_rows[i].run.objective.rankability), row_first);
+                append_json_double_field(out, "pnl", report.top_rows[i].run.execution.pnl, row_first);
+                append_json_u64_field(out, "trades", static_cast<std::uint64_t>(report.top_rows[i].run.execution.trades), row_first);
+                append_json_double_field(out, "max_drawdown", report.top_rows[i].run.execution.max_drawdown, row_first);
+                out << ",\"metrics\":";
+                append_backtest_json(out, report.top_rows[i].run.execution, &report.top_rows[i].run.provenance);
                 out << "}";
             }
             out << "]";
+            if (!report.failures.empty()) {
+                out << ",\"failures\":[";
+                for (std::size_t i = 0; i < report.failures.size(); ++i) {
+                    if (i != 0) out << ",";
+                    bool failure_first = true;
+                    out << "{";
+                    append_json_string_field(out, "series_key", report.failures[i].series_key, failure_first);
+                    append_json_string_field(out, "entity_key", report.failures[i].entity_key, failure_first);
+                    append_json_string_field(out, "kind", panel_failure_kind_name(report.failures[i].kind), failure_first);
+                    append_json_string_field(out, "reason", report.failures[i].reason, failure_first);
+                    out << "}";
+                }
+                out << "]";
+            }
             out << "}";
         }
 
@@ -241,6 +378,8 @@ namespace sugar::service {
         }
 
         void append_job_result_json(std::ostringstream& out, const JobResult& result) {
+            const RunProvenanceSummary* provenance =
+                result.metadata.run_provenance.has_value() ? &(*result.metadata.run_provenance) : nullptr;
             bool first = true;
             out << "{";
             append_json_string_field(out, "result_id", result.result_id, first);
@@ -251,13 +390,17 @@ namespace sugar::service {
             out << "\"metadata\":{";
             out << "\"validation\":";
             append_validation_metadata_json(out, result.metadata.validation);
+            if (provenance && run_provenance_has_data(*provenance)) {
+                out << ",\"run_provenance\":";
+                append_run_provenance_json(out, *provenance);
+            }
             if (result.metadata.primary_backtest.has_value()) {
                 out << ",\"primary_backtest\":";
-                append_backtest_json(out, *result.metadata.primary_backtest);
+                append_backtest_json(out, *result.metadata.primary_backtest, provenance);
             }
             if (result.metadata.panel.has_value()) {
                 out << ",\"panel\":";
-                append_panel_json(out, *result.metadata.panel);
+                append_panel_json(out, *result.metadata.panel, provenance);
             }
             out << "},\"output_artifacts\":[";
             for (std::size_t i = 0; i < result.output_artifacts.size(); ++i) {

@@ -14,6 +14,52 @@ namespace sugar {
 
     using Clock = std::chrono::steady_clock;
 
+    std::string_view sweep_progress_stage_name(SweepProgressStage stage)
+    {
+        switch (stage) {
+        case SweepProgressStage::CandidateEvaluation: return "candidate evaluation";
+        case SweepProgressStage::CoarseSearch: return "coarse search";
+        case SweepProgressStage::LocalRefinement: return "local refinement";
+        case SweepProgressStage::MonteCarloSampling: return "monte carlo sampling";
+        case SweepProgressStage::Ranking: return "ranking";
+        case SweepProgressStage::ReportAssembly: return "report assembly";
+        }
+        return "unknown";
+    }
+
+    namespace {
+        std::vector<SweepRankedCandidate> make_ranked_progress_candidates(
+            const std::vector<IndexedCandidate>& best_first)
+        {
+            std::vector<SweepRankedCandidate> out;
+            out.reserve(best_first.size());
+            for (const auto& candidate : best_first) {
+                SweepRankedCandidate ranked{};
+                ranked.candidate_index = candidate.index;
+                ranked.score = candidate.score;
+                ranked.result = candidate.result;
+                out.push_back(std::move(ranked));
+            }
+            return out;
+        }
+
+        std::vector<SweepRankedCandidate> make_ranked_progress_candidates(
+            const TopK<std::size_t>& top)
+        {
+            std::vector<SweepRankedCandidate> out;
+            const auto best_first = top.sorted_best_first();
+            out.reserve(best_first.size());
+            for (const auto& candidate : best_first) {
+                SweepRankedCandidate ranked{};
+                ranked.candidate_index = candidate.params;
+                ranked.score = candidate.score;
+                ranked.result = candidate.result;
+                out.push_back(std::move(ranked));
+            }
+            return out;
+        }
+    } // namespace
+
     // ============================================================================
     // Reporting helpers
     // ============================================================================
@@ -34,9 +80,15 @@ namespace sugar {
             st->last = now;
 
             out << "\r" << prefix
+                << sweep_progress_stage_name(p.stage) << " "
                 << p.done << "/" << p.total
+                << " stage=" << p.stage_done << "/" << p.stage_total
                 << " elapsed=" << static_cast<int>(p.elapsed_sec) << "s"
-                << " eta~" << static_cast<int>(p.eta_sec) << "s"
+                << " eta~" << static_cast<int>(p.eta_sec) << "s";
+            if (!p.current_best.empty()) {
+                out << " best=" << p.current_best.front().score;
+            }
+            out
                 << std::flush;
             };
     }
@@ -250,7 +302,11 @@ namespace sugar {
 
         std::size_t done = 0;
 
-        auto report = [&](bool force = false) {
+        auto report = [&](SweepProgressStage stage,
+                          std::size_t stage_done,
+                          std::size_t stage_total,
+                          std::vector<SweepRankedCandidate> current_best,
+                          bool force = false) {
             if (!progress_cb) return;
             const auto now = Clock::now();
             if (!force && (now - last_report) < std::chrono::milliseconds(250)) return;
@@ -260,7 +316,15 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total_est > done) ? static_cast<double>(total_est - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            progress_cb(SweepProgress{ done, total_est, elapsed, eta });
+            progress_cb(make_sweep_progress(
+                done,
+                total_est,
+                elapsed,
+                eta,
+                stage,
+                stage_done,
+                stage_total,
+                std::move(current_best)));
             };
 
         // -------------------------
@@ -275,6 +339,7 @@ namespace sugar {
 
         std::vector<IndexedCandidate> stage1;
         stage1.reserve(k_stage1);
+        TopK<std::size_t> progress_top1(k_stage1);
 
         if (!opt.depollute_stage1) {
             TopK<std::size_t> top1(k_stage1);
@@ -285,10 +350,16 @@ namespace sugar {
                 if (i >= param_count) continue;
                 const auto res = eval(i);
                 ++done;
-                report();
                 const double sc = score(res);
-                if (!std::isfinite(sc)) continue;
-                top1.consider(sc, res, i);
+                if (std::isfinite(sc)) {
+                    progress_top1.consider(sc, res, i);
+                    top1.consider(sc, res, i);
+                }
+                report(
+                    SweepProgressStage::CoarseSearch,
+                    std::min<std::size_t>(done, stage1_total),
+                    stage1_total,
+                    make_ranked_progress_candidates(progress_top1));
             }
             for (const auto& c : top1.sorted_best_first()) {
                 stage1.push_back(IndexedCandidate{ c.params, c.score, c.result });
@@ -309,12 +380,19 @@ namespace sugar {
                 if (i >= param_count) continue;
                 const auto res = eval(i);
                 ++done;
-                report();
                 double sc = score(res);
                 if (!std::isfinite(sc)) sc = -std::numeric_limits<double>::infinity();
                 results[i] = res;
                 scores[i] = sc;
                 order.push_back(i);
+                if (std::isfinite(sc)) {
+                    progress_top1.consider(sc, res, i);
+                }
+                report(
+                    SweepProgressStage::CoarseSearch,
+                    std::min<std::size_t>(done, stage1_total),
+                    stage1_total,
+                    make_ranked_progress_candidates(progress_top1));
             }
 
             std::sort(order.begin(), order.end(),
@@ -331,6 +409,13 @@ namespace sugar {
                 suppress_region(suppressed, idx, opt.suppression_hops, neighbors);
             }
         }
+
+        report(
+            SweepProgressStage::CoarseSearch,
+            std::min<std::size_t>(done, stage1_total),
+            stage1_total,
+            make_ranked_progress_candidates(stage1),
+            true);
 
         // -------------------------
         // Stage 2
@@ -353,10 +438,15 @@ namespace sugar {
                         }
                         const auto res = eval(idx);
                         ++done;
-                        report();
                         const double sc = score(res);
-                        if (!std::isfinite(sc)) return;
-                        top2.consider(sc, res, idx);
+                        if (std::isfinite(sc)) {
+                            top2.consider(sc, res, idx);
+                        }
+                        report(
+                            SweepProgressStage::LocalRefinement,
+                            (done > stage1_total) ? (done - stage1_total) : 0,
+                            stage2_est,
+                            make_ranked_progress_candidates(top2));
                     });
             }
             else {
@@ -369,10 +459,15 @@ namespace sugar {
                         }
                         const auto res = eval(idx);
                         ++done;
-                        report();
                         const double sc = score(res);
-                        if (!std::isfinite(sc)) return;
-                        top2.consider(sc, res, idx);
+                        if (std::isfinite(sc)) {
+                            top2.consider(sc, res, idx);
+                        }
+                        report(
+                            SweepProgressStage::LocalRefinement,
+                            (done > stage1_total) ? (done - stage1_total) : 0,
+                            stage2_est,
+                            make_ranked_progress_candidates(top2));
                     });
             }
         }
@@ -382,7 +477,12 @@ namespace sugar {
             stage2.push_back(IndexedCandidate{ c.params, c.score, c.result });
         }
 
-        report(true);
+        report(
+            SweepProgressStage::LocalRefinement,
+            (done > stage1_total) ? (done - stage1_total) : 0,
+            stage2_est,
+            make_ranked_progress_candidates(top2),
+            true);
 
         TwoStageSweepResult out;
         out.stage1_best_first = std::move(stage1);
@@ -417,7 +517,14 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total > done) ? static_cast<double>(total - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            progress_cb(SweepProgress{ done, total, elapsed, eta });
+            progress_cb(make_sweep_progress(
+                done,
+                total,
+                elapsed,
+                eta,
+                SweepProgressStage::CandidateEvaluation,
+                done,
+                total));
             };
 
         std::vector<TrainValidateCandidate> out;
@@ -546,12 +653,14 @@ namespace sugar {
         }
 
         const std::size_t total_draws = draw_indices.size();
+        std::size_t executed_draws = 0;
         for (std::size_t i = 0; i < total_draws; ++i) {
             if (cancel_cb && cancel_cb()) {
                 break;
             }
             const std::size_t idx = draw_indices[i];
             const auto res = problem.eval(idx);
+            ++executed_draws;
             const double sc = objective(res);
             if (std::isfinite(sc)) {
                 top.consider(sc, res, idx);
@@ -563,14 +672,22 @@ namespace sugar {
                 const double rate = (elapsed > 1e-6) ? (static_cast<double>(i + 1) / elapsed) : 0.0;
                 const double remaining = (total_draws > (i + 1)) ? static_cast<double>(total_draws - (i + 1)) : 0.0;
                 const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-                progress_cb(SweepProgress{ i + 1, total_draws, elapsed, eta });
+                progress_cb(make_sweep_progress(
+                    i + 1,
+                    total_draws,
+                    elapsed,
+                    eta,
+                    SweepProgressStage::MonteCarloSampling,
+                    i + 1,
+                    total_draws,
+                    make_ranked_progress_candidates(top)));
             }
         }
 
         for (const auto& c : top.sorted_best_first()) {
             out.best_first.push_back(IndexedCandidate{ c.params, c.score, c.result });
         }
-        out.eval_count = total_draws;
+        out.eval_count = executed_draws;
         return out;
     }
 

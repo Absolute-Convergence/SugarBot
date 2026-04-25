@@ -2,13 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -22,6 +25,7 @@
 #include "ops/plan_spec_runtime_alias.h"
 #include "ingest/run_pipeline.h"
 #include "engine/strategy_executor.h"
+#include "engine/program_evaluator_internal.h"
 #include "sweep/sweep.h"
 
 namespace sugar {
@@ -193,10 +197,195 @@ namespace sugar {
             }
         }
 
-        double compute_score(const BacktestResult& r, const PlanSweepSpec& sw) {
-            if (sw.objective == "pnl") return r.pnl;
-            // default: pnl_dd
-            return r.pnl - sw.dd_weight * r.max_drawdown;
+        RankingObjectiveSpec resolve_sweep_objective(const PlanSweepSpec& sw) {
+            if (sw.objective_spec.has_value()) {
+                return *sw.objective_spec;
+            }
+
+            RankingObjectiveSpec objective{};
+            objective.primary.source = ObjectiveValueSource::ReportedMetric;
+            objective.primary.name = "pnl";
+            objective.direction = ObjectiveDirection::Maximize;
+
+            if (sw.objective == "pnl") {
+                return objective;
+            }
+
+            ObjectivePenaltySpec penalty{};
+            penalty.value.source = ObjectiveValueSource::ReportedMetric;
+            penalty.value.name = "max_drawdown";
+            penalty.weight = sw.dd_weight;
+            objective.penalties.push_back(std::move(penalty));
+            return objective;
+        }
+
+        bool ranking_objective_needs_numeric_outputs(const RankingObjectiveSpec& objective) {
+            if (objective.primary.source == ObjectiveValueSource::NumericNodeOutput) {
+                return true;
+            }
+            for (const auto& penalty : objective.penalties) {
+                if (penalty.value.source == ObjectiveValueSource::NumericNodeOutput) {
+                    return true;
+                }
+            }
+            for (const auto& tie_break : objective.tie_breaks) {
+                if (tie_break.value.source == ObjectiveValueSource::NumericNodeOutput) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        double summarize_numeric_output(
+            std::span<const double> values,
+            NumericNodeSummaryMode mode) {
+            switch (mode) {
+            case NumericNodeSummaryMode::LastFiniteValue:
+                for (std::size_t i = values.size(); i > 0; --i) {
+                    const double value = values[i - 1];
+                    if (std::isfinite(value)) {
+                        return value;
+                    }
+                }
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        void collect_reported_values(
+            const std::vector<NamedNumericOutput>& numeric_outputs,
+            const ProgramEvaluationBuffers& buffers,
+            BacktestResult& result_out) {
+            result_out.reported_values.clear();
+            result_out.reported_values.reserve(numeric_outputs.size());
+
+            for (const auto& output : numeric_outputs) {
+                if (output.output_slot >= buffers.numeric_slots.size()) {
+                    continue;
+                }
+                const auto& slot = buffers.numeric_slots[output.output_slot];
+                const double summarized = summarize_numeric_output(slot, NumericNodeSummaryMode::LastFiniteValue);
+                result_out.reported_values.push_back(NamedReportedValue{ output.node_id, summarized });
+            }
+        }
+
+        ParamValue make_sweep_param_value(double value, bool is_int) {
+            if (is_int) {
+                return static_cast<std::int64_t>(std::llround(value));
+            }
+            return value;
+        }
+
+        std::string param_value_to_display_string(const ParamValue& value) {
+            return std::visit([](const auto& x) -> std::string {
+                using X = std::decay_t<decltype(x)>;
+                if constexpr (std::is_same_v<X, std::nullptr_t>) {
+                    return "null";
+                }
+                else if constexpr (std::is_same_v<X, bool>) {
+                    return x ? "true" : "false";
+                }
+                else if constexpr (std::is_same_v<X, std::int64_t>) {
+                    return std::to_string(x);
+                }
+                else if constexpr (std::is_same_v<X, double>) {
+                    std::ostringstream oss;
+                    oss << x;
+                    return oss.str();
+                }
+                else if constexpr (std::is_same_v<X, std::string>) {
+                    return x;
+                }
+                else {
+                    return std::string("ref:") + x.name;
+                }
+            }, value);
+        }
+
+        std::vector<SweepParameterSetting> make_candidate_parameter_values(
+            const PlanSpecSweepDims& dims,
+            const std::vector<std::vector<std::size_t>>& points,
+            std::size_t candidate_index) {
+            std::vector<SweepParameterSetting> out;
+            if (candidate_index >= points.size()) {
+                return out;
+            }
+
+            const auto& point = points[candidate_index];
+            out.reserve(dims.names.size());
+            for (std::size_t i = 0; i < dims.names.size() && i < point.size(); ++i) {
+                const auto value_index = point[i];
+                if (i >= dims.values.size() || value_index >= dims.values[i].size()) {
+                    continue;
+                }
+                SweepParameterSetting setting{};
+                setting.name = dims.names[i];
+                setting.value = make_sweep_param_value(dims.values[i][value_index], dims.is_int[i]);
+                out.push_back(std::move(setting));
+            }
+            return out;
+        }
+
+        void populate_candidate_parameter_values(
+            const PlanSpecSweepDims& dims,
+            const std::vector<std::vector<std::size_t>>& points,
+            std::vector<SweepRankedCandidate>& candidates) {
+            for (auto& candidate : candidates) {
+                candidate.parameter_values = make_candidate_parameter_values(dims, points, candidate.candidate_index);
+            }
+        }
+
+        std::vector<SweepRankedCandidate> make_sweep_ranked_candidates(
+            const std::vector<IndexedCandidate>& best,
+            const PlanSpecSweepDims& dims,
+            const std::vector<std::vector<std::size_t>>& points) {
+            std::vector<SweepRankedCandidate> out;
+            out.reserve(best.size());
+            for (const auto& candidate : best) {
+                SweepRankedCandidate ranked{};
+                ranked.candidate_index = candidate.index;
+                ranked.score = candidate.score;
+                ranked.result = candidate.result;
+                ranked.parameter_values = make_candidate_parameter_values(dims, points, candidate.index);
+                out.push_back(std::move(ranked));
+            }
+            return out;
+        }
+
+        std::vector<SweepParameterRangeSummary> build_parameter_range_summaries(
+            const PlanSweepSpec& sweep,
+            const PlanSpecSweepDims& dims) {
+            std::vector<SweepParameterRangeSummary> out;
+            out.reserve(dims.names.size());
+            for (std::size_t i = 0; i < dims.names.size(); ++i) {
+                SweepParameterRangeSummary summary{};
+                summary.name = dims.names[i];
+                if (const auto it = sweep.params.find(summary.name); it != sweep.params.end()) {
+                    summary.requested_range = it->second;
+                }
+                summary.expanded_count = (i < dims.values.size()) ? dims.values[i].size() : 0;
+                out.push_back(std::move(summary));
+            }
+            return out;
+        }
+
+        void upsert_stage_summary(
+            PlanSweepReport& report,
+            SweepProgressStage stage,
+            std::size_t done,
+            std::size_t total) {
+            auto it = std::find_if(
+                report.stage_summaries.begin(),
+                report.stage_summaries.end(),
+                [stage](const SweepStageSummary& summary) {
+                    return summary.stage == stage;
+                });
+            if (it == report.stage_summaries.end()) {
+                report.stage_summaries.push_back(SweepStageSummary{ stage, done, total });
+                return;
+            }
+            it->done = done;
+            it->total = total;
         }
 
         std::string trim_copy(std::string s) {
@@ -470,12 +659,14 @@ namespace sugar {
 
         struct CompiledPlanRuntimeTemplate {
             CompiledPlanTemplate plan_template{};
+            std::vector<NamedNumericOutput> numeric_outputs{};
         };
 
         bool build_compiled_plan_runtime_template(
             const PlanSpec& spec,
             const DataView& dv,
             const std::string& default_series,
+            bool collect_numeric_outputs,
             CompiledPlanRuntimeTemplate& out,
             std::string& err_out) {
             PlanSpec compile_spec{};
@@ -485,8 +676,22 @@ namespace sugar {
             }
 
             const auto registry = make_default_registry();
-            if (!compile_plan_template(compile_spec, registry, env, out.plan_template, err_out)) {
-                return false;
+            out.numeric_outputs.clear();
+            if (collect_numeric_outputs) {
+                if (!compile_plan_template_with_numeric_outputs(
+                        compile_spec,
+                        registry,
+                        env,
+                        out.plan_template,
+                        out.numeric_outputs,
+                        err_out)) {
+                    return false;
+                }
+            }
+            else {
+                if (!compile_plan_template(compile_spec, registry, env, out.plan_template, err_out)) {
+                    return false;
+                }
             }
             return true;
         }
@@ -514,17 +719,170 @@ namespace sugar {
 
             StrategyExecutor exec;
             ColumnRef primary{ default_series, primary_col_id };
-            return exec.run(
+            if (!exec.run(
                 dv,
                 primary,
                 compiled.plan,
                 compiled.exec,
                 result_out,
                 err_out,
-                opt.cancel_requested);
+                opt.cancel_requested)) {
+                return false;
+            }
+
+            if (!runtime_template.numeric_outputs.empty()) {
+                ProgramEvaluationBuffers buffers{};
+                if (!evaluate_strategy_plan_program_buffers(dv, primary, compiled.plan, buffers, err_out)) {
+                    return false;
+                }
+                collect_reported_values(runtime_template.numeric_outputs, buffers, result_out);
+            }
+
+            return true;
         }
 
     } // namespace
+
+    void print_plan_sweep_report(
+        const PlanSweepReport& report,
+        std::ostream& out)
+    {
+        auto print_requested_range = [&out](const SweepParameterRangeSummary& range) {
+            out << "  " << range.name << ": ";
+            if (!range.requested_range.values.empty()) {
+                out << "[";
+                for (std::size_t i = 0; i < range.requested_range.values.size(); ++i) {
+                    if (i) out << ", ";
+                    if (range.requested_range.is_int) {
+                        out << static_cast<std::int64_t>(std::llround(range.requested_range.values[i]));
+                    }
+                    else {
+                        out << range.requested_range.values[i];
+                    }
+                }
+                out << "]";
+            }
+            else {
+                out << range.requested_range.min
+                    << " .. " << range.requested_range.max
+                    << " step " << range.requested_range.step;
+            }
+            out << " (" << range.expanded_count << " values)\n";
+        };
+
+        auto print_candidate = [&out, &report](const SweepRankedCandidate& candidate, std::size_t rank) {
+            out << "-- Rank " << rank << " | score=" << candidate.score << " --\n";
+            out << "Params:\n";
+            for (const auto& setting : candidate.parameter_values) {
+                out << "  " << setting.name << ": "
+                    << param_value_to_display_string(setting.value) << "\n";
+            }
+            out << "Run report:\n";
+            print_run_report_summary(
+                build_run_report(candidate.result, &report.resolved_objective),
+                out,
+                "  ");
+            out << "\n";
+        };
+
+        out << "\n=== PlanSpec Sweep Results ===\n";
+        out << "Engine: " << engine_name(report.requested_sweep.engine) << "\n";
+        out << "Objective: " << describe_ranking_objective(report.resolved_objective) << "\n";
+        out << "Top K: " << report.requested_sweep.top_k << "\n";
+        out << "Max evals: " << report.requested_sweep.max_evals << "\n";
+        out << "Param dims: " << report.parameter_count << "\n";
+        out << "Total combos: ";
+        if (report.total_combinations_overflow) {
+            out << "(overflow)\n";
+        }
+        else {
+            out << report.total_combinations << "\n";
+        }
+        out << "Candidate space: " << report.candidate_space_size;
+        if (report.candidate_space_truncated) {
+            out << " (truncated)";
+        }
+        out << "\n";
+        out << "Evals run: " << report.evaluations_run << "\n";
+        out << "Execution failures: " << report.execution_failures << "\n";
+        out << "Compile failures: " << report.compile_failures << "\n";
+        if (report.canceled) {
+            out << "Canceled: true\n";
+        }
+        print_run_provenance_summary(report.run_provenance, out);
+        out << "Candidate outcomes:\n"
+            << "  completed: " << report.candidate_outcomes.completed << "\n"
+            << "  completed_with_non_finite_metrics: " << report.candidate_outcomes.completed_with_non_finite_metrics << "\n"
+            << "  failed: " << report.candidate_outcomes.failed << "\n"
+            << "  canceled: " << report.candidate_outcomes.canceled << "\n"
+            << "Objective rankability:\n"
+            << "  not_evaluated: " << report.candidate_rankability.not_evaluated << "\n"
+            << "  rankable: " << report.candidate_rankability.rankable << "\n"
+            << "  missing_primary_value: " << report.candidate_rankability.missing_primary_value << "\n"
+            << "  non_finite_primary_value: " << report.candidate_rankability.non_finite_primary_value << "\n"
+            << "  missing_penalty_value: " << report.candidate_rankability.missing_penalty_value << "\n"
+            << "  non_finite_penalty_value: " << report.candidate_rankability.non_finite_penalty_value << "\n";
+        if (!report.last_execution_failure.empty()) {
+            out << "Last execution failure: " << report.last_execution_failure << "\n";
+        }
+        if (!report.last_compile_error.empty()) {
+            out << "Last compile error: " << report.last_compile_error << "\n";
+        }
+
+        if (!report.stage_summaries.empty()) {
+            out << "Stages:\n";
+            for (const auto& stage : report.stage_summaries) {
+                out << "  " << sweep_progress_stage_name(stage.stage)
+                    << ": " << stage.done << "/" << stage.total << "\n";
+            }
+        }
+
+        if (!report.parameter_ranges.empty()) {
+            out << "Sweep params:\n";
+            for (const auto& range : report.parameter_ranges) {
+                print_requested_range(range);
+            }
+        }
+
+        switch (report.requested_sweep.engine) {
+        case PlanSweepEngineKind::CoarseFine:
+            out << "Engine settings:\n"
+                << "  stage 1 K: " << report.requested_sweep.coarse_fine.k_stage1 << "\n"
+                << "  stage 2 K: " << report.requested_sweep.coarse_fine.k_stage2 << "\n"
+                << "  stage 1 stride: " << report.requested_sweep.coarse_fine.stage1_stride << "\n"
+                << "  suppression hops: " << report.requested_sweep.coarse_fine.suppression_hops << "\n"
+                << "  stage 2 hops: " << report.requested_sweep.coarse_fine.stage2_hops << "\n"
+                << "  depollute stage 1: " << (report.requested_sweep.coarse_fine.depollute_stage1 ? "true" : "false") << "\n"
+                << "  dedupe stage 2: " << (report.requested_sweep.coarse_fine.dedupe_stage2 ? "true" : "false") << "\n";
+            break;
+        case PlanSweepEngineKind::MonteCarlo:
+            out << "Engine settings:\n"
+                << "  draws: " << report.requested_sweep.monte_carlo.draws << "\n"
+                << "  seed: " << report.requested_sweep.monte_carlo.seed << "\n"
+                << "  dedupe: " << (report.requested_sweep.monte_carlo.dedupe ? "true" : "false") << "\n"
+                << "  monte carlo top K: " << report.requested_sweep.monte_carlo.top_k << "\n";
+            break;
+        case PlanSweepEngineKind::Exhaustive:
+            break;
+        }
+
+        out << "TopK: " << report.top_candidates.size() << "\n";
+        if (!report.top_candidates.empty()) {
+            out << "Ranked candidate reports:\n\n";
+        }
+        for (std::size_t i = 0; i < report.top_candidates.size(); ++i) {
+            print_candidate(report.top_candidates[i], i + 1);
+        }
+
+        if (!report.top_candidates.empty()) {
+            out << "=== Best Candidate Run Report (Rank 1) ===\n";
+            print_run_report_summary(
+                build_run_report(
+                    report.top_candidates.front().result,
+                    &report.resolved_objective),
+                out);
+        }
+    }
 
     bool run_custom_plan_spec(
         const DataView& dv,
@@ -532,7 +890,9 @@ namespace sugar {
         const PlanSpec& spec,
         const PlanSweepRuntimeOptions& opt,
         std::ostream& out,
-        BacktestResult* result_out)
+        BacktestResult* result_out,
+        PlanSweepReport* sweep_report_out,
+        const RunProvenanceSummary* run_provenance)
     {
         if (!dv.has_col(primary)) {
             out << "PlanSpec input error: primary series/column is missing from DataView.\n";
@@ -544,6 +904,16 @@ namespace sugar {
         }
         PlanSpec normalized_spec = spec;
         normalize_runtime_aliases_in_place(normalized_spec);
+        const bool has_sweep =
+            normalized_spec.sweep &&
+            (normalized_spec.sweep->enabled || !normalized_spec.sweep->params.empty());
+        const RankingObjectiveSpec sweep_objective =
+            has_sweep ? resolve_sweep_objective(*normalized_spec.sweep) : RankingObjectiveSpec{};
+        const bool collect_numeric_outputs =
+            has_sweep && ranking_objective_needs_numeric_outputs(sweep_objective);
+        if (sweep_report_out) {
+            *sweep_report_out = PlanSweepReport{};
+        }
         const std::string default_series = primary.series;
         std::string runtime_validation_err;
         if (!validate_planspec_runtime_requirements_for_dataview(
@@ -559,6 +929,7 @@ namespace sugar {
             normalized_spec,
             dv,
             default_series,
+            collect_numeric_outputs,
             runtime_template,
             compile_err)) {
             out << "PlanSpec compile failed: " << compile_err << "\n";
@@ -595,11 +966,31 @@ namespace sugar {
                 return false;
             }
 
+            const auto sweep_started = std::chrono::steady_clock::now();
             const std::size_t total_combos = dims.total_combinations();
             auto points = build_planspec_sweep_points(dims, sw.max_evals);
 
+            PlanSweepReport sweep_report{};
+            sweep_report.requested_sweep = sw;
+            sweep_report.resolved_objective = sweep_objective;
+            if (run_provenance != nullptr) {
+                sweep_report.run_provenance = *run_provenance;
+            }
+            sweep_report.parameter_ranges = build_parameter_range_summaries(sw, dims);
+            sweep_report.parameter_count = dims.names.size();
+            sweep_report.total_combinations_overflow =
+                (total_combos == std::numeric_limits<std::size_t>::max());
+            if (!sweep_report.total_combinations_overflow) {
+                sweep_report.total_combinations = total_combos;
+            }
+            sweep_report.candidate_space_size = points.size();
+            sweep_report.candidate_space_truncated =
+                sweep_report.total_combinations_overflow || points.size() < total_combos;
+
             std::size_t compile_failures = 0;
             std::string last_compile_error;
+            std::size_t execution_failures = 0;
+            std::string last_execution_failure;
 
             using IndexVec = std::vector<std::size_t>;
 
@@ -624,8 +1015,26 @@ namespace sugar {
                 BacktestResult r{};
                 std::string err_run;
                 if (!run_one(&overrides, r, err_run)) {
-                    ++compile_failures;
-                    last_compile_error = err_run;
+                    const bool canceled =
+                        (opt.cancel_requested && opt.cancel_requested()) ||
+                        err_run.find("canceled") != std::string::npos;
+                    if (canceled) {
+                        increment_run_outcome_counts(
+                            sweep_report.candidate_outcomes,
+                            RunOutcomeState::Canceled);
+                    }
+                    else {
+                        ++compile_failures;
+                        ++execution_failures;
+                        last_compile_error = err_run;
+                        last_execution_failure = err_run;
+                        increment_run_outcome_counts(
+                            sweep_report.candidate_outcomes,
+                            RunOutcomeState::Failed);
+                    }
+                    increment_run_rankability_counts(
+                        sweep_report.candidate_rankability,
+                        RunRankabilityState::NotEvaluated);
                     r.pnl = -std::numeric_limits<double>::infinity();
                     r.max_drawdown = std::numeric_limits<double>::infinity();
                     r.trades = 0;
@@ -633,21 +1042,41 @@ namespace sugar {
                 }
                 else {
                     if (!err_run.empty()) last_compile_error = err_run;
+                    const RunReport report =
+                        build_run_report(r, &sweep_objective, run_provenance);
+                    increment_run_outcome_counts(
+                        sweep_report.candidate_outcomes,
+                        report.outcome);
+                    increment_run_rankability_counts(
+                        sweep_report.candidate_rankability,
+                        report.objective.rankability);
                 }
                 return r;
                 };
 
             auto score_fn = [&](const BacktestResult& r) -> double {
-                return compute_score(r, sw);
+                return evaluate_ranking_objective(sweep_objective, r);
                 };
 
-            auto ostream_progress_cb = make_ostream_progress_cb(out);
+            auto ostream_progress_cb = make_ostream_progress_cb(
+                out,
+                std::chrono::milliseconds(opt.ostream_progress_throttle_ms));
             auto progress_cb = [&](const SweepProgress& progress) {
+                SweepProgress enriched = progress;
+                populate_candidate_parameter_values(dims, points, enriched.current_best);
+                upsert_stage_summary(
+                    sweep_report,
+                    enriched.stage,
+                    enriched.stage_done,
+                    enriched.stage_total);
+                if (!enriched.current_best.empty()) {
+                    sweep_report.top_candidates = enriched.current_best;
+                }
                 if (ostream_progress_cb) {
-                    ostream_progress_cb(progress);
+                    ostream_progress_cb(enriched);
                 }
                 if (opt.progress_cb) {
-                    opt.progress_cb(progress);
+                    opt.progress_cb(enriched);
                 }
             };
             std::vector<IndexedCandidate> best;
@@ -677,6 +1106,11 @@ namespace sugar {
 
                 best = std::move(session.best_first);
                 eval_count = session.eval_count;
+                upsert_stage_summary(
+                    sweep_report,
+                    SweepProgressStage::CandidateEvaluation,
+                    session.eval_count,
+                    session.total_candidates);
                 break;
             }
 
@@ -773,65 +1207,88 @@ namespace sugar {
                 const auto run = sweep->run(problem, score_fn, progress_cb, opt.cancel_requested);
                 best = run.has_two_stage ? run.two_stage.stage2_best_first : run.best_first;
                 eval_count = run.eval_count;
+                if (run.has_two_stage) {
+                    upsert_stage_summary(
+                        sweep_report,
+                        SweepProgressStage::CoarseSearch,
+                        run.two_stage.stage1_evaluated,
+                        run.two_stage.stage1_evaluated);
+                    upsert_stage_summary(
+                        sweep_report,
+                        SweepProgressStage::LocalRefinement,
+                        run.two_stage.stage2_evaluated,
+                        run.two_stage.stage2_evaluated);
+                }
+                else if (sw.engine == PlanSweepEngineKind::MonteCarlo) {
+                    upsert_stage_summary(
+                        sweep_report,
+                        SweepProgressStage::MonteCarloSampling,
+                        run.eval_count,
+                        cfg.monte_carlo.draws);
+                }
                 break;
             }
             }
 
+            sweep_report.compile_failures = compile_failures;
+            sweep_report.execution_failures = execution_failures;
+            sweep_report.last_execution_failure = last_execution_failure;
+            sweep_report.last_compile_error = last_compile_error;
+            sweep_report.evaluations_run = eval_count;
+
             if (opt.cancel_requested && opt.cancel_requested()) {
+                sweep_report.canceled = true;
+                if (sweep_report_out) {
+                    *sweep_report_out = sweep_report;
+                }
                 out << "PlanSpec execution canceled.\n";
                 return false;
             }
+
+            std::sort(best.begin(), best.end(),
+                [&](const IndexedCandidate& a, const IndexedCandidate& b) {
+                    if (a.score != b.score) return a.score > b.score;
+                    if (ranking_objective_prefers_left(sweep_objective, a.result, b.result)) return true;
+                    if (ranking_objective_prefers_left(sweep_objective, b.result, a.result)) return false;
+                    return a.index < b.index;
+                });
 
             if (best.size() > sw.top_k) {
                 best.resize(sw.top_k);
             }
 
-            out << "\n";
+            const auto after_engine = std::chrono::steady_clock::now();
+            const double ranking_elapsed =
+                std::chrono::duration<double>(after_engine - sweep_started).count();
+            const auto ranked_candidates = make_sweep_ranked_candidates(best, dims, points);
+            progress_cb(make_sweep_progress(
+                eval_count,
+                points.size(),
+                ranking_elapsed,
+                0.0,
+                SweepProgressStage::Ranking,
+                1,
+                1,
+                ranked_candidates));
 
-            out << "\n=== PlanSpec Sweep Results ===\n";
-            out << "Engine: " << engine_name(sw.engine) << "\n";
-            out << "Objective: " << sw.objective;
-            if (sw.objective != "pnl") out << " (dd_weight=" << sw.dd_weight << ")";
-            out << "\n";
-            out << "Param dims: " << dims.names.size() << "\n";
-            out << "Total combos: ";
-            if (total_combos == std::numeric_limits<std::size_t>::max()) out << "(overflow)\n";
-            else out << total_combos << "\n";
-            out << "Evals run: " << eval_count << " (max " << sw.max_evals << ")\n";
-            out << "Compile failures: " << compile_failures << "\n";
-            if (!last_compile_error.empty()) {
-                out << "Last compile error: " << last_compile_error << "\n";
+            sweep_report.top_candidates = ranked_candidates;
+            progress_cb(make_sweep_progress(
+                eval_count,
+                points.size(),
+                ranking_elapsed,
+                0.0,
+                SweepProgressStage::ReportAssembly,
+                1,
+                1,
+                sweep_report.top_candidates));
+
+            if (!sweep_report.top_candidates.empty() && result_out) {
+                *result_out = sweep_report.top_candidates.front().result;
             }
-            out << "TopK: " << best.size() << "\n\n";
-
-            for (std::size_t i = 0; i < best.size(); ++i) {
-                out << "-- Rank " << (i + 1) << " | score=" << best[i].score << " --\n";
-                out << "Params:\n";
-
-                if (best[i].index >= points.size()) continue;
-                const auto& p = points[best[i].index];
-
-                for (std::size_t d = 0; d < dims.names.size(); ++d) {
-                    const auto& name = dims.names[d];
-                    const double v = dims.values[d][p[d]];
-                    out << "  " << name << ": ";
-                    if (dims.is_int[d]) out << static_cast<std::int64_t>(std::llround(v));
-                    else out << v;
-                    out << "\n";
-                }
-
-                out << "Result:\n";
-                print_backtest_summary(best[i].result, out, "  ");
-                out << "\n";
+            if (sweep_report_out) {
+                *sweep_report_out = sweep_report;
             }
-
-            if (!best.empty()) {
-                if (result_out) {
-                    *result_out = best.front().result;
-                }
-                out << "=== Best Result (Rank 1) ===\n";
-                print_backtest_summary(best.front().result, out);
-            }
+            print_plan_sweep_report(sweep_report, out);
             return true;
         }
 
@@ -849,7 +1306,9 @@ namespace sugar {
         if (result_out) {
             *result_out = r;
         }
-        print_backtest_summary(r, out);
+        print_run_report_summary(
+            build_run_report(r, nullptr, run_provenance),
+            out);
         return true;
     }
 

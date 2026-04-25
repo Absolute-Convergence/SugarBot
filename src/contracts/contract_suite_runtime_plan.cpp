@@ -631,11 +631,33 @@ namespace sugar::contract_suite_internal {
         const DataView dv(*bundle);
         const PlanSpec spec = make_multi_entity_runner_contract_plan();
         PlanSweepRuntimeOptions opt{};
+        RunManifest run_manifest{};
+        run_manifest.preprocess.series_keys = { "A", "B" };
+        run_manifest.preprocess.has_time_axis = true;
+        run_manifest.preprocess.has_entity_axis = true;
+        run_manifest.preprocess.has_spatial_axis = true;
+        run_manifest.preprocess.time_kind = TimeKind::YyyyMmDd;
+        run_manifest.preprocess.time_resolution = "daily";
+        run_manifest.preprocess.alignment_applied = true;
+        run_manifest.preprocess.alignment_calendar = align::CalendarPolicy::Intersection;
+        run_manifest.preprocess.alignment_missing = align::MissingPolicy::NaN;
+        run_manifest.preprocess.alignment_non_temporal_multi_series =
+            align::NonTemporalMultiSeriesPolicy::Reject;
+        run_manifest.preprocess.input_warnings.push_back("panel contract warning");
+        run_manifest.primary_series_key = "A";
+        run_manifest.primary_selection_mode = RuntimePrimarySelectionMode::ExplicitSeries;
+        TopologySpec topology{};
+        topology.name = builtin_spatial_topology_name();
+        run_manifest.topologies.push_back(std::move(topology));
+        run_manifest.topology_usages.push_back(TopologyUsageSnapshot{});
+        const RunProvenanceSummary run_provenance =
+            build_run_provenance_summary(run_manifest);
 
         {
             PanelRankingSpec ranking{};
-            ranking.metric = PanelRankingMetric::Pnl;
-            ranking.dd_weight = 9.0;
+            ranking.objective.primary.source = ObjectiveValueSource::ReportedMetric;
+            ranking.objective.primary.name = "pnl";
+            ranking.objective.direction = ObjectiveDirection::Maximize;
 
             const auto result = run_ranked_multi_entity_custom_planspec_over_dataview(
                 dv,
@@ -645,28 +667,47 @@ namespace sugar::contract_suite_internal {
                 2,
                 ranking);
 
-            t.expect(result.ranking.metric == PanelRankingMetric::Pnl,
-                "multi-entity runner preserves explicit pnl ranking metric");
+            t.expect(result.ranking.objective.primary.name == "pnl" &&
+                    result.ranking.objective.penalties.empty(),
+                "multi-entity runner preserves canonical pnl objective");
             t.expect(result.topk.size() == 2, "multi-entity runner keeps requested top-k when both entities succeed");
             t.expect(result.failures.empty(), "multi-entity runner design-load fixture has no failures");
+            const PanelReport report = build_panel_report(result, &run_provenance);
+            t.expect(report.resolved_objective.primary.name == "pnl",
+                "panel report resolves pnl ranking objective");
+            t.expect(report.top_rows.size() == result.topk.size(),
+                "panel report preserves ranked row count");
+            t.expect(report.run_provenance.primary_series_key == "A" &&
+                    report.run_provenance.series_count == 2 &&
+                    report.run_provenance.topology_usage_count == 1,
+                "panel report preserves shared run provenance");
+            std::ostringstream report_text;
+            print_panel_report_summary(report, report_text);
+            t.expect(report_text.str().find("Run provenance:") != std::string::npos,
+                "panel report summary prints shared run provenance");
             if (result.topk.size() == 2) {
                 t.expect(result.topk[0].entity_key == "entity.A" || result.topk[1].entity_key == "entity.A",
                     "multi-entity runner preserves entity identity distinct from series keys");
-                const bool pnl_metric_ok =
-                    result.topk[0].ranking_metric == PanelRankingMetric::Pnl &&
-                    result.topk[1].ranking_metric == PanelRankingMetric::Pnl;
                 const bool pnl_score_ok =
                     nearly_equal(result.topk[0].ranking_score, result.topk[0].metrics.pnl) &&
                     nearly_equal(result.topk[1].ranking_score, result.topk[1].metrics.pnl);
-                t.expect(pnl_metric_ok, "multi-entity runner records pnl metric on each ranked row");
                 t.expect(pnl_score_ok, "multi-entity runner scores pnl ranking directly from pnl");
+                t.expect(report.top_rows[0].run.objective.rankability == RunRankabilityState::Rankable &&
+                        report.top_rows[1].run.objective.rankability == RunRankabilityState::Rankable,
+                    "panel report classifies pnl-ranked rows as rankable");
             }
         }
 
         {
             PanelRankingSpec ranking{};
-            ranking.metric = PanelRankingMetric::PnlDd;
-            ranking.dd_weight = 0.5;
+            ranking.objective.primary.source = ObjectiveValueSource::ReportedMetric;
+            ranking.objective.primary.name = "pnl";
+            ranking.objective.direction = ObjectiveDirection::Maximize;
+            ObjectivePenaltySpec penalty{};
+            penalty.value.source = ObjectiveValueSource::ReportedMetric;
+            penalty.value.name = "max_drawdown";
+            penalty.weight = 0.5;
+            ranking.objective.penalties.push_back(std::move(penalty));
 
             const auto result = run_ranked_multi_entity_custom_planspec_over_dataview(
                 dv,
@@ -676,14 +717,13 @@ namespace sugar::contract_suite_internal {
                 2,
                 ranking);
 
-            t.expect(result.ranking.metric == PanelRankingMetric::PnlDd,
-                "multi-entity runner preserves explicit pnl_dd ranking metric");
-            t.expect(nearly_equal(result.ranking.dd_weight, 0.5),
-                "multi-entity runner preserves explicit pnl_dd drawdown weight");
+            t.expect(result.ranking.objective.penalties.size() == 1 &&
+                    nearly_equal(result.ranking.objective.penalties.front().weight, 0.5),
+                "multi-entity runner preserves canonical pnl_dd-style objective");
+            const PanelReport report = build_panel_report(result, &run_provenance);
+            t.expect(report.resolved_objective.penalties.size() == 1,
+                "panel report preserves pnl_dd penalty structure");
             if (result.topk.size() == 2) {
-                const bool pnl_dd_metric_ok =
-                    result.topk[0].ranking_metric == PanelRankingMetric::PnlDd &&
-                    result.topk[1].ranking_metric == PanelRankingMetric::PnlDd;
                 const bool pnl_dd_score_ok =
                     nearly_equal(
                         result.topk[0].ranking_score,
@@ -691,9 +731,43 @@ namespace sugar::contract_suite_internal {
                     nearly_equal(
                         result.topk[1].ranking_score,
                         result.topk[1].metrics.pnl - 0.5 * result.topk[1].metrics.max_drawdown);
-                t.expect(pnl_dd_metric_ok, "multi-entity runner records pnl_dd metric on each ranked row");
                 t.expect(pnl_dd_score_ok, "multi-entity runner scores pnl_dd ranking from explicit drawdown-weighted formula");
+                t.expect(nearly_equal(report.top_rows[0].run.objective.score, result.topk[0].ranking_score) &&
+                        nearly_equal(report.top_rows[1].run.objective.score, result.topk[1].ranking_score),
+                    "panel report preserves per-row resolved objective scores");
             }
+        }
+
+        {
+            PlanRunSpec run{};
+            run.scope = PlanRunScope::PerEntityRanked;
+
+            PanelRankingSpec ranking{};
+            std::string ranking_err;
+            t.expect(build_panel_ranking_spec(run, ranking, ranking_err),
+                "phase 6 shared panel ranking adapter defaults to a canonical pnl objective");
+            t.expect(ranking.objective.primary.name == "pnl" &&
+                    ranking.objective.penalties.empty(),
+                "phase 6 shared panel ranking adapter maps the default path to a zero-penalty pnl objective");
+
+            PlanRunSpec structured_run{};
+            structured_run.scope = PlanRunScope::PerEntityRanked;
+            structured_run.objective_spec = RankingObjectiveSpec{};
+            structured_run.objective_spec->primary.source = ObjectiveValueSource::ReportedMetric;
+            structured_run.objective_spec->primary.name = "pnl";
+            structured_run.objective_spec->direction = ObjectiveDirection::Maximize;
+            ObjectiveTieBreakSpec tie_break{};
+            tie_break.value.source = ObjectiveValueSource::ReportedMetric;
+            tie_break.value.name = "trades";
+            tie_break.direction = ObjectiveDirection::Minimize;
+            structured_run.objective_spec->tie_breaks.push_back(tie_break);
+
+            t.expect(build_panel_ranking_spec(structured_run, ranking, ranking_err),
+                "phase 6 shared panel ranking adapter accepts structured run.objective");
+            t.expect(ranking.objective.tie_breaks.size() == 1 &&
+                    ranking.objective.primary.name == "pnl" &&
+                    ranking.objective.tie_breaks.front().value.name == "trades",
+                "phase 6 shared panel ranking adapter builds canonical ranking objective state");
         }
 
         return true;
@@ -733,8 +807,14 @@ namespace sugar::contract_suite_internal {
             std::string(builtin_spatial_topology_name()),
             "missing.series");
         PanelRankingSpec ranking{};
-        ranking.metric = PanelRankingMetric::PnlDd;
-        ranking.dd_weight = 0.25;
+        ranking.objective.primary.source = ObjectiveValueSource::ReportedMetric;
+        ranking.objective.primary.name = "pnl";
+        ranking.objective.direction = ObjectiveDirection::Maximize;
+        ObjectivePenaltySpec penalty{};
+        penalty.value.source = ObjectiveValueSource::ReportedMetric;
+        penalty.value.name = "max_drawdown";
+        penalty.weight = 0.25;
+        ranking.objective.penalties.push_back(std::move(penalty));
 
         const auto invalid_col_result = run_ranked_multi_entity_custom_planspec_over_dataview(
             dv,
@@ -747,6 +827,9 @@ namespace sugar::contract_suite_internal {
             "multi-entity runner keeps top-k empty when primary column is missing for every series");
         t.expect(invalid_col_result.failures.size() == 2,
             "multi-entity runner records a failure per series when primary column is missing");
+        const PanelReport invalid_col_report = build_panel_report(invalid_col_result);
+        t.expect(invalid_col_report.failures.size() == invalid_col_result.failures.size(),
+            "panel report preserves missing-column failure count");
         if (invalid_col_result.failures.size() == 2) {
             t.expect(invalid_col_result.failures[0].series_key == "A" ||
                     invalid_col_result.failures[1].series_key == "A",
@@ -754,6 +837,9 @@ namespace sugar::contract_suite_internal {
             t.expect(invalid_col_result.failures[0].entity_key == "entity.A" ||
                     invalid_col_result.failures[1].entity_key == "entity.A",
                 "multi-entity runner failure records preserve failing entity keys");
+            t.expect(invalid_col_report.failures[0].kind == PanelFailureKind::MissingPrimaryColumn &&
+                    invalid_col_report.failures[1].kind == PanelFailureKind::MissingPrimaryColumn,
+                "panel report classifies missing-primary-column failures explicitly");
         }
 
         const auto bad_subject_result = run_ranked_multi_entity_custom_planspec_over_dataview(
@@ -767,12 +853,16 @@ namespace sugar::contract_suite_internal {
             "multi-entity runner keeps top-k empty when custom execution fails for every series");
         t.expect(bad_subject_result.failures.size() == 2,
             "multi-entity runner records execution failure per series");
+        const PanelReport bad_subject_report = build_panel_report(bad_subject_result);
         if (bad_subject_result.failures.size() == 2) {
             const bool reason_ok =
                 bad_subject_result.failures[0].reason.find("missing.series") != std::string::npos &&
                 bad_subject_result.failures[1].reason.find("missing.series") != std::string::npos;
             t.expect(reason_ok,
                 "multi-entity runner preserves per-series execution failure reason text");
+            t.expect(bad_subject_report.failures[0].kind == PanelFailureKind::ExecutionFailed &&
+                    bad_subject_report.failures[1].kind == PanelFailureKind::ExecutionFailed,
+                "panel report classifies execution failures explicitly");
         }
 
         return true;

@@ -9,6 +9,21 @@ namespace sugar {
 
     namespace {
         using Clock = std::chrono::steady_clock;
+
+        std::vector<SweepRankedCandidate> make_ranked_progress_candidates(
+            const std::vector<IndexedCandidate>& best_first)
+        {
+            std::vector<SweepRankedCandidate> out;
+            out.reserve(best_first.size());
+            for (const auto& candidate : best_first) {
+                SweepRankedCandidate ranked{};
+                ranked.candidate_index = candidate.index;
+                ranked.score = candidate.score;
+                ranked.result = candidate.result;
+                out.push_back(std::move(ranked));
+            }
+            return out;
+        }
     }
 
     FunctionTrialEvaluator::FunctionTrialEvaluator(
@@ -99,7 +114,15 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total > done) ? static_cast<double>(total - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            cfg.progress_cb(SweepProgress{ done, total, elapsed, eta });
+            cfg.progress_cb(make_sweep_progress(
+                done,
+                total,
+                elapsed,
+                eta,
+                SweepProgressStage::CandidateEvaluation,
+                done,
+                total,
+                make_ranked_progress_candidates(policy.best_first())));
             };
 
         for (;;) {

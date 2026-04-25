@@ -19,6 +19,19 @@
 
 namespace {
 
+    sugar::RankingObjectiveSpec make_drawdown_weighted_pnl_objective(double dd_weight) {
+        sugar::RankingObjectiveSpec objective{};
+        objective.primary.source = sugar::ObjectiveValueSource::ReportedMetric;
+        objective.primary.name = "pnl";
+        objective.direction = sugar::ObjectiveDirection::Maximize;
+        sugar::ObjectivePenaltySpec penalty{};
+        penalty.value.source = sugar::ObjectiveValueSource::ReportedMetric;
+        penalty.value.name = "max_drawdown";
+        penalty.weight = dd_weight;
+        objective.penalties.push_back(std::move(penalty));
+        return objective;
+    }
+
     std::optional<std::pair<sugar::TimeKey, sugar::TimeKey>> time_minmax(const sugar::NumericFrame& f) {
         if (!f.has_time_axis()) return std::nullopt;
         const auto t = f.time();
@@ -29,8 +42,7 @@ namespace {
 
     sugar::PanelRankingSpec default_panel_ranking_spec() {
         sugar::PanelRankingSpec spec{};
-        spec.metric = sugar::PanelRankingMetric::PnlDd;
-        spec.dd_weight = 0.25;
+        spec.objective = make_drawdown_weighted_pnl_objective(0.25);
         return spec;
     }
 
@@ -94,34 +106,6 @@ namespace {
             return false;
         }
         return true;
-    }
-
-    bool resolve_run_ranking_spec(
-        const sugar::PlanRunSpec& run,
-        sugar::PanelRankingSpec& out,
-        std::string& err) {
-        const sugar::PlanRunRankingMetric metric =
-            run.ranking_metric.value_or(sugar::PlanRunRankingMetric::Pnl);
-        switch (metric) {
-        case sugar::PlanRunRankingMetric::Pnl:
-            if (run.ranking_dd_weight.has_value()) {
-                err = "logic.run.ranking_dd_weight applies only when logic.run.ranking_metric=pnl_dd";
-                return false;
-            }
-            out.metric = sugar::PanelRankingMetric::Pnl;
-            out.dd_weight = 0.0;
-            return true;
-        case sugar::PlanRunRankingMetric::PnlDd:
-            if (!run.ranking_dd_weight.has_value()) {
-                err = "logic.run.ranking_dd_weight is required when logic.run.ranking_metric=pnl_dd";
-                return false;
-            }
-            out.metric = sugar::PanelRankingMetric::PnlDd;
-            out.dd_weight = *run.ranking_dd_weight;
-            return true;
-        }
-        err = "logic.run.ranking_metric is invalid";
-        return false;
     }
 
     bool load_layout_and_world(
@@ -400,14 +384,16 @@ namespace {
             << "  - `run.scope=primary_series`:\n"
             << "    - binds one runtime target after observation-world assessment\n"
             << "    - on multi-entity data, `run.target_entity` is required\n"
-            << "    - `run.top_k`, `run.ranking_metric`, and `run.ranking_dd_weight` do not apply\n"
+            << "    - `run.top_k`, `run.objective`, `run.ranking_metric`, and `run.ranking_dd_weight` do not apply\n"
             << "  - `run.scope=per_entity_ranked`:\n"
             << "    - evaluates compatibility against the pre-binding observation world rather than one bound primary series\n"
             << "    - requires multi-entity input and `run.top_k`\n"
             << "    - `run.target_entity` does not apply\n"
-            << "    - `run.ranking_metric` defaults to `pnl` when omitted\n"
-            << "    - `run.ranking_dd_weight` is required only when `run.ranking_metric=pnl_dd`\n"
-            << "  - `run.ranking_metric` values: `pnl`, `pnl_dd`\n"
+            << "    - canonical ranking uses `run.objective` object form with `value`, `direction`, optional `penalties`, and optional `tie_breaks`\n"
+            << "    - compatibility `run.ranking_metric` defaults to `pnl` only when `run.objective` is omitted\n"
+            << "    - `run.ranking_dd_weight` is required only when compatibility `run.ranking_metric=pnl_dd`\n"
+            << "    - `run.objective` may not be combined with compatibility `run.ranking_metric` or `run.ranking_dd_weight`\n"
+            << "  - compatibility `run.ranking_metric` values: `pnl`, `pnl_dd`\n"
             << "\n"
             << "Sweep (`sweep`)\n"
             << "  - optional object\n"
@@ -418,6 +404,11 @@ namespace {
             << "    - `objective=\"pnl\"`\n"
             << "    - `dd_weight=1.0`\n"
             << "    - `engine=\"exhaustive\"`\n"
+            << "  - `sweep.objective` accepts either:\n"
+            << "    - legacy string: `\"pnl\"` or `\"pnl_dd\"`\n"
+            << "    - object form with `value.source`, `value.name`, `direction`, optional `penalties`, and optional `tie_breaks`\n"
+            << "  - object-form `sweep.objective.value.source` values: `reported_metric`, `numeric_node_output`\n"
+            << "  - object-form numeric-node objectives currently summarize with `summary=\"last_finite\"`\n"
             << "  - `sweep.engine` values: `exhaustive`, `coarse_fine`, `monte_carlo`\n"
             << "  - `sweep.params.<name>` forms:\n"
             << "    - discrete: `{ \"values\": [5, 10, 20], \"is_int\": true }`\n"
@@ -477,8 +468,16 @@ namespace {
             << "      \"run\": {\n"
             << "        \"scope\": \"per_entity_ranked\",\n"
             << "        \"top_k\": 5,\n"
-            << "        \"ranking_metric\": \"pnl_dd\",\n"
-            << "        \"ranking_dd_weight\": 0.25\n"
+            << "        \"objective\": {\n"
+            << "          \"value\": { \"source\": \"reported_metric\", \"name\": \"pnl\" },\n"
+            << "          \"direction\": \"maximize\",\n"
+            << "          \"penalties\": [\n"
+            << "            {\n"
+            << "              \"value\": { \"source\": \"reported_metric\", \"name\": \"max_drawdown\" },\n"
+            << "              \"weight\": 0.25\n"
+            << "            }\n"
+            << "          ]\n"
+            << "        }\n"
             << "      }\n"
             << "    }\n"
             << "  - sweep skeleton:\n"
@@ -531,6 +530,12 @@ namespace sugar::app {
         print_layout_contract_brief(out);
         out
             << "\n"
+            << "Reports and diagnostics:\n"
+            << "  - `--obs-report` prints observation-world provenance, ingest diagnostics, and capability surfaces.\n"
+            << "  - `--plan-report` prints the same observation diagnostics plus plan-compatibility results for the current logic.\n"
+            << "  - `run` prints the final execution report for the selected path: single-run, sweep report, or ranked panel report.\n"
+            << "  - interactive mode exposes these same report surfaces before execution, so the report-first workflow is discoverable without remembering flags.\n"
+            << "\n"
             << "Alias:\n"
             << "  - `--dump-logic` is accepted as an alias for `--dump-plan`.\n"
             << "\n";
@@ -541,6 +546,7 @@ namespace sugar::app {
             << "  - No mode flag enters interactive mode.\n"
             << "  - `run` executes the noninteractive LayoutSpec + PlanSpec path.\n"
             << "  - `--obs-report` and `--plan-report` validate/report without executing a full run.\n"
+            << "  - sweeps and ranked multi-entity runs print the same structured report seams that power service/job reporting.\n"
             << "  - `--feature-dump` emits the evaluated numeric-node feature matrix as CSV.\n"
             << "  - Spatial/locality support is foundational and intentionally narrow: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n";
         return 0;
@@ -621,9 +627,9 @@ namespace sugar::app {
 
         const sugar::PlanRunSpec& run = *spec.run;
         if (run.scope == sugar::PlanRunScope::PrimarySeries) {
-            if (run.top_k.has_value() || run.ranking_metric.has_value() || run.ranking_dd_weight.has_value()) {
+            if (run.top_k.has_value() || run.objective_spec.has_value()) {
                 const auto plan_report = print_facts_report();
-                err << "Error: logic.run.top_k and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked\n";
+                err << "Error: logic.run.top_k, logic.run.objective, and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked\n";
                 return plan_report.status == sugar::PlanCapabilityStatus::Valid ? 1 : 1;
             }
 
@@ -696,14 +702,14 @@ namespace sugar::app {
 
         sugar::PanelRankingSpec ranking{};
         std::string ranking_err;
-        if (!resolve_run_ranking_spec(run, ranking, ranking_err)) {
+        if (!sugar::build_panel_ranking_spec(run, ranking, ranking_err)) {
             err << "Error: " << ranking_err << "\n";
             return 1;
         }
 
         out << "[Info] plan-report scope: per_entity_ranked top_k=" << *run.top_k
-            << " ranking_metric=" << sugar::plan_run_ranking_metric_name(
-                run.ranking_metric.value_or(sugar::PlanRunRankingMetric::Pnl))
+            << " ranking_objective=" << sugar::describe_ranking_objective(
+                sugar::build_panel_ranking_objective(ranking))
             << "\n";
 
         return plan_report.status == sugar::PlanCapabilityStatus::Valid ? 0 : 1;
@@ -758,8 +764,8 @@ namespace sugar::app {
             err << "Error: feature-dump supports only single-series input or logic.run.scope=primary_series\n";
             return 1;
         }
-        if (run.top_k.has_value() || run.ranking_metric.has_value() || run.ranking_dd_weight.has_value()) {
-            err << "Error: feature-dump does not use logic.run.top_k or logic.run.ranking_*\n";
+        if (run.top_k.has_value() || run.objective_spec.has_value()) {
+            err << "Error: feature-dump does not use logic.run.top_k, logic.run.objective, or logic.run.ranking_*\n";
             return 1;
         }
 
@@ -888,14 +894,23 @@ namespace sugar::app {
 
             const sugar::DataView dv(*runtime.aligned_bundle);
             sugar::PlanSweepRuntimeOptions rt{};
-            const bool ran = sugar::run_custom_plan_spec(dv, runtime.primary_ref, spec, rt, out);
+            const auto run_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+            const bool ran = sugar::run_custom_plan_spec(
+                dv,
+                runtime.primary_ref,
+                spec,
+                rt,
+                out,
+                nullptr,
+                nullptr,
+                &run_provenance);
             return ran ? 0 : 1;
         }
 
         const sugar::PlanRunSpec& run = *spec.run;
         if (run.scope == sugar::PlanRunScope::PrimarySeries) {
-            if (run.top_k.has_value() || run.ranking_metric.has_value() || run.ranking_dd_weight.has_value()) {
-                err << "Error: logic.run.top_k and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked\n";
+            if (run.top_k.has_value() || run.objective_spec.has_value()) {
+                err << "Error: logic.run.top_k, logic.run.objective, and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked\n";
                 return 1;
             }
 
@@ -953,7 +968,16 @@ namespace sugar::app {
 
             const sugar::DataView dv(*runtime.aligned_bundle);
             sugar::PlanSweepRuntimeOptions rt{};
-            const bool ran = sugar::run_custom_plan_spec(dv, runtime.primary_ref, spec, rt, out);
+            const auto run_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+            const bool ran = sugar::run_custom_plan_spec(
+                dv,
+                runtime.primary_ref,
+                spec,
+                rt,
+                out,
+                nullptr,
+                nullptr,
+                &run_provenance);
             return ran ? 0 : 1;
         }
 
@@ -972,7 +996,7 @@ namespace sugar::app {
 
         sugar::PanelRankingSpec ranking{};
         std::string ranking_err;
-        if (!resolve_run_ranking_spec(run, ranking, ranking_err)) {
+        if (!sugar::build_panel_ranking_spec(run, ranking, ranking_err)) {
             err << "Error: " << ranking_err << "\n";
             return 1;
         }
@@ -992,8 +1016,8 @@ namespace sugar::app {
         }
 
         out << "[Info] run scope: per_entity_ranked top_k=" << *run.top_k
-            << " ranking_metric=" << sugar::plan_run_ranking_metric_name(
-                run.ranking_metric.value_or(sugar::PlanRunRankingMetric::Pnl))
+            << " ranking_objective=" << sugar::describe_ranking_objective(
+                sugar::build_panel_ranking_objective(ranking))
             << "\n";
 
         const sugar::DataView dv(*world.aligned_bundle);
@@ -1005,7 +1029,8 @@ namespace sugar::app {
             primary_col,
             *run.top_k,
             ranking);
-        print_panel_result(pres, out);
+        const auto panel_provenance = sugar::build_run_provenance_summary(world.run_manifest);
+        print_panel_result(pres, out, &panel_provenance);
         return pres.entities_ok > 0 ? 0 : 1;
     }
 
@@ -1242,7 +1267,8 @@ namespace sugar::app {
                     runtime.primary_ref.col,
                     cmd.run_panel.topk,
                     default_panel_ranking_spec());
-                print_panel_result(pres, out);
+                const auto panel_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+                print_panel_result(pres, out, &panel_provenance);
                 return 0;
             }
 
@@ -1266,7 +1292,8 @@ namespace sugar::app {
                 runtime.primary_ref.col,
                 cmd.run_panel.topk,
                 default_panel_ranking_spec());
-            print_panel_result(pres, out);
+            const auto panel_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+            print_panel_result(pres, out, &panel_provenance);
             return 0;
         }
 
@@ -1306,7 +1333,8 @@ namespace sugar::app {
             runtime.primary_ref.col,
             cmd.run_panel.topk,
             default_panel_ranking_spec());
-        print_panel_result(pres, out);
+        const auto panel_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+        print_panel_result(pres, out, &panel_provenance);
         return 0;
     }
 

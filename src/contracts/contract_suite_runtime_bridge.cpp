@@ -989,6 +989,559 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
             }
         }
 
+        {
+            const std::string objective_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_phase6_numeric_objective",
+  "trade_mode": "LongOnly",
+  "params": {
+    "alpha": 1
+  },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "score_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "top_k": 3,
+    "max_evals": 3,
+    "objective": {
+      "value": {
+        "source": "numeric_node_output",
+        "name": "score_value",
+        "summary": "last_finite"
+      },
+      "direction": "maximize",
+      "tie_breaks": [
+        {
+          "value": {
+            "source": "reported_metric",
+            "name": "pnl"
+          },
+          "direction": "maximize"
+        }
+      ]
+    },
+    "params": {
+      "alpha": {
+        "values": [1, 5, 3],
+        "is_int": true
+      }
+    }
+  }
+}
+)JSON";
+
+            PlanSpec sweep_spec{};
+            std::string parse_err;
+            const bool parse_ok = parse_plan_spec_json(objective_json, sweep_spec, parse_err);
+            t.expect(parse_ok, "phase 6 sweep objective object form parses");
+            if (!parse_ok) {
+                t.out << "    phase 6 objective parse error: " << parse_err << "\n";
+                return true;
+            }
+            t.expect(sweep_spec.sweep.has_value() && sweep_spec.sweep->objective_spec.has_value(),
+                "phase 6 sweep objective object form populates objective_spec");
+            if (sweep_spec.sweep && sweep_spec.sweep->objective_spec) {
+                t.expect(sweep_spec.sweep->objective_spec->primary.source == ObjectiveValueSource::NumericNodeOutput,
+                    "phase 6 objective spec preserves numeric node source");
+                t.expect(sweep_spec.sweep->objective_spec->primary.name == "score_value",
+                    "phase 6 objective spec preserves named numeric node output");
+                t.expect(sweep_spec.sweep->objective_spec->direction == ObjectiveDirection::Maximize,
+                    "phase 6 objective spec preserves direction");
+                t.expect(sweep_spec.sweep->objective_spec->tie_breaks.size() == 1,
+                    "phase 6 objective spec preserves tie-break chain");
+            }
+
+            const std::string run_objective_json = R"JSON(
+{
+  "version": 1,
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "hold_days", "op": "core.const", "params": { "value": 7 } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["c", "c"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "run": {
+    "scope": "per_entity_ranked",
+    "top_k": 2,
+    "objective": {
+      "value": {
+        "source": "reported_metric",
+        "name": "pnl"
+      },
+      "direction": "maximize",
+      "tie_breaks": [
+        {
+          "value": {
+            "source": "reported_metric",
+            "name": "trades"
+          },
+          "direction": "minimize"
+        }
+      ]
+    }
+  }
+}
+)JSON";
+
+            PlanSpec run_objective_spec{};
+            parse_err.clear();
+            const bool run_parse_ok = parse_plan_spec_json(run_objective_json, run_objective_spec, parse_err);
+            t.expect(run_parse_ok, "phase 6 run objective object form parses");
+            if (run_parse_ok && run_objective_spec.run && run_objective_spec.run->objective_spec) {
+                t.expect(run_objective_spec.run->objective_spec->primary.source == ObjectiveValueSource::ReportedMetric,
+                    "phase 6 run objective spec preserves reported metric source");
+                t.expect(run_objective_spec.run->objective_spec->primary.name == "pnl",
+                    "phase 6 run objective spec preserves primary metric name");
+                t.expect(run_objective_spec.run->objective_spec->tie_breaks.size() == 1 &&
+                        run_objective_spec.run->objective_spec->tie_breaks.front().value.name == "trades",
+                    "phase 6 run objective spec preserves tie-break metadata");
+            }
+
+            std::vector<double> close;
+            close.reserve(8);
+            for (std::size_t i = 0; i < 8; ++i) {
+                close.push_back(100.0 + static_cast<double>(i));
+            }
+
+            std::shared_ptr<align::AlignedBundle> bundle;
+            ColumnRef primary{};
+            const bool okdv = make_single_series_dataview_from_close(close, bundle, primary);
+            t.expect(okdv && bundle != nullptr,
+                "phase 6 numeric objective sweep fixture creates temporal DataView input");
+            if (!okdv || !bundle) return true;
+
+            const DataView dv(*bundle);
+            PlanSweepRuntimeOptions opt{};
+            std::vector<SweepProgress> progress_log;
+            opt.progress_cb = [&](const SweepProgress& progress) {
+                progress_log.push_back(progress);
+            };
+            RunManifest run_manifest{};
+            run_manifest.preprocess.series_keys = { "A" };
+            run_manifest.preprocess.has_time_axis = true;
+            run_manifest.preprocess.time_kind = TimeKind::YyyyMmDd;
+            run_manifest.preprocess.time_resolution = "daily";
+            run_manifest.preprocess.alignment_applied = true;
+            run_manifest.preprocess.alignment_calendar = align::CalendarPolicy::Intersection;
+            run_manifest.preprocess.alignment_missing = align::MissingPolicy::NaN;
+            run_manifest.preprocess.alignment_non_temporal_multi_series =
+                align::NonTemporalMultiSeriesPolicy::Reject;
+            run_manifest.preprocess.input_warnings.push_back("contract warning");
+            run_manifest.primary_series_key = "A";
+            run_manifest.primary_selection_mode = RuntimePrimarySelectionMode::ExplicitSeries;
+            TopologySpec topology{};
+            topology.name = builtin_temporal_topology_name();
+            run_manifest.topologies.push_back(std::move(topology));
+            run_manifest.topology_usages.push_back(TopologyUsageSnapshot{});
+            const RunProvenanceSummary run_provenance =
+                build_run_provenance_summary(run_manifest);
+            std::ostringstream sweep_log;
+            BacktestResult sweep_best{};
+            PlanSweepReport sweep_report{};
+            const bool sweep_ok = run_custom_plan_spec(
+                dv,
+                primary,
+                sweep_spec,
+                opt,
+                sweep_log,
+                &sweep_best,
+                &sweep_report,
+                &run_provenance);
+            t.expect(sweep_ok, "phase 6 numeric objective sweep executes through custom runtime");
+            if (sweep_ok) {
+                double score_value = std::numeric_limits<double>::quiet_NaN();
+                const bool score_ok = std::any_of(
+                    sweep_best.reported_values.begin(),
+                    sweep_best.reported_values.end(),
+                    [&](const NamedReportedValue& value) {
+                        if (value.name != "score_value") {
+                            return false;
+                        }
+                        score_value = value.value;
+                        return true;
+                    });
+                t.expect(score_ok, "phase 6 numeric objective sweep preserves the named reported value on the best candidate");
+                if (score_ok) {
+                    t.expect(nearly_equal(score_value, 5.0),
+                        "phase 6 numeric objective sweep ranks by the named numeric node output");
+                }
+                const std::string sweep_msg = sweep_log.str();
+                t.expect(sweep_msg.find("numeric_node_output:score_value [last_finite]") != std::string::npos,
+                    "phase 6 sweep report prints the structured numeric objective description");
+                t.expect(sweep_msg.find("Run provenance:") != std::string::npos,
+                    "phase 6 sweep report prints shared run provenance when provided");
+                t.expect(sweep_msg.find("primary_selection_mode: explicit_series") != std::string::npos,
+                    "phase 6 sweep report prints human-readable primary-selection provenance");
+                t.expect(sweep_msg.find("alpha: 5") != std::string::npos,
+                    "phase 6 sweep report ranks the highest objective-valued parameter first");
+                t.expect(sweep_report.parameter_count == 1,
+                    "phase 6 structured sweep report preserves parameter dimension count");
+                t.expect(sweep_report.total_combinations == 3 && !sweep_report.total_combinations_overflow,
+                    "phase 6 structured sweep report preserves exact total combination count");
+                t.expect(sweep_report.candidate_space_size == 3 && !sweep_report.candidate_space_truncated,
+                    "phase 6 structured sweep report preserves candidate space size without false truncation");
+                t.expect(sweep_report.evaluations_run == 3,
+                    "phase 6 structured sweep report preserves executed evaluation count");
+                t.expect(sweep_report.run_provenance.primary_series_key == "A" &&
+                        sweep_report.run_provenance.primary_selection_mode == "explicit_series",
+                    "phase 6 structured sweep report preserves human-readable run provenance");
+                t.expect(sweep_report.candidate_outcomes.completed == 3 &&
+                        sweep_report.candidate_outcomes.completed_with_non_finite_metrics == 0 &&
+                        sweep_report.candidate_outcomes.failed == 0 &&
+                        sweep_report.candidate_outcomes.canceled == 0,
+                    "phase 6 structured sweep report preserves candidate outcome counts");
+                t.expect(sweep_report.candidate_rankability.rankable == 3 &&
+                        sweep_report.candidate_rankability.not_evaluated == 0,
+                    "phase 6 structured sweep report preserves candidate rankability counts");
+                const bool has_alpha_range =
+                    sweep_report.parameter_ranges.size() == 1 &&
+                    sweep_report.parameter_ranges.front().name == "alpha" &&
+                    sweep_report.parameter_ranges.front().expanded_count == 3;
+                t.expect(has_alpha_range,
+                    "phase 6 structured sweep report preserves named parameter range summaries");
+                const bool has_ranking_stage = std::any_of(
+                    sweep_report.stage_summaries.begin(),
+                    sweep_report.stage_summaries.end(),
+                    [](const SweepStageSummary& stage) {
+                        return stage.stage == SweepProgressStage::Ranking &&
+                            stage.done == 1 &&
+                            stage.total == 1;
+                    });
+                t.expect(has_ranking_stage,
+                    "phase 6 structured sweep report preserves ranking stage completion");
+                const bool has_report_stage = std::any_of(
+                    sweep_report.stage_summaries.begin(),
+                    sweep_report.stage_summaries.end(),
+                    [](const SweepStageSummary& stage) {
+                        return stage.stage == SweepProgressStage::ReportAssembly &&
+                            stage.done == 1 &&
+                            stage.total == 1;
+                    });
+                t.expect(has_report_stage,
+                    "phase 6 structured sweep report preserves report-assembly stage completion");
+                const bool best_has_alpha_value =
+                    !sweep_report.top_candidates.empty() &&
+                    !sweep_report.top_candidates.front().parameter_values.empty() &&
+                    sweep_report.top_candidates.front().parameter_values.front().name == "alpha" &&
+                    std::holds_alternative<std::int64_t>(sweep_report.top_candidates.front().parameter_values.front().value) &&
+                    std::get<std::int64_t>(sweep_report.top_candidates.front().parameter_values.front().value) == 5;
+                t.expect(best_has_alpha_value,
+                    "phase 6 structured sweep report preserves human-readable best-candidate parameter values");
+                const RunReport best_report = build_run_report(
+                    sweep_best,
+                    &sweep_report.resolved_objective,
+                    &run_provenance);
+                t.expect(best_report.objective.requested,
+                    "phase 6 run report preserves requested ranking objective");
+                t.expect(best_report.objective.rankability == RunRankabilityState::Rankable,
+                    "phase 6 run report classifies finite objective results as rankable");
+                t.expect(nearly_equal(best_report.objective.score, 5.0),
+                    "phase 6 run report preserves evaluated objective score");
+                t.expect(best_report.provenance.primary_series_key == "A" &&
+                        best_report.provenance.topology_usage_count == 1,
+                    "phase 6 run report preserves shared provenance without pushing it into BacktestResult");
+                const auto* reported_metric = find_metric_value(best_report, "score_value");
+                t.expect(
+                    reported_metric != nullptr &&
+                    reported_metric->kind == ResultMetricKind::ReportedValue &&
+                    nearly_equal(reported_metric->value, 5.0),
+                    "phase 6 result metric catalog preserves reported numeric-node values");
+                const auto* row_metric = find_metric_value(best_report, "rows_evaluated");
+                t.expect(
+                    row_metric != nullptr &&
+                    row_metric->kind == ResultMetricKind::CoreMetric &&
+                    nearly_equal(row_metric->value, 8.0),
+                    "phase 6 result metric catalog preserves executor row coverage");
+                const auto* signal_metric = find_metric_value(best_report, "entry_long_signals");
+                t.expect(
+                    signal_metric != nullptr &&
+                    signal_metric->kind == ResultMetricKind::SignalCount &&
+                    signal_metric->value > 0.0,
+                    "phase 6 result metric catalog preserves signal-count metrics");
+                const bool progress_has_live_leader = std::any_of(
+                    progress_log.begin(),
+                    progress_log.end(),
+                    [](const SweepProgress& progress) {
+                        return progress.stage == SweepProgressStage::CandidateEvaluation &&
+                            !progress.current_best.empty() &&
+                            !progress.current_best.front().parameter_values.empty();
+                    });
+                t.expect(progress_has_live_leader,
+                    "phase 6 sweep progress exposes a live ranked leader snapshot with parameter values");
+            }
+        }
+
+        {
+            std::vector<double> close;
+            close.reserve(12);
+            for (std::size_t i = 0; i < 12; ++i) {
+                close.push_back(100.0 + static_cast<double>(i));
+            }
+
+            std::shared_ptr<align::AlignedBundle> bundle;
+            ColumnRef primary{};
+            const bool okdv = make_single_series_dataview_from_close(close, bundle, primary);
+            t.expect(okdv && bundle != nullptr,
+                "phase 6 coarse-fine progress fixture creates temporal DataView input");
+            if (!okdv || !bundle) return true;
+
+            PlanSpec sweep_spec{};
+            sweep_spec.version = 1;
+            sweep_spec.name = "contract_phase6_stage_progress";
+            sweep_spec.trade_mode = TradeMode::LongOnly;
+            sweep_spec.params["alpha"] = static_cast<std::int64_t>(1);
+
+            NodeSpec zero{};
+            zero.id = "zero";
+            zero.op = "core.const";
+            zero.params["value"] = 0.0;
+
+            NodeSpec one{};
+            one.id = "one";
+            one.op = "core.const";
+            one.params["value"] = 1.0;
+
+            NodeSpec score_value{};
+            score_value.id = "score_value";
+            score_value.op = "core.const";
+            score_value.params["value"] = ParamRef{ "alpha" };
+
+            sweep_spec.numeric_nodes = { zero, one, score_value };
+
+            NodeSpec entry{};
+            entry.id = "entry";
+            entry.op = "cmp.gt";
+            entry.args = { "one", "zero" };
+            sweep_spec.bool_nodes = { entry };
+            sweep_spec.bind.entry_long = "entry";
+
+            PlanSweepSpec sweep_cfg{};
+            sweep_cfg.enabled = true;
+            sweep_cfg.engine = PlanSweepEngineKind::CoarseFine;
+            sweep_cfg.top_k = 2;
+            sweep_cfg.max_evals = 3;
+            sweep_cfg.coarse_fine.k_stage1 = 2;
+            sweep_cfg.coarse_fine.k_stage2 = 2;
+            sweep_cfg.coarse_fine.depollute_stage1 = false;
+            sweep_cfg.coarse_fine.stage1_stride = 0;
+            sweep_cfg.objective_spec = RankingObjectiveSpec{};
+            sweep_cfg.objective_spec->primary.source = ObjectiveValueSource::NumericNodeOutput;
+            sweep_cfg.objective_spec->primary.name = "score_value";
+            sweep_cfg.objective_spec->direction = ObjectiveDirection::Maximize;
+            SweepParamRange alpha_range{};
+            alpha_range.values = { 1.0, 5.0, 3.0 };
+            alpha_range.is_int = true;
+            sweep_cfg.params["alpha"] = alpha_range;
+            sweep_spec.sweep = sweep_cfg;
+
+            std::vector<SweepProgress> progress_log;
+            PlanSweepRuntimeOptions opt{};
+            opt.progress_cb = [&](const SweepProgress& progress) {
+                progress_log.push_back(progress);
+            };
+
+            std::ostringstream sweep_log;
+            BacktestResult sweep_best{};
+            PlanSweepReport sweep_report{};
+            const bool sweep_ok = run_custom_plan_spec(
+                DataView(*bundle),
+                primary,
+                sweep_spec,
+                opt,
+                sweep_log,
+                &sweep_best,
+                &sweep_report);
+            t.expect(sweep_ok, "phase 6 coarse-fine objective sweep executes through custom runtime");
+            if (sweep_ok) {
+                const bool saw_coarse_search = std::any_of(
+                    progress_log.begin(),
+                    progress_log.end(),
+                    [](const SweepProgress& progress) {
+                        return progress.stage == SweepProgressStage::CoarseSearch;
+                    });
+                t.expect(saw_coarse_search,
+                    "phase 6 progress stream distinguishes the coarse-search stage");
+                const bool saw_local_refinement = std::any_of(
+                    progress_log.begin(),
+                    progress_log.end(),
+                    [](const SweepProgress& progress) {
+                        return progress.stage == SweepProgressStage::LocalRefinement;
+                    });
+                t.expect(saw_local_refinement,
+                    "phase 6 progress stream distinguishes the local-refinement stage");
+                const bool report_has_coarse_stage = std::any_of(
+                    sweep_report.stage_summaries.begin(),
+                    sweep_report.stage_summaries.end(),
+                    [](const SweepStageSummary& stage) {
+                        return stage.stage == SweepProgressStage::CoarseSearch;
+                    });
+                t.expect(report_has_coarse_stage,
+                    "phase 6 structured sweep report preserves coarse-search stage totals");
+                const bool report_has_refinement_stage = std::any_of(
+                    sweep_report.stage_summaries.begin(),
+                    sweep_report.stage_summaries.end(),
+                    [](const SweepStageSummary& stage) {
+                        return stage.stage == SweepProgressStage::LocalRefinement;
+                    });
+                t.expect(report_has_refinement_stage,
+                    "phase 6 structured sweep report preserves local-refinement stage totals");
+            }
+        }
+
+        {
+            const std::string metric_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_phase6_non_finite_metrics",
+  "trade_mode": "LongOnly",
+  "params": {
+    "dummy": 1
+  },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "nan_value", "op": "ts.div", "args": ["zero", "zero"] }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "top_k": 1,
+    "max_evals": 1,
+    "objective": {
+      "value": {
+        "source": "reported_metric",
+        "name": "pnl"
+      },
+      "direction": "maximize",
+      "tie_breaks": [
+        {
+          "value": {
+            "source": "numeric_node_output",
+            "name": "nan_value",
+            "summary": "last_finite"
+          },
+          "direction": "maximize"
+        }
+      ]
+    },
+    "params": {
+      "dummy": {
+        "values": [1],
+        "is_int": true
+      }
+    }
+  }
+}
+)JSON";
+
+            PlanSpec metric_spec{};
+            std::string parse_err;
+            const bool parse_ok = parse_plan_spec_json(metric_json, metric_spec, parse_err);
+            t.expect(parse_ok, "phase 6 non-finite metric objective form parses");
+            if (!parse_ok) {
+                t.out << "    phase 6 non-finite metric parse error: " << parse_err << "\n";
+                return true;
+            }
+
+            std::vector<double> close;
+            close.reserve(8);
+            for (std::size_t i = 0; i < 8; ++i) {
+                close.push_back(100.0 + static_cast<double>(i));
+            }
+
+            std::shared_ptr<align::AlignedBundle> bundle;
+            ColumnRef primary{};
+            const bool okdv = make_single_series_dataview_from_close(close, bundle, primary);
+            t.expect(okdv && bundle != nullptr,
+                "phase 6 non-finite metric fixture creates temporal DataView input");
+            if (!okdv || !bundle) return true;
+
+            std::ostringstream sweep_log;
+            BacktestResult sweep_best{};
+            PlanSweepReport sweep_report{};
+            const bool sweep_ok = run_custom_plan_spec(
+                DataView(*bundle),
+                primary,
+                metric_spec,
+                PlanSweepRuntimeOptions{},
+                sweep_log,
+                &sweep_best,
+                &sweep_report);
+            t.expect(sweep_ok, "phase 6 non-finite metric sweep executes through custom runtime");
+            if (sweep_ok) {
+                const RunReport best_report = build_run_report(sweep_best);
+                const auto* non_finite_metric = find_metric_value(best_report, "nan_value");
+                t.expect(
+                    non_finite_metric != nullptr &&
+                    non_finite_metric->kind == ResultMetricKind::ReportedValue &&
+                    !non_finite_metric->is_finite,
+                    "phase 6 result metric catalog marks non-finite reported metrics explicitly");
+                const bool has_non_finite_name = std::find(
+                    best_report.metric_catalog.non_finite_metric_names.begin(),
+                    best_report.metric_catalog.non_finite_metric_names.end(),
+                    "nan_value") != best_report.metric_catalog.non_finite_metric_names.end();
+                t.expect(has_non_finite_name,
+                    "phase 6 result metric catalog preserves non-finite metric names");
+                t.expect(sweep_log.str().find("Non-finite metrics:") != std::string::npos,
+                    "phase 6 backtest reporting surfaces explicit non-finite metric summaries");
+                t.expect(sweep_report.candidate_outcomes.completed_with_non_finite_metrics == 1 &&
+                        sweep_report.candidate_outcomes.failed == 0,
+                    "phase 6 structured sweep report counts completed non-finite candidates separately from failures");
+                t.expect(sweep_report.candidate_rankability.rankable == 1,
+                    "phase 6 structured sweep report preserves primary-objective rankability even when other metrics are non-finite");
+            }
+
+            RankingObjectiveSpec non_finite_objective{};
+            non_finite_objective.primary.source = ObjectiveValueSource::NumericNodeOutput;
+            non_finite_objective.primary.name = "nan_value";
+            non_finite_objective.primary.summary_mode = NumericNodeSummaryMode::LastFiniteValue;
+            non_finite_objective.direction = ObjectiveDirection::Maximize;
+
+            BacktestResult non_finite_result{};
+            non_finite_result.reported_values.push_back(
+                NamedReportedValue{ "nan_value", std::numeric_limits<double>::quiet_NaN() });
+            const RunReport non_finite_objective_report =
+                build_run_report(non_finite_result, &non_finite_objective);
+            t.expect(non_finite_objective_report.objective.requested,
+                "phase 6 run report preserves requested non-finite objective metadata");
+            t.expect(non_finite_objective_report.objective.rankability == RunRankabilityState::NonFinitePrimaryValue,
+                "phase 6 run report classifies non-finite primary objectives as non-rankable");
+            t.expect(non_finite_objective_report.outcome == RunOutcomeState::CompletedWithNonFiniteMetrics,
+                "phase 6 run report classifies preserved non-finite metrics in run outcome state");
+        }
+
         return true;
     }
 

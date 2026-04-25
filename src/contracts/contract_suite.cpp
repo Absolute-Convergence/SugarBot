@@ -303,16 +303,27 @@ namespace sugar::contract_suite_internal {
     }
 
     bool backtest_equal(const BacktestResult& a, const BacktestResult& b) {
-        return nearly_equal(a.pnl, b.pnl) &&
+        const bool reported_values_equal =
+            a.reported_values.size() == b.reported_values.size() &&
+            std::equal(
+                a.reported_values.begin(),
+                a.reported_values.end(),
+                b.reported_values.begin(),
+                [](const NamedReportedValue& lhs, const NamedReportedValue& rhs) {
+                    return lhs.name == rhs.name && equal_or_both_nonfinite(lhs.value, rhs.value);
+                });
+        return equal_or_both_nonfinite(a.pnl, b.pnl) &&
             a.trades == b.trades &&
-            nearly_equal(a.max_drawdown, b.max_drawdown) &&
+            equal_or_both_nonfinite(a.max_drawdown, b.max_drawdown) &&
             a.best_start_date == b.best_start_date &&
             a.has_best_start_date == b.has_best_start_date &&
             a.long_trades == b.long_trades &&
             a.short_trades == b.short_trades &&
-            nearly_equal(a.pnl_long, b.pnl_long) &&
-            nearly_equal(a.pnl_short, b.pnl_short) &&
-            a.trade_hash == b.trade_hash;
+            equal_or_both_nonfinite(a.pnl_long, b.pnl_long) &&
+            equal_or_both_nonfinite(a.pnl_short, b.pnl_short) &&
+            a.trade_hash == b.trade_hash &&
+            a.rows_evaluated == b.rows_evaluated &&
+            reported_values_equal;
     }
 
     bool run_contract_section_group(

@@ -44,7 +44,7 @@ namespace sugar::app {
 
         const auto registry = sugar::make_default_registry();
         sugar::CompiledPlanTemplate plan_template{};
-        std::vector<sugar::FeatureDumpNumericOutput> numeric_outputs;
+        std::vector<sugar::NamedNumericOutput> numeric_outputs;
         std::string compile_err;
         if (!sugar::compile_feature_dump_template(
                 spec,

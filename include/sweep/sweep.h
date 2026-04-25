@@ -16,6 +16,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <string_view>
 
 #include "sweep/metrics.h"
 #include "sweep/plan_spec.h"
@@ -77,6 +78,27 @@ namespace sugar {
         return r.pnl - p.dd_penalty * r.max_drawdown;
     }
 
+    enum class SweepProgressStage : std::uint8_t {
+        CandidateEvaluation = 0,
+        CoarseSearch = 1,
+        LocalRefinement = 2,
+        MonteCarloSampling = 3,
+        Ranking = 4,
+        ReportAssembly = 5,
+    };
+
+    struct SweepParameterSetting {
+        std::string name{};
+        ParamValue value{};
+    };
+
+    struct SweepRankedCandidate {
+        std::size_t candidate_index = 0;
+        double score = 0.0;
+        BacktestResult result{};
+        std::vector<SweepParameterSetting> parameter_values{};
+    };
+
     // -------------------------
     // Generic param sweep helper
     // -------------------------
@@ -85,7 +107,36 @@ namespace sugar {
         std::size_t total = 0;
         double elapsed_sec = 0.0;
         double eta_sec = 0.0;
+        SweepProgressStage stage{ SweepProgressStage::CandidateEvaluation };
+        std::size_t stage_done = 0;
+        std::size_t stage_total = 0;
+        std::vector<SweepRankedCandidate> current_best{};
     };
+
+    inline SweepProgress make_sweep_progress(
+        std::size_t done,
+        std::size_t total,
+        double elapsed_sec,
+        double eta_sec,
+        SweepProgressStage stage = SweepProgressStage::CandidateEvaluation,
+        std::size_t stage_done = 0,
+        std::size_t stage_total = 0,
+        std::vector<SweepRankedCandidate> current_best = {})
+    {
+        SweepProgress progress{};
+        progress.done = done;
+        progress.total = total;
+        progress.elapsed_sec = elapsed_sec;
+        progress.eta_sec = eta_sec;
+        progress.stage = stage;
+        progress.stage_done = stage_done;
+        progress.stage_total = stage_total;
+        progress.current_best = std::move(current_best);
+        return progress;
+    }
+
+    std::string_view sweep_progress_stage_name(SweepProgressStage stage);
+
     using SweepProgressCallback = std::function<void(const SweepProgress&)>;
     using SweepCancellationCallback = std::function<bool()>;
 
@@ -167,7 +218,14 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total > done) ? static_cast<double>(total - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            progress_cb(SweepProgress{ done, total, elapsed, eta });
+            progress_cb(make_sweep_progress(
+                done,
+                total,
+                elapsed,
+                eta,
+                SweepProgressStage::CandidateEvaluation,
+                done,
+                total));
             };
 
         TopK<ParamsT> top(k);
@@ -219,7 +277,14 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total > done) ? static_cast<double>(total - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            progress_cb(SweepProgress{ done, total, elapsed, eta });
+            progress_cb(make_sweep_progress(
+                done,
+                total,
+                elapsed,
+                eta,
+                SweepProgressStage::CandidateEvaluation,
+                done,
+                total));
             };
 
         const std::size_t oversample_k = std::max<std::size_t>(k, k * oversample_mult);
@@ -310,7 +375,14 @@ namespace sugar {
             const double rate = (elapsed > 1e-6) ? (static_cast<double>(done) / elapsed) : 0.0;
             const double remaining = (total > done) ? static_cast<double>(total - done) : 0.0;
             const double eta = (rate > 1e-9) ? (remaining / rate) : 0.0;
-            progress_cb(SweepProgress{ done, total, elapsed, eta });
+            progress_cb(make_sweep_progress(
+                done,
+                total,
+                elapsed,
+                eta,
+                SweepProgressStage::CandidateEvaluation,
+                done,
+                total));
             };
 
         const std::size_t max_per_basin = std::max<std::size_t>(1, policy.max_per_basin);

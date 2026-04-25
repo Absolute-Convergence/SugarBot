@@ -67,7 +67,11 @@ namespace {
         csv_path = sugar::normalize_path_for_runtime(std::move(csv_path));
 
         for (;;) {
-            out << "CSV file path [default: " << csv_path << "] (q to cancel): ";
+            out << "CSV file path";
+            if (!csv_path.empty()) {
+                out << " [default: " << csv_path << "]";
+            }
+            out << " (q to cancel): ";
 
             std::string line;
             if (!std::getline(in, line)) {
@@ -77,8 +81,15 @@ namespace {
                 return false;
             }
 
-            std::string candidate = csv_path;
-            if (!line.empty()) {
+            std::string candidate;
+            if (line.empty()) {
+                if (csv_path.empty()) {
+                    out << "[Info] Path is required. Enter a path or q to cancel.\n";
+                    continue;
+                }
+                candidate = csv_path;
+            }
+            else {
                 candidate = sugar::normalize_path_for_runtime(std::move(line));
             }
             if (is_existing_file_path(candidate)) {
@@ -142,12 +153,13 @@ namespace {
     InteractiveWorkflow prompt_interactive_workflow(std::istream& in, std::ostream& out) {
         for (;;) {
             out << "\nChoose interactive workflow:\n";
-            out << "  1) Run layout.json + logic.json + data.csv\n";
-            out << "  2) Observation report\n";
-            out << "  3) Plan report\n";
-            out << "  4) Feature dump\n";
-            out << "  5) Alignment dump\n";
-            out << "  6) Strategy template list\n";
+            out << "  report-first path: 2) inspect data, 3) validate logic, 1) execute\n";
+            out << "  1) Run layout.json + logic.json + data.csv (final run/sweep/panel report)\n";
+            out << "  2) Observation report (ingest diagnostics + capability surfaces)\n";
+            out << "  3) Plan report (logic validation without execution)\n";
+            out << "  4) Feature dump (evaluated numeric-node CSV)\n";
+            out << "  5) Alignment dump (aligned series/entity shape)\n";
+            out << "  6) Strategy template list (built-in sweep search)\n";
             out << "  7) Custom User Strategy (PlanSpec JSON)\n";
             out << "Selection [default: 1, q to quit]: ";
 
@@ -417,7 +429,16 @@ namespace sugar::app {
                 sugar::append_plan_capability_snapshot(plan_report, runtime.run_manifest);
                 print_plan_capability_report(plan_report, out);
                 const sugar::DataView dv(*runtime.aligned_bundle);
-                ran = sugar::run_custom_plan_spec(dv, runtime.primary_ref, spec, rt, out);
+                const auto run_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
+                ran = sugar::run_custom_plan_spec(
+                    dv,
+                    runtime.primary_ref,
+                    spec,
+                    rt,
+                    out,
+                    nullptr,
+                    nullptr,
+                    &run_provenance);
             }
             else {
                 std::string csv_path;
@@ -445,7 +466,16 @@ namespace sugar::app {
                 }
 
                 const sugar::DataView dv(*session.runtime.aligned_bundle);
-                ran = sugar::run_custom_plan_spec(dv, session.runtime.primary_ref, spec, rt, out);
+                const auto run_provenance = sugar::build_run_provenance_summary(session.runtime.run_manifest);
+                ran = sugar::run_custom_plan_spec(
+                    dv,
+                    session.runtime.primary_ref,
+                    spec,
+                    rt,
+                    out,
+                    nullptr,
+                    nullptr,
+                    &run_provenance);
             }
 
             maybe_pause_before_exit(in, out);
@@ -461,7 +491,7 @@ namespace sugar::app {
         opt.mode = sugar::prompt_trade_mode(in, out, sugar::TradeMode::LongShort);
 
 #ifdef _DEBUG
-        const bool customize = sugar::prompt_yes_no(in, out, "Customize sweep ranges?", true);
+        const bool customize = sugar::prompt_yes_no(in, out, "Customize template sweep settings?", true);
 #else
         const bool customize = true;
 #endif

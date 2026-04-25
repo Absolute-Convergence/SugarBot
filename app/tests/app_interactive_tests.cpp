@@ -25,6 +25,12 @@ namespace sugar::app::tests {
             t.check(err.str().empty(), "interactive q command produces no error output");
             t.check(text.find("Interactive command cancelled") != std::string::npos,
                 "interactive q reports cancellation");
+            t.check(text.find("report-first path: 2) inspect data, 3) validate logic, 1) execute") != std::string::npos,
+                "interactive menu advertises the report-first workflow");
+            t.check(text.find("Observation report (ingest diagnostics + capability surfaces)") != std::string::npos,
+                "interactive menu explains observation-report purpose");
+            t.check(text.find("Run layout.json + logic.json + data.csv (final run/sweep/panel report)") != std::string::npos,
+                "interactive menu explains final run reporting surface");
             t.check(text.find("PnL:") == std::string::npos,
                 "interactive q does not fall through into default execution");
             return t.failed == 0;
@@ -354,7 +360,7 @@ namespace sugar::app::tests {
             AppCommand cmd{};
             cmd.kind = CommandKind::Interactive;
 
-            std::istringstream in("6\n1\n1\nn\nq\n");
+            std::istringstream in("6\n1\n1\n\n\n\nq\n");
             std::ostringstream out;
             std::ostringstream err;
             const int rc = run_interactive_command(cmd, in, out, err);
@@ -362,13 +368,51 @@ namespace sugar::app::tests {
 
             t.check(rc == 0, "interactive template CSV cancellation returns success");
             t.check(err.str().empty(), "interactive template CSV cancellation produces no error output");
-            t.check(text.find("CSV file path [default: ") != std::string::npos,
-                "interactive template path exposes the active CSV data source");
+            t.check(text.find("CSV file path (q to cancel): ") != std::string::npos,
+                "interactive template path requires an explicit CSV path when none was provided");
+            t.check(text.find("Path is required. Enter a path or q to cancel.") != std::string::npos,
+                "interactive template path reprompts when no CSV path is provided");
             t.check(text.find("Interactive template execution cancelled.") != std::string::npos,
                 "interactive template path can cancel at the CSV prompt");
-            t.check(text.find("data\\BTCUSD_420.csv") == std::string::npos ||
-                    text.find("CSV file path [default: data\\BTCUSD_420.csv]") != std::string::npos,
-                "interactive template default data source is visible when used");
+            t.check(text.find("data\\BTCUSD_420.csv") == std::string::npos,
+                "interactive template path no longer leaks the repo fixture CSV as a default");
+            return t.failed == 0;
+        }
+
+        bool test_interactive_template_runs_real_sweep_with_live_progress(TestContext& t) {
+            t.out << "[app_interactive] template path runs a real live sweep\n";
+            std::string csv_path;
+            std::string fixture_err;
+            const bool fixture_ok = create_time_header_daily_fixture(csv_path, fixture_err);
+            t.check(fixture_ok, "interactive template sweep fixture CSV is created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Interactive;
+            cmd.interactive.csv_path = csv_path;
+
+            std::istringstream in("6\n2\n\n\n\n\n");
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_interactive_command(cmd, in, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "interactive template sweep returns success");
+            t.check(err.str().empty(), "interactive template sweep produces no error output");
+            t.check(text.find("Strategy template list (built-in sweep search)") != std::string::npos,
+                "interactive menu labels template path as a built-in sweep search");
+            t.check(text.find("[Info] template sweep configured: engine=exhaustive") != std::string::npos,
+                "interactive template run explains that a real sweep is configured");
+            t.check(text.find("[Info] sweep params: n_fast, n_slow") != std::string::npos,
+                "interactive template run names the swept parameters");
+            t.check(text.find("[sweep] candidate evaluation ") != std::string::npos,
+                "interactive template run emits live sweep progress");
+            t.check(text.find("=== PlanSpec Sweep Results ===") != std::string::npos,
+                "interactive template run prints the structured sweep report");
+            t.check(text.find("Total combos: 6878") != std::string::npos,
+                "interactive template run reports the expanded search space");
+            t.check(text.find("Sweep params:") != std::string::npos,
+                "interactive template run prints sweep parameter ranges in the final report");
             return t.failed == 0;
         }
 
@@ -415,8 +459,8 @@ namespace sugar::app::tests {
                 "panel custom command reports spatial-panel conditionality");
             t.check(text.find("custom panel execution using --run-panel DataSpec/CSV observations.") != std::string::npos,
                 "panel custom command executes against app-provided observations");
-            t.check(text.find("ranking_metric=pnl_dd") != std::string::npos,
-                "panel custom command reports explicit ranking metric");
+            t.check(text.find("ranking_objective=maximize reported_metric:pnl - 0.25 * reported_metric:max_drawdown") != std::string::npos,
+                "panel custom command reports canonical ranking objective");
             t.check(text.find("inputs are ignored") == std::string::npos,
                 "panel custom command no longer claims CLI inputs are ignored");
             t.check(text.find("series_inputs is required for custom execution") == std::string::npos,
@@ -513,6 +557,7 @@ namespace sugar::app::tests {
         tests.push_back(test_interactive_custom_conflict_defaults_to_app_runtime);
         tests.push_back(test_interactive_file_run_reprompts_missing_path);
         tests.push_back(test_interactive_template_prompts_for_csv_source);
+        tests.push_back(test_interactive_template_runs_real_sweep_with_live_progress);
         tests.push_back(test_panel_custom_uses_app_runtime_without_series_inputs);
         tests.push_back(test_panel_template_reports_plan_compatibility);
         tests.push_back(test_panel_custom_reports_missing_runtime_ref_before_execution);
