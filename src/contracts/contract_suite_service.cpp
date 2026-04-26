@@ -1182,9 +1182,14 @@ namespace sugar::contract_suite_internal {
         t.out << "[service_running_cancellation] service-core cooperative running-job cancellation\n";
 
         constexpr std::size_t kSweepEvals = 100000;
-        sugar::service::ServerRuntime runtime(make_service_runtime_config(
+        constexpr std::size_t kRowCount = 1024;
+        sugar::service::RuntimeConfig config = make_service_runtime_config(
             contract_tmp_case_dir("service_running_cancellation"),
-            kSweepEvals));
+            kSweepEvals);
+        // Release builds can complete the 128-row sweep before the cancel request lands once
+        // the broader service_core group has already warmed the process.
+        config.quotas.max_parsed_row_count = kRowCount;
+        sugar::service::ServerRuntime runtime(std::move(config));
         sugar::service::SessionInfo session{};
         std::string err;
         if (!runtime.create_session(session, err)) {
@@ -1193,7 +1198,7 @@ namespace sugar::contract_suite_internal {
 
         auto request = make_single_series_request(sugar::service::JobIntent::Execute);
         request.logic.content = single_series_sweep_logic_json(kSweepEvals);
-        request.data.content = long_single_series_csv_text(128);
+        request.data.content = long_single_series_csv_text(kRowCount);
 
         std::string job_id;
         const bool submitted = runtime.submit_job(session.session_id, request, job_id, err);
