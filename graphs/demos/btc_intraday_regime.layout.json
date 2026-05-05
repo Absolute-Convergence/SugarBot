@@ -1,0 +1,16 @@
+{
+  "input_profile": "auto",
+  "time_col": "time",
+  "time_kind": "Iso8601",
+  "header_policy": "RequiredHeaders",
+  "value_cols": ["open", "high", "low", "close", "volume"],
+  "primary_value_col": "close",
+  "rename": {
+    "Volume": "volume"
+  },
+  "missing_tokens": ["", "NA", "null", "nan", "NaN"],
+  "missing_default": { "kind": "NaN" },
+  "sort_by_time": true,
+  "dedupe": "Error"
+}
+

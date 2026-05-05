@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "name": "demo_nvda_momentum_volatility",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "initial_equity": 25000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 1.0, "slippage_bps": 2.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": true,
+    "close_out_at_end": true
+  },
+  "params": {
+    "macd_fast": 8,
+    "macd_slow": 34,
+    "macd_signal": 9,
+    "trend_n": 55,
+    "boll_n": 34,
+    "boll_k": 2.0,
+    "entropy_n": 30,
+    "entropy_bins": 8,
+    "hurst_n": 80,
+    "vol_fast": 8,
+    "vol_slow": 40,
+    "price_pct_n": 90,
+    "roc_entry": 0.25,
+    "roc_exit": -0.15,
+    "vol_cap": 2.2,
+    "hurst_min": 0.38,
+    "entropy_max": 2.0,
+    "score_gate": 0.45
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "h", "op": "core.ref", "params": { "ref": "high" } },
+    { "id": "l", "op": "core.ref", "params": { "ref": "low" } },
+    { "id": "roc_col", "op": "core.ref", "params": { "ref": "roc" } },
+    { "id": "macd", "op": "ts.macd", "args": ["c"], "params": { "fast": { "ref": "macd_fast" }, "slow": { "ref": "macd_slow" }, "signal": { "ref": "macd_signal" } } },
+    { "id": "macd_delta", "op": "ts.delta", "args": ["macd"] },
+    { "id": "macd_abs", "op": "ts.abs", "args": ["macd"] },
+    { "id": "trend", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "trend_n" } } },
+    { "id": "tr", "op": "ts.true_range_ohlc", "args": ["h", "l", "c"] },
+    { "id": "atr", "op": "ts.ema", "args": ["tr"], "params": { "n": 14 } },
+    { "id": "boll_width", "op": "ts.bollinger_width", "args": ["c"], "params": { "n": { "ref": "boll_n" }, "k": { "ref": "boll_k" } } },
+    { "id": "vol_ratio", "op": "ts.volatility_ratio", "args": ["c"], "params": { "fast_n": { "ref": "vol_fast" }, "slow_n": { "ref": "vol_slow" } } },
+    { "id": "roc_entropy", "op": "ts.entropy", "args": ["roc_col"], "params": { "n": { "ref": "entropy_n" }, "bins": { "ref": "entropy_bins" } } },
+    { "id": "hurst", "op": "ts.hurst", "args": ["c"], "params": { "n": { "ref": "hurst_n" } } },
+    { "id": "p90", "op": "ts.percentile", "args": ["c"], "params": { "n": { "ref": "price_pct_n" }, "q": 90.0 } },
+    { "id": "p10", "op": "ts.percentile", "args": ["c"], "params": { "n": { "ref": "price_pct_n" }, "q": 10.0 } },
+    { "id": "range_hi_lo", "op": "ts.sub", "args": ["p90", "p10"] },
+    { "id": "above_low", "op": "ts.sub", "args": ["c", "p10"] },
+    { "id": "price_position", "op": "ts.div", "args": ["above_low", "range_hi_lo"] },
+    { "id": "regime_change", "op": "ts.regime_change", "args": ["c"], "params": { "n": 50 } },
+    { "id": "score_raw_a", "op": "ts.add", "args": ["macd_abs", "price_position"] },
+    { "id": "score_raw_b", "op": "ts.add", "args": ["score_raw_a", "hurst"] },
+    { "id": "score_raw_c", "op": "ts.sub", "args": ["score_raw_b", "vol_ratio"] },
+    { "id": "score_raw_d", "op": "ts.sub", "args": ["score_raw_c", "roc_entropy"] },
+    { "id": "score_raw", "op": "ts.sub", "args": ["score_raw_d", "regime_change"] },
+    { "id": "score_zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "score_floor", "op": "core.select", "args": ["score_positive", "score_raw", "score_zero"] },
+    { "id": "showcase_score", "op": "ts.normalize_minmax", "args": ["score_floor"], "params": { "n": 80 } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "roc_entry_level", "op": "core.const", "params": { "value": { "ref": "roc_entry" } } },
+    { "id": "roc_exit_level", "op": "core.const", "params": { "value": { "ref": "roc_exit" } } },
+    { "id": "vol_cap_level", "op": "core.const", "params": { "value": { "ref": "vol_cap" } } },
+    { "id": "hurst_level", "op": "core.const", "params": { "value": { "ref": "hurst_min" } } },
+    { "id": "entropy_level", "op": "core.const", "params": { "value": { "ref": "entropy_max" } } },
+    { "id": "score_gate_level", "op": "core.const", "params": { "value": { "ref": "score_gate" } } }
+  ],
+  "bool_nodes": [
+    { "id": "score_positive", "op": "cmp.gt", "args": ["score_raw", "zero"] },
+    { "id": "trend_up", "op": "cmp.gt", "args": ["c", "trend"] },
+    { "id": "trend_down", "op": "cmp.lt", "args": ["c", "trend"] },
+    { "id": "macd_up", "op": "cmp.gt", "args": ["macd", "zero"] },
+    { "id": "macd_down", "op": "cmp.lt", "args": ["macd", "zero"] },
+    { "id": "macd_accel", "op": "cmp.gt", "args": ["macd_delta", "zero"] },
+    { "id": "macd_decel", "op": "cmp.lt", "args": ["macd_delta", "zero"] },
+    { "id": "roc_long", "op": "cmp.gt", "args": ["roc_col", "roc_entry_level"] },
+    { "id": "roc_short", "op": "cmp.lt", "args": ["roc_col", "roc_exit_level"] },
+    { "id": "vol_ok", "op": "cmp.lt", "args": ["vol_ratio", "vol_cap_level"] },
+    { "id": "hurst_ok", "op": "cmp.gt", "args": ["hurst", "hurst_level"] },
+    { "id": "entropy_ok", "op": "cmp.lt", "args": ["roc_entropy", "entropy_level"] },
+    { "id": "score_ok", "op": "cmp.gt", "args": ["showcase_score", "score_gate_level"] },
+    { "id": "long_a", "op": "logic.and", "args": ["trend_up", "macd_up"] },
+    { "id": "long_b", "op": "logic.and", "args": ["long_a", "macd_accel"] },
+    { "id": "long_c", "op": "logic.and", "args": ["long_b", "roc_long"] },
+    { "id": "long_d", "op": "logic.and", "args": ["long_c", "vol_ok"] },
+    { "id": "entry_l", "op": "logic.and", "args": ["long_d", "score_ok"] },
+    { "id": "short_a", "op": "logic.and", "args": ["trend_down", "macd_down"] },
+    { "id": "short_b", "op": "logic.and", "args": ["short_a", "macd_decel"] },
+    { "id": "short_c", "op": "logic.and", "args": ["short_b", "roc_short"] },
+    { "id": "entry_s", "op": "logic.and", "args": ["short_c", "entropy_ok"] },
+    { "id": "exit_l_a", "op": "logic.or", "args": ["trend_down", "macd_down"] },
+    { "id": "exit_l", "op": "logic.or", "args": ["exit_l_a", "roc_short"] },
+    { "id": "exit_s_a", "op": "logic.or", "args": ["trend_up", "macd_up"] },
+    { "id": "exit_s", "op": "logic.or", "args": ["exit_s_a", "roc_long"] },
+    { "id": "allow_a", "op": "logic.and", "args": ["vol_ok", "hurst_ok"] },
+    { "id": "allow_trade", "op": "logic.and", "args": ["allow_a", "entropy_ok"] }
+  ],
+  "bindings": {
+    "entry_long": "entry_l",
+    "exit_long": "exit_l",
+    "entry_short": "entry_s",
+    "exit_short": "exit_s",
+    "allow_trade": "allow_trade"
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "monte_carlo",
+    "top_k": 8,
+    "max_evals": 2500,
+    "objective": {
+      "value": { "source": "reported_metric", "name": "pnl" },
+      "direction": "maximize",
+      "penalties": [
+        { "value": { "source": "reported_metric", "name": "max_drawdown" }, "weight": 1.15 }
+      ],
+      "tie_breaks": [
+        { "value": { "source": "numeric_node_output", "name": "showcase_score", "summary": "last_finite" }, "direction": "maximize" },
+        { "value": { "source": "reported_metric", "name": "trades" }, "direction": "maximize" }
+      ]
+    },
+    "engine_config": {
+      "monte_carlo": {
+        "draws": 2500,
+        "seed": 20260504,
+        "dedupe": true,
+        "top_k": 16
+      }
+    },
+    "result_diversity": {
+      "enabled": true,
+      "dedupe_trade_hash": true,
+      "basin_aware": false,
+      "oversample_multiplier": 8,
+      "max_per_basin": 2,
+      "param_bucket_size": 3,
+      "min_param_distance": 0,
+      "min_trades": 2
+    },
+    "params": {
+      "macd_fast": { "values": [5, 8, 12], "is_int": true },
+      "macd_slow": { "values": [26, 34, 45, 55], "is_int": true },
+      "trend_n": { "values": [34, 55, 89], "is_int": true },
+      "boll_n": { "values": [20, 34, 55], "is_int": true },
+      "entropy_n": { "values": [20, 30, 45], "is_int": true },
+      "hurst_n": { "values": [55, 80, 120], "is_int": true },
+      "vol_cap": { "values": [1.8, 2.2, 2.8], "is_int": false },
+      "score_gate": { "values": [0.35, 0.45, 0.55], "is_int": false }
+    }
+  }
+}

@@ -3,13 +3,17 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <iomanip>
 #include <sstream>
 #include <thread>
 #include <utility>
 
 #include "service/artifact_store.h"
+#include "service/network_client.h"
+#include "service/network_server.h"
 #include "service/protocol_dispatch.h"
 #include "service/protocol_framing.h"
+#include "service/request_validation.h"
 #include "service/server_runtime.h"
 
 namespace sugar::contract_suite_internal {
@@ -85,8 +89,17 @@ namespace sugar::contract_suite_internal {
         std::string long_single_series_csv_text(std::size_t rows) {
             std::ostringstream out;
             out << "date,close\n";
+            const auto start_date = std::chrono::sys_days{
+                std::chrono::year{ 2024 } / std::chrono::January / 1
+            };
             for (std::size_t i = 0; i < rows; ++i) {
-                out << (20240101 + static_cast<int>(i))
+                const auto ymd = std::chrono::year_month_day{
+                    start_date + std::chrono::days{ static_cast<int>(i) }
+                };
+                out << static_cast<int>(ymd.year())
+                    << std::setw(2) << std::setfill('0') << static_cast<unsigned>(ymd.month())
+                    << std::setw(2) << std::setfill('0') << static_cast<unsigned>(ymd.day())
+                    << std::setfill(' ')
                     << ","
                     << (100.0 + static_cast<double>(i))
                     << "\n";
@@ -131,6 +144,59 @@ namespace sugar::contract_suite_internal {
                 << "        \"max\": " << (1 + max_evals) << ",\n"
                 << "        \"step\": 1,\n"
                 << "        \"is_int\": true\n"
+                << "      }\n"
+                << "    }\n"
+                << "  }\n"
+                << "}\n";
+            return out.str();
+        }
+
+        std::string single_series_monte_carlo_sweep_logic_json(
+            std::size_t max_evals,
+            std::size_t draws) {
+            std::ostringstream out;
+            out
+                << "{\n"
+                << "  \"version\": 1,\n"
+                << "  \"name\": \"service_single_series_monte_carlo_sweep\",\n"
+                << "  \"trade_mode\": \"LongOnly\",\n"
+                << "  \"params\": {\n"
+                << "    \"n_fast\": 2\n"
+                << "  },\n"
+                << "  \"numeric_nodes\": [\n"
+                << "    { \"id\": \"c\", \"op\": \"core.close\" },\n"
+                << "    { \"id\": \"sma\", \"op\": \"ts.sma\", \"args\": [\"c\"], \"params\": { \"n\": { \"ref\": \"n_fast\" } } },\n"
+                << "    { \"id\": \"z\", \"op\": \"core.const\", \"params\": { \"value\": 0.0 } }\n"
+                << "  ],\n"
+                << "  \"bool_nodes\": [\n"
+                << "    { \"id\": \"entry\", \"op\": \"cmp.gt\", \"args\": [\"sma\", \"z\"] },\n"
+                << "    { \"id\": \"exit\", \"op\": \"cmp.lt\", \"args\": [\"sma\", \"z\"] }\n"
+                << "  ],\n"
+                << "  \"bindings\": {\n"
+                << "    \"entry_long\": \"entry\",\n"
+                << "    \"exit_long\": \"exit\",\n"
+                << "    \"entry_short\": \"\",\n"
+                << "    \"exit_short\": \"\",\n"
+                << "    \"allow_trade\": \"\"\n"
+                << "  },\n"
+                << "  \"sweep\": {\n"
+                << "    \"enabled\": true,\n"
+                << "    \"engine\": \"monte_carlo\",\n"
+                << "    \"top_k\": 3,\n"
+                << "    \"max_evals\": " << max_evals << ",\n"
+                << "    \"params\": {\n"
+                << "      \"n_fast\": {\n"
+                << "        \"min\": 2,\n"
+                << "        \"max\": 11,\n"
+                << "        \"step\": 1,\n"
+                << "        \"is_int\": true\n"
+                << "      }\n"
+                << "    },\n"
+                << "    \"engine_config\": {\n"
+                << "      \"monte_carlo\": {\n"
+                << "        \"draws\": " << draws << ",\n"
+                << "        \"seed\": 12345,\n"
+                << "        \"dedupe\": true\n"
                 << "      }\n"
                 << "    }\n"
                 << "  }\n"
@@ -399,6 +465,66 @@ namespace sugar::contract_suite_internal {
             t.expect(!ok, "protocol dispatcher rejects oversized upload content");
             t.expect(!ok && response.error_code == sugar::service::ProtocolErrorCode::QuotaExceeded,
                 "protocol dispatcher classifies oversized upload as quota_exceeded");
+        }
+
+        {
+            sugar::service::ProtocolRequest upload{};
+            upload.command = sugar::service::ProtocolCommand::UploadArtifact;
+            upload.session_id = connect_response.session_id;
+            upload.upload_kind = sugar::service::ArtifactKind::LayoutSpec;
+            upload.upload_client_name = "layout";
+            upload.upload_content = single_series_layout_json();
+            sugar::service::ProtocolResponse response{};
+            const bool ok = dispatcher.handle_request(upload, response);
+            t.expect(ok && response.upload.has_value(),
+                "protocol dispatcher accepts extensionless layout upload names");
+            t.expect(ok && response.upload.has_value() && response.upload->client_name == "layout.json",
+                "protocol dispatcher normalizes extensionless layout upload names");
+        }
+
+        {
+            sugar::service::ProtocolRequest upload{};
+            upload.command = sugar::service::ProtocolCommand::UploadArtifact;
+            upload.session_id = connect_response.session_id;
+            upload.upload_kind = sugar::service::ArtifactKind::DataCsv;
+            upload.upload_client_name.clear();
+            upload.upload_content = single_series_csv_text();
+            sugar::service::ProtocolResponse response{};
+            const bool ok = dispatcher.handle_request(upload, response);
+            t.expect(ok && response.upload.has_value(),
+                "protocol dispatcher accepts omitted data upload names");
+            t.expect(ok && response.upload.has_value() && response.upload->client_name == "data.csv",
+                "protocol dispatcher supplies a default data upload filename");
+        }
+
+        {
+            sugar::service::ProtocolRequest upload{};
+            upload.command = sugar::service::ProtocolCommand::UploadArtifact;
+            upload.session_id = connect_response.session_id;
+            upload.upload_kind = sugar::service::ArtifactKind::DataCsv;
+            upload.upload_client_name = "data.txt";
+            upload.upload_content = single_series_csv_text();
+            sugar::service::ProtocolResponse response{};
+            const bool ok = dispatcher.handle_request(upload, response);
+            t.expect(!ok, "protocol dispatcher rejects wrong-extension data upload names immediately");
+            t.expect(!ok && response.error_code == sugar::service::ProtocolErrorCode::InvalidArtifact,
+                "protocol dispatcher classifies wrong-extension upload names as invalid_artifact");
+            t.expect(!ok && response.message.find(".csv") != std::string::npos,
+                "protocol dispatcher reports the expected data upload extension");
+        }
+
+        {
+            sugar::service::ProtocolRequest upload{};
+            upload.command = sugar::service::ProtocolCommand::UploadArtifact;
+            upload.session_id = connect_response.session_id;
+            upload.upload_kind = sugar::service::ArtifactKind::LayoutSpec;
+            upload.upload_client_name = "nested/layout";
+            upload.upload_content = single_series_layout_json();
+            sugar::service::ProtocolResponse response{};
+            const bool ok = dispatcher.handle_request(upload, response);
+            t.expect(!ok, "protocol dispatcher rejects nested upload client names immediately");
+            t.expect(!ok && response.message.find("single filename") != std::string::npos,
+                "protocol dispatcher explains nested upload client-name rejection");
         }
 
         return true;
@@ -805,6 +931,31 @@ namespace sugar::contract_suite_internal {
         runtime.quotas.expensive_sweep_reject_pair_disconnect_count = 3;
         runtime.quotas.expensive_sweep_reject_total_before_disconnect = 8;
 
+        const std::size_t moderate_sweep_minutes =
+            sugar::service::estimate_sweep_runtime_minutes(
+                12354,
+                512,
+                sugar::PlanSweepEngineKind::Exhaustive);
+        t.expect(
+            moderate_sweep_minutes > 0 && moderate_sweep_minutes < 10,
+            "hosted sweep estimate no longer inflates modest exhaustive workloads to quota-ceiling time scales");
+
+        sugar::service::ServiceProfile parsed_profile{};
+        t.expect(
+            sugar::service::parse_service_profile("dev", parsed_profile) &&
+                parsed_profile == sugar::service::ServiceProfile::LocalAi,
+            "service profile parsing accepts the local-ai development alias");
+        const auto local_ai_quotas = sugar::service::make_quota_config_for_service_profile(
+            sugar::service::ServiceProfile::LocalAi);
+        const auto hosted_public_quotas = sugar::service::make_quota_config_for_service_profile(
+            sugar::service::ServiceProfile::HostedPublic);
+        t.expect(local_ai_quotas.max_live_sessions > hosted_public_quotas.max_live_sessions,
+            "local-ai service profile relaxes live-session capacity compared with hosted-public");
+        t.expect(local_ai_quotas.expensive_sweep_reject_disconnect_streak == 0,
+            "local-ai service profile disables forced disconnects for repeated expensive-sweep rejects");
+        t.expect(hosted_public_quotas.expensive_sweep_reject_disconnect_streak > 0,
+            "hosted-public service profile keeps repeated expensive-sweep forced-disconnect protection");
+
         std::vector<std::string> security_log_lines;
         sugar::service::ProtocolDispatcherConfig config{};
         config.runtime = runtime;
@@ -900,8 +1051,11 @@ namespace sugar::contract_suite_internal {
             t.expect(warning_ok && !warning_response.job_id.empty(),
                 "protocol dispatcher allows a hosted sweep inside the 30-minute budget");
             t.expect(warning_ok &&
-                    warning_response.message.find("warning: estimated sweep duration") != std::string::npos,
+                    warning_response.message.find("warning: sweep candidate estimate") != std::string::npos,
                 "protocol dispatcher surfaces the hosted long-sweep warning before execution");
+            t.expect(warning_ok &&
+                    warning_response.message.find("rough runtime estimate about") != std::string::npos,
+                "protocol dispatcher warning text separates candidate-budget policy from runtime heuristics");
         }
 
         {
@@ -1071,12 +1225,91 @@ namespace sugar::contract_suite_internal {
                 "protocol dispatcher closes the session after more than eight total over-budget sweeps in one session");
         }
 
+        {
+            sugar::service::RuntimeConfig local_runtime = runtime;
+            local_runtime.quotas = local_ai_quotas;
+            local_runtime.quotas.max_sweep_candidate_count = 10;
+            local_runtime.quotas.sweep_warning_minutes = 15;
+            local_runtime.quotas.sweep_reject_minutes = 30;
+
+            sugar::service::ProtocolDispatcherConfig local_config{};
+            local_config.runtime = local_runtime;
+            local_config.source_root = std::filesystem::current_path();
+            sugar::service::ProtocolDispatcher local_dispatcher(local_config);
+
+            sugar::service::ProtocolRequest connect{};
+            connect.command = sugar::service::ProtocolCommand::Connect;
+            sugar::service::ProtocolResponse connect_response{};
+            const bool connected = local_dispatcher.handle_request(connect, connect_response);
+            t.expect(connected && !connect_response.session_id.empty(),
+                "local-ai profile creates a development session for expensive-sweep rejection checks");
+
+            auto local_upload = [&](sugar::service::ArtifactKind kind,
+                                    std::string_view client_name,
+                                    std::string_view content) {
+                sugar::service::ProtocolRequest upload{};
+                upload.command = sugar::service::ProtocolCommand::UploadArtifact;
+                upload.session_id = connect_response.session_id;
+                upload.upload_kind = kind;
+                upload.upload_client_name = std::string(client_name);
+                upload.upload_content = std::string(content);
+                sugar::service::ProtocolResponse response{};
+                const bool ok = local_dispatcher.handle_request(upload, response);
+                t.expect(ok && response.upload.has_value(),
+                    std::string("local-ai profile stages artifact: ") + std::string(client_name));
+                return response.upload.has_value() ? response.upload->upload_id : std::string{};
+            };
+
+            const std::string layout_upload_id = local_upload(
+                sugar::service::ArtifactKind::LayoutSpec,
+                "layout.json",
+                layout_json);
+            const std::string logic_upload_id = local_upload(
+                sugar::service::ArtifactKind::LogicSpec,
+                "logic.json",
+                reject_logic_json);
+            const std::string data_upload_id = local_upload(
+                sugar::service::ArtifactKind::DataCsv,
+                "data.csv",
+                data_csv);
+
+            sugar::service::ProtocolResponse final_reject_response{};
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                sugar::service::ProtocolRequest submit{};
+                submit.command = sugar::service::ProtocolCommand::SubmitJob;
+                submit.session_id = connect_response.session_id;
+                submit.layout_upload_id = layout_upload_id;
+                submit.logic_upload_id = logic_upload_id;
+                submit.data_upload_id = data_upload_id;
+                sugar::service::ProtocolResponse response{};
+                const bool ok = local_dispatcher.handle_request(submit, response);
+                t.expect(!ok &&
+                        response.error_code == sugar::service::ProtocolErrorCode::QuotaExceeded,
+                    "local-ai profile still rejects over-budget hosted sweeps");
+                t.expect(!response.close_connection,
+                    "local-ai profile preserves the session after repeated over-budget sweep rejects");
+                final_reject_response = response;
+            }
+
+            sugar::service::ProtocolRequest list_datasets{};
+            list_datasets.command = sugar::service::ProtocolCommand::ListDatasets;
+            list_datasets.session_id = connect_response.session_id;
+            sugar::service::ProtocolResponse list_response{};
+            const bool listed = local_dispatcher.handle_request(list_datasets, list_response);
+            t.expect(listed && !final_reject_response.close_connection,
+                "local-ai profile keeps rejected sessions usable for follow-up debugging requests");
+        }
+
         t.expect(log_contains("event=submit result=warning"),
             "security log records hosted long-sweep warning events");
         t.expect(log_contains("event=submit result=reject_over_budget"),
             "security log records over-budget sweep rejections");
         t.expect(log_contains("event=session_block result=closed"),
             "security log records forced session closure for repeated over-budget sweeps");
+        t.expect(log_contains("schema_version=sugarbot.hosted.v1 category=job event=submit"),
+            "security log stamps job audit events with the hosted schema and category");
+        t.expect(log_contains("schema_version=sugarbot.hosted.v1 category=session event=session_block"),
+            "security log stamps session audit events with the hosted schema and category");
 
         return true;
     }
@@ -1107,6 +1340,8 @@ namespace sugar::contract_suite_internal {
         t.expect(owner_can_read, "owning session can fetch job result");
         t.expect(owner_can_read && owned_result.metadata.primary_backtest.has_value(),
             "owned result preserves primary backtest metrics");
+        t.expect(owner_can_read && owned_result.input_artifacts.size() == 3,
+            "owned result preserves input artifact audit trace");
         t.expect(owner_can_read && !owned_result.output_artifacts.empty(),
             "owned result preserves summary output artifact");
 
@@ -1116,6 +1351,32 @@ namespace sugar::contract_suite_internal {
         t.expect(!intruder_can_read, "non-owning session cannot fetch another session result");
         t.expect(!intruder_can_read && err.find("does not belong") != std::string::npos,
             "non-owning result fetch fails with explicit ownership error");
+
+        auto sweep_request = make_single_series_request(sugar::service::JobIntent::Execute);
+        sweep_request.logic.content = single_series_monte_carlo_sweep_logic_json(7, 3);
+        std::string sweep_job_id;
+        err.clear();
+        const bool sweep_submitted = runtime.submit_job(owner.session_id, sweep_request, sweep_job_id, err);
+        t.expect(sweep_submitted, "service submit accepts monte_carlo sweep with explicit draw count below max_evals");
+
+        err.clear();
+        const bool sweep_processed = runtime.process_job(sweep_job_id, err);
+        t.expect(sweep_processed, "service processes monte_carlo sweep result-metadata regression job");
+
+        sugar::service::JobResult sweep_result{};
+        err.clear();
+        const bool sweep_owner_can_read = runtime.get_job_result(owner.session_id, sweep_job_id, sweep_result, err);
+        t.expect(sweep_owner_can_read && sweep_result.metadata.sweep_report.has_value(),
+            "owned monte_carlo sweep result preserves the structured sweep report");
+        if (sweep_owner_can_read && sweep_result.metadata.sweep_report.has_value()) {
+            const auto& report = *sweep_result.metadata.sweep_report;
+            t.expect(report.evaluations_run == 3,
+                "monte_carlo hosted sweep report preserves the actual evaluation count");
+            t.expect(sweep_result.metadata.validation.sweep_candidate_count == report.evaluations_run,
+                "hosted result validation metadata reports actual sweep evaluations, not max_evals");
+            t.expect(sweep_result.summary_text.find("sweep_candidates: 3") != std::string::npos,
+                "hosted result summary displays the actual sweep evaluation count");
+        }
 
         return true;
     }
@@ -1213,31 +1474,27 @@ namespace sugar::contract_suite_internal {
             processed = runtime.process_job(job_id, process_err);
         });
 
+        const auto has_runtime_execution_progress = [](const sugar::service::JobStatus& status) {
+            return std::any_of(status.progress.begin(), status.progress.end(),
+                [](const sugar::service::ProgressEvent& event) {
+                    return event.state == sugar::service::JobState::Running &&
+                        event.completed > 0 &&
+                        event.total > 0 &&
+                        event.message.find("execution progress") != std::string::npos;
+                });
+        };
+
         bool saw_running = false;
         sugar::service::JobStatus running_status{};
         bool canceled = false;
         for (int attempt = 0; attempt < 1000; ++attempt) {
             err.clear();
             if (runtime.get_job_status(session.session_id, job_id, running_status, err)) {
-                saw_running =
-                    std::any_of(running_status.progress.begin(), running_status.progress.end(),
-                        [](const sugar::service::ProgressEvent& event) {
-                            return event.completed > 0 && event.total > 0;
-                        });
+                saw_running = has_runtime_execution_progress(running_status);
                 if (saw_running) {
                     err.clear();
                     canceled = runtime.cancel_job(session.session_id, job_id, err);
                     break;
-                }
-                if (running_status.state == sugar::service::JobState::Validating ||
-                    running_status.state == sugar::service::JobState::Running ||
-                    running_status.state == sugar::service::JobState::CancelRequested) {
-                    saw_running = true;
-                    err.clear();
-                    canceled = runtime.cancel_job(session.session_id, job_id, err);
-                    if (canceled) {
-                        break;
-                    }
                 }
                 if (running_status.state == sugar::service::JobState::Completed ||
                     running_status.state == sugar::service::JobState::Failed ||
@@ -1253,7 +1510,9 @@ namespace sugar::contract_suite_internal {
 
         worker.join();
 
-        t.expect(processed, "service processing exits cleanly after running-job cancellation");
+        t.expect(processed,
+            "service processing exits cleanly after running-job cancellation" +
+            (processed || process_err.empty() ? std::string{} : ": " + process_err));
 
         sugar::service::JobStatus final_status{};
         const bool has_final_status = runtime.get_job_status(session.session_id, job_id, final_status, err);
@@ -1270,10 +1529,7 @@ namespace sugar::contract_suite_internal {
             "service running cancellation preserves cancel_requested transition in progress log");
         const bool has_execution_progress =
             has_final_status &&
-            std::any_of(final_status.progress.begin(), final_status.progress.end(),
-                [](const sugar::service::ProgressEvent& event) {
-                    return event.completed > 0 && event.total > 0;
-                });
+            has_runtime_execution_progress(final_status);
         t.expect(has_execution_progress,
             "service running cancellation exposes execution progress before cancellation");
 
@@ -1414,6 +1670,55 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_framing_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_framing] service protocol framing and request parsing\n";
 
+        {
+            char exe[] = "sugar_client";
+            char arg[] = "--help";
+            char* argv[] = { exe, arg };
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = sugar::service::run_tcp_client_from_cli(2, argv, out, err);
+            t.expect(rc == 0, "sugar_client --help returns success");
+            t.expect(err.str().empty(), "sugar_client --help does not write errors");
+            t.expect(out.str().find("sugar_client upload") != std::string::npos,
+                "sugar_client --help describes upload usage");
+            t.expect(out.str().find("sugar_client run --layout") != std::string::npos,
+                "sugar_client --help describes one-command hosted run usage");
+            t.expect(out.str().find("--compact") != std::string::npos,
+                "sugar_client --help describes compact script output");
+        }
+
+        {
+            char exe[] = "sugar_client";
+            char cmd[] = "run";
+            char logic_flag[] = "--logic";
+            char logic_path[] = "logic.json";
+            char data_flag[] = "--data";
+            char data_path[] = "data.csv";
+            char* argv[] = { exe, cmd, logic_flag, logic_path, data_flag, data_path };
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = sugar::service::run_tcp_client_from_cli(6, argv, out, err);
+            t.expect(rc == 1, "sugar_client run rejects missing layout path before network access");
+            t.expect(out.str().empty(), "sugar_client run missing-argument error does not print JSON");
+            t.expect(err.str().find("--layout") != std::string::npos,
+                "sugar_client run missing-argument error identifies the required layout flag");
+        }
+
+        {
+            char exe[] = "sugar_server";
+            char arg[] = "--help";
+            char* argv[] = { exe, arg };
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = sugar::service::run_tcp_server_from_cli(2, argv, out, err);
+            t.expect(rc == 0, "sugar_server --help returns success");
+            t.expect(err.str().empty(), "sugar_server --help does not write errors");
+            t.expect(out.str().find("--service-profile") != std::string::npos,
+                "sugar_server --help describes service profile selection");
+            t.expect(out.str().find("--storage-root") != std::string::npos,
+                "sugar_server --help describes hosted storage configuration");
+        }
+
         sugar::service::ProtocolRequest request{};
         request.command = sugar::service::ProtocolCommand::UploadArtifact;
         request.session_id = "sess-000001";
@@ -1432,6 +1737,100 @@ namespace sugar::contract_suite_internal {
             "protocol framing preserves serialized upload artifact name");
         t.expect(parsed_ok && parsed.upload_content == request.upload_content,
             "protocol framing preserves serialized upload artifact content");
+
+        sugar::service::ProtocolResponse response{};
+        response.command = sugar::service::ProtocolCommand::Connect;
+        response.ok = true;
+        response.message = "connected";
+        response.session_id = "sess-000001";
+        const std::string response_json = sugar::service::serialize_protocol_response_json(response);
+        const std::string expected_schema_fragment =
+            std::string("\"schema_version\":\"") +
+            std::string(sugar::service::hosted_observability_schema_version()) +
+            "\"";
+        t.expect(response_json.find(expected_schema_fragment) != std::string::npos,
+            "protocol framing stamps every response with the hosted observability schema version");
+
+        const std::string audit_line = sugar::service::format_hosted_audit_log_line(
+            "event=result result=ok session=sess-000001 job_id=job-000001");
+        t.expect(audit_line.find("schema_version=sugarbot.hosted.v1") != std::string::npos,
+            "hosted audit log formatting stamps the schema version");
+        t.expect(audit_line.find("category=result_lifecycle event=result") != std::string::npos,
+            "hosted audit log formatting derives the result lifecycle category from the event");
+        t.expect(
+            sugar::service::format_hosted_audit_log_line(audit_line) == audit_line,
+            "hosted audit log formatting is idempotent for already-stamped log lines");
+
+        sugar::service::ProtocolResponse result_response{};
+        result_response.command = sugar::service::ProtocolCommand::RetrieveResults;
+        result_response.ok = true;
+        result_response.message = "job result retrieved";
+        result_response.job_id = "job-000001";
+        sugar::service::JobResult retained_result{};
+        retained_result.result_id = "res-000001";
+        retained_result.owner_session_id = "sess-000001";
+        retained_result.job_id = "job-000001";
+        retained_result.summary_text = "Execution completed";
+        retained_result.metadata.validation.valid = true;
+        retained_result.metadata.validation.resolved_mode = sugar::service::ResolvedExecutionMode::PrimarySeriesRun;
+        sugar::BacktestResult retained_backtest{};
+        retained_backtest.trade_hash = 13693342942469747168ull;
+        retained_result.metadata.primary_backtest = retained_backtest;
+        sugar::PlanSweepReport retained_sweep_report{};
+        retained_sweep_report.requested_sweep.enabled = true;
+        retained_sweep_report.requested_sweep.top_k = 3;
+        retained_sweep_report.requested_sweep.max_evals = 16;
+        retained_sweep_report.result_diversity.requested = true;
+        retained_sweep_report.result_diversity.dedupe_trade_hash = true;
+        retained_sweep_report.result_diversity.basin_aware = true;
+        retained_sweep_report.result_diversity.retained_candidate_pool = 12;
+        retained_sweep_report.result_diversity.returned_unique_trade_hashes = 2;
+        retained_sweep_report.result_diversity.suppressed_duplicate_trade_hash = 7;
+        retained_sweep_report.result_diversity.suppressed_basin = 3;
+        retained_sweep_report.warnings.push_back("sweep boundary concentration: all candidates use n=12");
+        retained_result.metadata.sweep_report = retained_sweep_report;
+        sugar::RunProvenanceSummary retained_provenance{};
+        retained_provenance.primary_series_key = "primary";
+        retained_provenance.primary_selection_mode = "single_series_implicit";
+        retained_provenance.series_count = 1;
+        retained_provenance.input_warning_count = 1;
+        retained_provenance.csv_had_header = true;
+        retained_provenance.csv_physical_line_count = 5;
+        retained_provenance.csv_blank_line_count = 1;
+        retained_provenance.csv_data_row_count = 3;
+        retained_provenance.dropped_row_count = 2;
+        retained_provenance.input_warnings.push_back("blank row skipped");
+        retained_result.metadata.run_provenance = retained_provenance;
+        retained_result.input_artifacts.push_back(
+            { "art-000001", sugar::service::ArtifactKind::LayoutSpec, "job-000001", {}, 42 });
+        retained_result.output_artifacts.push_back(
+            { "art-000004", sugar::service::ArtifactKind::SummaryText, "job-000001", {}, 128 });
+        result_response.job_result = retained_result;
+        const std::string result_response_json =
+            sugar::service::serialize_protocol_response_json(result_response);
+        t.expect(result_response_json.find("\"input_artifacts\"") != std::string::npos,
+            "protocol framing serializes retained input artifact audit records");
+        t.expect(result_response_json.find("\"audit\"") != std::string::npos,
+            "protocol framing serializes retained result audit metadata");
+        t.expect(result_response_json.find("\"report_sources\"") != std::string::npos,
+            "protocol framing serializes retained result report source labels");
+        t.expect(result_response_json.find("\"csv_blank_line_count\":1") != std::string::npos,
+            "protocol framing serializes hosted parser blank-line diagnostics");
+        t.expect(result_response_json.find("\"dropped_row_count\":2") != std::string::npos,
+            "protocol framing serializes hosted preprocessing drop-row diagnostics");
+        t.expect(result_response_json.find("\"input_warnings\":[\"blank row skipped\"]") != std::string::npos,
+            "protocol framing serializes hosted input warning text");
+        t.expect(result_response_json.find("\"result_diversity\"") != std::string::npos &&
+                result_response_json.find("\"suppressed_duplicate_trade_hash\":7") != std::string::npos &&
+                result_response_json.find("\"suppressed_basin\":3") != std::string::npos,
+            "protocol framing serializes hosted sweep result-diversity diagnostics");
+        t.expect(result_response_json.find("\"warnings\":[\"sweep boundary concentration: all candidates use n=12\"]") != std::string::npos,
+            "protocol framing serializes hosted sweep warning text");
+        t.expect(result_response_json.find("\"trade_hash\":13693342942469747168") != std::string::npos,
+            "protocol framing preserves exact top-level trade_hash integers");
+        t.expect(
+            result_response_json.find("\"name\":\"trade_hash\",\"kind\":\"core_metric\",\"value\":13693342942469747168") != std::string::npos,
+            "protocol framing preserves exact metric_catalog trade_hash integers");
 
         std::string framed = sugar::service::frame_json_message(request_json);
         std::string extracted{};

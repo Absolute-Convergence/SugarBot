@@ -524,10 +524,11 @@ namespace sugar {
             os << "    - `k_stage1` (stage-1 seed count), `k_stage2` (stage-2 candidate breadth, not final output count)\n";
             os << "    - `depollute_stage1`, `dedupe_stage2` (bool)\n";
             os << "    - `suppression_hops`, `stage2_hops` (int > 0)\n";
+            os << "    - `coarse_step_multiplier` (int >= 0; when >1, stage 1 samples every Nth value per sweep dimension and derives local refinement from remaining `max_evals` budget)\n";
             os << "    - `stage1_stride` (int >= 0)\n";
             os << "    - final displayed rows are capped by top-level `sweep.top_k`\n";
             os << "  - `monte_carlo`:\n";
-            os << "    - `draws` (int > 0)\n";
+            os << "    - `draws` (int > 0; default is `sweep.max_evals`, explicit values are capped by `max_evals`)\n";
             os << "    - `seed` (int >= 0)\n";
             os << "    - `dedupe` (bool)\n";
             os << "    - `top_k` (int > 0, optional)\n\n";
@@ -985,19 +986,29 @@ namespace sugar {
 
             ResolvedParam rv;
             bool has = false;
+            std::optional<std::string> direct_string_literal;
+            std::optional<std::string> ref_string_literal;
+            std::string active_ref;
 
             if (src) {
                 if (std::holds_alternative<ParamRef>(*src)) {
                     const auto& ref = std::get<ParamRef>(*src).name;
+                    active_ref = ref;
                     const ParamValue* pv = nullptr;
                     if (overrides) pv = find_param(*overrides, ref);
                     if (!pv) pv = find_param(plan_params, ref);
                     if (!pv) { err = "Param ref '" + ref + "' not found (needed for '" + ps.name + "')"; return false; }
                     if (std::holds_alternative<ParamRef>(*pv)) { err = "Param ref '" + ref + "' resolves to another ref (not allowed)"; return false; }
                     if (!to_resolved(*pv, rv)) { err = "Unsupported param value for ref '" + ref + "'"; return false; }
+                    if (std::holds_alternative<std::string>(rv)) {
+                        ref_string_literal = std::get<std::string>(rv);
+                    }
                     has = true;
                 }
                 else {
+                    if (std::holds_alternative<std::string>(*src)) {
+                        direct_string_literal = std::get<std::string>(*src);
+                    }
                     if (!to_resolved(*src, rv)) { err = "Unsupported param value type for '" + ps.name + "'"; return false; }
                     has = true;
                 }
@@ -1012,7 +1023,19 @@ namespace sugar {
                 continue;
             }
 
-            if (!check_type(rv, ps.type)) { err = "Param '" + ps.name + "' has wrong type (expected " + ps.type + ")"; return false; }
+            if (!check_type(rv, ps.type)) {
+                err = "Param '" + ps.name + "' has wrong type (expected " + ps.type + ")";
+                if (direct_string_literal.has_value() && ps.type != "string") {
+                    err += "; string literal '" + *direct_string_literal +
+                        "' was supplied. Use {\"ref\":\"" + *direct_string_literal +
+                        "\"} to reference a top-level param.";
+                }
+                else if (ref_string_literal.has_value() && ps.type != "string") {
+                    err += "; param ref '" + active_ref + "' resolved to string literal '" +
+                        *ref_string_literal + "'. Use a numeric top-level value for that param.";
+                }
+                return false;
+            }
 
             if (is_numeric_type(ps.type)) {
                 const double x = as_number(rv);

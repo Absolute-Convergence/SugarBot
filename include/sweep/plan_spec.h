@@ -76,14 +76,27 @@ namespace sugar {
         bool dedupe_stage2{ true };
         std::size_t suppression_hops{ 1 };
         std::size_t stage2_hops{ 1 };
+        std::size_t coarse_step_multiplier{ 0 }; // 0/1 => no per-dimension coarse mesh
         std::size_t stage1_stride{ 0 }; // 0 => no coarse subset
     };
 
     struct PlanSweepMonteCarloConfig {
         std::size_t draws{ 10000 };
+        bool draws_explicit{ false };
         std::uint64_t seed{ 0 };     // 0 => random_device
         bool dedupe{ true };
         std::size_t top_k{ 0 };      // 0 => use PlanSweepSpec::top_k
+    };
+
+    struct PlanSweepResultDiversityConfig {
+        bool enabled{ false };
+        bool dedupe_trade_hash{ true };
+        bool basin_aware{ false };
+        std::size_t oversample_multiplier{ 10 };
+        std::size_t max_per_basin{ 1 };
+        std::size_t param_bucket_size{ 4 };
+        std::size_t min_param_distance{ 0 };
+        std::size_t min_trades{ 0 };
     };
 
     struct PlanSweepSpec {
@@ -102,6 +115,7 @@ namespace sugar {
         PlanSweepEngineKind engine{ PlanSweepEngineKind::Exhaustive };
         PlanSweepCoarseFineConfig coarse_fine{};
         PlanSweepMonteCarloConfig monte_carlo{};
+        PlanSweepResultDiversityConfig result_diversity{};
 
         // Sweep ranges by param name.
         std::unordered_map<std::string, SweepParamRange> params;

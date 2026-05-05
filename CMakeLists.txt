@@ -1,10 +1,56 @@
 cmake_minimum_required(VERSION 3.16)
-project(sugar_Bot LANGUAGES C CXX)
+
+option(SUGAR_ALLOW_WINDOWS_NINJA
+  "Allow unsupported Windows Ninja builds. The supported native Windows lane is the Visual Studio generator/MSBuild preset."
+  OFF)
+
+option(SUGAR_ENABLE_INSTALL_RULES
+  "Generate CMake install rules and the INSTALL target. Keep off for normal IDE/build verification hygiene."
+  OFF)
+
+if (SUGAR_ENABLE_INSTALL_RULES)
+  set(CMAKE_SKIP_INSTALL_RULES OFF CACHE BOOL "Skip generated install rules and the INSTALL target." FORCE)
+else()
+  set(CMAKE_SKIP_INSTALL_RULES ON CACHE BOOL "Skip generated install rules and the INSTALL target." FORCE)
+endif()
+
+if (CMAKE_HOST_WIN32
+    AND CMAKE_GENERATOR MATCHES "Ninja"
+    AND NOT SUGAR_ALLOW_WINDOWS_NINJA)
+  message(FATAL_ERROR
+    "SugarBot no longer supports Windows Ninja as a normal build lane because it has been unreliable "
+    "in the Visual Studio/Codex shared workflow. Use `cmake --preset windows-msvc` and "
+    "`cmake --build --preset windows-msvc-debug` instead. Set "
+    "SUGAR_ALLOW_WINDOWS_NINJA=ON only for disposable diagnostics.")
+endif()
+
+project(SugarBot LANGUAGES C CXX)
 include(GNUInstallDirs)
+
+option(SUGAR_ALLOW_VS_WSL_SOURCE_COPY
+  "Allow Visual Studio WSL copy-source builds from /home/<user>/.vs. This is intentionally off for shared SugarBot development."
+  OFF)
+
+if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+    AND CMAKE_SOURCE_DIR MATCHES "/\\.vs/"
+    AND NOT SUGAR_ALLOW_VS_WSL_SOURCE_COPY)
+  message(FATAL_ERROR
+    "SugarBot blocks Visual Studio WSL copy-source builds from '${CMAKE_SOURCE_DIR}'. "
+    "That mirror drifts from the repo-local source and out/ trees used by Codex. "
+    "Run tools/Initialize-SugarBuildEnvironment.ps1 from Windows, then use the mounted "
+    "WSL presets such as linux-debug-mounted/linux-release-mounted, or use "
+    "tools/Invoke-SugarPreset.ps1 -Preset linux-debug. Set "
+    "SUGAR_ALLOW_VS_WSL_SOURCE_COPY=ON only for disposable diagnostics.")
+endif()
 
 # --- Project-wide target defaults --------------------------------------
 add_library(sugar_project_options INTERFACE)
-target_compile_features(sugar_project_options INTERFACE cxx_std_20)
+if (MSVC)
+  # Avoid depending on CMake's per-version MSVC feature table for new VS toolsets.
+  target_compile_options(sugar_project_options INTERFACE $<$<COMPILE_LANGUAGE:CXX>:/std:c++20>)
+else()
+  target_compile_features(sugar_project_options INTERFACE cxx_std_20)
+endif()
 set_target_properties(sugar_project_options PROPERTIES
   CXX_EXTENSIONS OFF
 )
@@ -78,12 +124,14 @@ function(sugar_add_private_impl_includes target_name)
   target_include_directories(${target_name} PRIVATE ${SUGAR_PRIVATE_IMPL_INCLUDE_DIRS})
 endfunction()
 
-if (WIN32)
-  configure_file("${CMAKE_SOURCE_DIR}/cmake/SB.cmd.in" "${SUGAR_GENERATED_DIR}/SB.cmd" @ONLY)
-  set(SUGAR_INSTALL_ALIAS "${SUGAR_GENERATED_DIR}/SB.cmd")
-else()
-  configure_file("${CMAKE_SOURCE_DIR}/cmake/SB.in" "${SUGAR_GENERATED_DIR}/SB" @ONLY)
-  set(SUGAR_INSTALL_ALIAS "${SUGAR_GENERATED_DIR}/SB")
+if (SUGAR_ENABLE_INSTALL_RULES)
+  if (WIN32)
+    configure_file("${CMAKE_SOURCE_DIR}/cmake/SB.cmd.in" "${SUGAR_GENERATED_DIR}/SB.cmd" @ONLY)
+    set(SUGAR_INSTALL_ALIAS "${SUGAR_GENERATED_DIR}/SB.cmd")
+  else()
+    configure_file("${CMAKE_SOURCE_DIR}/cmake/SB.in" "${SUGAR_GENERATED_DIR}/SB" @ONLY)
+    set(SUGAR_INSTALL_ALIAS "${SUGAR_GENERATED_DIR}/SB")
+  endif()
 endif()
 
 # --- Library: sugar_legacy_compat --------------------------------------
@@ -179,6 +227,9 @@ add_library(sugar_service_core
 target_include_directories(sugar_service_core PUBLIC "${CMAKE_SOURCE_DIR}/include")
 sugar_add_private_impl_includes(sugar_service_core)
 target_link_libraries(sugar_service_core PUBLIC sugar_ingest sugar_ops sugar_engine sugar_sweep)
+if(WIN32)
+  target_link_libraries(sugar_service_core PUBLIC ws2_32)
+endif()
 target_compile_definitions(sugar_service_core PRIVATE SUGARBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 sugar_apply_defaults(sugar_service_core)
 
@@ -229,14 +280,13 @@ target_link_libraries(sugar_app_support PUBLIC sugar_core sugar_contract_support
 target_compile_definitions(sugar_app_support PRIVATE SUGARBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 sugar_apply_defaults(sugar_app_support)
 
-# --- Executable: sugar_Bot ---------------------------------------------
-add_executable(sugar_Bot app/entrypoints/main.cpp)
-target_include_directories(sugar_Bot PRIVATE "${CMAKE_SOURCE_DIR}/app")
-sugar_add_private_impl_includes(sugar_Bot)
-target_link_libraries(sugar_Bot PRIVATE sugar_app_support)
-set_target_properties(sugar_Bot PROPERTIES OUTPUT_NAME "sugarbot")
-sugar_apply_defaults(sugar_Bot)
-sugar_add_runtime_alias(sugar_Bot "SB")
+# --- Executable: sugarbot ----------------------------------------------
+add_executable(sugarbot app/entrypoints/main.cpp)
+target_include_directories(sugarbot PRIVATE "${CMAKE_SOURCE_DIR}/app")
+sugar_add_private_impl_includes(sugarbot)
+target_link_libraries(sugarbot PRIVATE sugar_app_support)
+sugar_apply_defaults(sugarbot)
+sugar_add_runtime_alias(sugarbot "SB")
 
 # --- Executable: sugar_contracts ---------------------------------------
 # Standalone deterministic contract-suite runner.
@@ -273,34 +323,37 @@ target_link_libraries(sugar_app_tests PRIVATE sugar_app_support)
 target_compile_definitions(sugar_app_tests PRIVATE SUGARBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 sugar_apply_defaults(sugar_app_tests)
 
-install(TARGETS sugar_Bot sugar_contracts sugar_server sugar_client
-  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
-install(PROGRAMS "${SUGAR_INSTALL_ALIAS}"
-  DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
+if (SUGAR_ENABLE_INSTALL_RULES)
+  install(TARGETS sugarbot sugar_contracts sugar_server sugar_client
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  )
+  install(PROGRAMS "${SUGAR_INSTALL_ALIAS}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  )
+endif()
 
 # --- Output behavior ----------------------------------------------------
 # - Windows/MSVC: leave outputs in the VS-selected build tree 
-# - Linux/WSL: optionally redirect final artifacts via SUGAR_OUT_ROOT,
-#   with an architecture-aware default so x64 and ARM64 do not collide.
+# - Linux/WSL: optionally redirect final artifacts via SUGAR_OUT_ROOT.
+#   Presets set repo-local roots; ad hoc source builds default under the
+#   build tree with an architecture-aware path so x64 and ARM64 do not collide.
 
 if (UNIX AND NOT APPLE)  # includes WSL Ubuntu
   string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" SUGAR_SYSTEM_PROCESSOR)
   if (SUGAR_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
-    set(SUGAR_DEFAULT_OUT_ROOT "$ENV{HOME}/devbuild/sugar_Bot/out/Linux")
+    set(SUGAR_DEFAULT_OUT_ROOT "${CMAKE_BINARY_DIR}/out/Linux")
   elseif (SUGAR_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-    set(SUGAR_DEFAULT_OUT_ROOT "$ENV{HOME}/devbuild/sugar_Bot/out/Linux-arm64")
+    set(SUGAR_DEFAULT_OUT_ROOT "${CMAKE_BINARY_DIR}/out/Linux-arm64")
   else()
-    set(SUGAR_DEFAULT_OUT_ROOT "$ENV{HOME}/devbuild/sugar_Bot/out/Linux-${SUGAR_SYSTEM_PROCESSOR}")
+    set(SUGAR_DEFAULT_OUT_ROOT "${CMAKE_BINARY_DIR}/out/Linux-${SUGAR_SYSTEM_PROCESSOR}")
   endif()
 
   set(SUGAR_OUT_ROOT "${SUGAR_DEFAULT_OUT_ROOT}" CACHE PATH
-    "Optional output root for Linux/WSL build artifacts. Leave default to match the current workflow."
+    "Optional output root for Linux/WSL build artifacts. Presets may override this for repo-local workflows."
   )
   set(SUGAR_OUT_CONFIG_DIR "${SUGAR_OUT_ROOT}/$<CONFIG>")
 
-  set_target_properties(sugar_Bot PROPERTIES
+  set_target_properties(sugarbot PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${SUGAR_OUT_CONFIG_DIR}"
   )
   set_target_properties(sugar_contracts PROPERTIES
@@ -413,7 +466,16 @@ if (BUILD_TESTING)
      sugar_app_suite
      PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
-  if (UNIX AND NOT APPLE)
+  set_tests_properties(
+    sugar_contract_service_core
+    sugar_contract_service_security_abuse
+    sugar_contract_service_concurrency
+    sugar_contract_service_worker_cancellation
+    sugar_contract_service_protocol_surface
+    sugar_contract_service_network_surface
+    PROPERTIES LABELS hosted_service_regression
+  )
+  if ((UNIX AND NOT APPLE) OR WIN32)
     add_test(NAME sugar_contract_service_protocol_network_socket COMMAND sugar_contracts --contract-section service_protocol_network_socket)
     add_test(NAME sugar_contract_service_protocol_live_multi_client COMMAND sugar_contracts --contract-section service_protocol_live_multi_client)
     add_test(NAME sugar_contract_service_protocol_live_cancel_polling COMMAND sugar_contracts --contract-section service_protocol_live_cancel_polling)
@@ -422,6 +484,12 @@ if (BUILD_TESTING)
       sugar_contract_service_protocol_live_multi_client
       sugar_contract_service_protocol_live_cancel_polling
       PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_tests_properties(
+      sugar_contract_service_protocol_network_socket
+      sugar_contract_service_protocol_live_multi_client
+      sugar_contract_service_protocol_live_cancel_polling
+      PROPERTIES LABELS hosted_service_regression
     )
   endif()
 endif()

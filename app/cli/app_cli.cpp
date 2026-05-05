@@ -279,7 +279,7 @@ namespace sugar::app {
             if (!read_flag_value(argc, argv, "--series-key-col", out.align_dump.series_key_col) ||
                 out.align_dump.series_key_col.empty())
             {
-                err = "--series-key-col <col> is required for --align-dump";
+                err = "--series-key-col <col> is required for --align-dump; choose the CSV column that identifies each series/entity, such as symbol, ticker, or region";
                 return false;
             }
 

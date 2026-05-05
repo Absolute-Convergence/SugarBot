@@ -150,9 +150,14 @@ namespace sugar::service {
             return false;
         }
 
-        it->second.cancel_requested->store(true);
+        if (it->second.completion_reserved) {
+            err = "job is not cancelable in its current state";
+            return false;
+        }
+
         switch (it->second.status.state) {
         case JobState::Queued:
+            it->second.cancel_requested->store(true);
             append_progress_unlocked(it->second.status, JobState::CancelRequested, "cancellation requested", 0, 0);
             append_progress_unlocked(it->second.status, JobState::Canceled, "job canceled", 0, 0);
             out_state = JobState::Canceled;
@@ -160,6 +165,7 @@ namespace sugar::service {
             return true;
         case JobState::Validating:
         case JobState::Running:
+            it->second.cancel_requested->store(true);
             if (it->second.status.state != JobState::CancelRequested) {
                 append_progress_unlocked(it->second.status, JobState::CancelRequested, "cancellation requested", 0, 0);
             }
@@ -168,6 +174,7 @@ namespace sugar::service {
             return true;
         case JobState::CancelRequested:
         case JobState::Canceled:
+            it->second.cancel_requested->store(true);
             out_state = it->second.status.state;
             err.clear();
             return true;
@@ -189,6 +196,7 @@ namespace sugar::service {
             return false;
         }
         append_progress_unlocked(it->second.status, JobState::Rejected, "validation rejected", 0, 0);
+        it->second.completion_reserved = false;
         it->second.status.failure_message = std::string(detail);
         it->second.status.result_id = result_id;
         err.clear();
@@ -207,8 +215,49 @@ namespace sugar::service {
             return false;
         }
         append_progress_unlocked(it->second.status, JobState::Failed, "job failed", 0, 0);
+        it->second.completion_reserved = false;
         it->second.status.failure_message = std::string(detail);
         it->second.status.result_id = result_id;
+        err.clear();
+        return true;
+    }
+
+    bool JobManager::reserve_completion(
+        const std::string& job_id,
+        std::string_view cancel_detail,
+        bool& out_canceled,
+        std::string& err) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = jobs_.find(job_id);
+        if (it == jobs_.end()) {
+            err = "unknown job id";
+            return false;
+        }
+
+        if (it->second.cancel_requested->load() ||
+            it->second.status.state == JobState::CancelRequested ||
+            it->second.status.state == JobState::Canceled) {
+            it->second.cancel_requested->store(true);
+            if (it->second.status.state != JobState::Canceled) {
+                append_progress_unlocked(it->second.status, JobState::Canceled, "job canceled", 0, 0);
+            }
+            it->second.completion_reserved = false;
+            it->second.status.failure_message = std::string(cancel_detail);
+            it->second.status.result_id.reset();
+            out_canceled = true;
+            err.clear();
+            return true;
+        }
+
+        if (it->second.status.state == JobState::Completed ||
+            it->second.status.state == JobState::Rejected ||
+            it->second.status.state == JobState::Failed) {
+            err = "job is already terminal";
+            return false;
+        }
+
+        it->second.completion_reserved = true;
+        out_canceled = false;
         err.clear();
         return true;
     }
@@ -224,6 +273,7 @@ namespace sugar::service {
             return false;
         }
         append_progress_unlocked(it->second.status, JobState::Completed, "job completed", 0, 0);
+        it->second.completion_reserved = false;
         it->second.status.failure_message.clear();
         it->second.status.result_id = result_id;
         err.clear();
@@ -241,6 +291,7 @@ namespace sugar::service {
             return false;
         }
         it->second.cancel_requested->store(true);
+        it->second.completion_reserved = false;
         if (it->second.status.state != JobState::Canceled) {
             append_progress_unlocked(it->second.status, JobState::Canceled, "job canceled", 0, 0);
         }

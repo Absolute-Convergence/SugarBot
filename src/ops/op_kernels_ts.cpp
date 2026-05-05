@@ -45,6 +45,134 @@ double rolling_percentile_value(std::span<const double> x, std::size_t begin, st
     const double weight_lo = 1.0 - weight_hi;
     return (window[lo] * weight_lo) + (window[hi] * weight_hi);
 }
+
+double rolling_entropy_value(std::span<const double> x, std::size_t begin, std::size_t n, std::size_t bins) {
+    if (n == 0 || bins == 0) return qnan();
+
+    double mn = std::numeric_limits<double>::infinity();
+    double mx = -std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < n; ++i) {
+        const double v = x[begin + i];
+        if (!std::isfinite(v)) return qnan();
+        mn = std::min(mn, v);
+        mx = std::max(mx, v);
+    }
+    if (!std::isfinite(mn) || !std::isfinite(mx)) return qnan();
+    if (mn == mx) return 0.0;
+
+    std::vector<std::size_t> counts(bins, 0);
+    const double denom = mx - mn;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double normalized = (x[begin + i] - mn) / denom;
+        const auto idx = std::min<std::size_t>(
+            static_cast<std::size_t>(std::floor(normalized * static_cast<double>(bins))),
+            bins - 1);
+        ++counts[idx];
+    }
+
+    double entropy = 0.0;
+    const double total = static_cast<double>(n);
+    for (const std::size_t count : counts) {
+        if (count == 0) continue;
+        const double p = static_cast<double>(count) / total;
+        entropy -= p * std::log(p);
+    }
+    return std::isfinite(entropy) ? entropy : qnan();
+}
+
+double rolling_autocorrelation_value(std::span<const double> x, std::size_t begin, std::size_t n, std::size_t lag) {
+    if (n < 2 || lag == 0 || lag >= n) return qnan();
+
+    const std::size_t pairs = n - lag;
+    double mean_cur = 0.0;
+    double mean_lag = 0.0;
+    for (std::size_t i = lag; i < n; ++i) {
+        const double cur = x[begin + i];
+        const double prev = x[begin + i - lag];
+        if (!std::isfinite(cur) || !std::isfinite(prev)) return qnan();
+        mean_cur += cur;
+        mean_lag += prev;
+    }
+    mean_cur /= static_cast<double>(pairs);
+    mean_lag /= static_cast<double>(pairs);
+
+    double cov = 0.0;
+    double var_cur = 0.0;
+    double var_lag = 0.0;
+    for (std::size_t i = lag; i < n; ++i) {
+        const double dc = x[begin + i] - mean_cur;
+        const double dl = x[begin + i - lag] - mean_lag;
+        cov += dc * dl;
+        var_cur += dc * dc;
+        var_lag += dl * dl;
+    }
+
+    const double denom = std::sqrt(var_cur * var_lag);
+    if (denom == 0.0 || !std::isfinite(denom)) return qnan();
+    const double corr = cov / denom;
+    return std::isfinite(corr) ? corr : qnan();
+}
+
+double rolling_hurst_value(std::span<const double> x, std::size_t begin, std::size_t n) {
+    if (n < 2) return qnan();
+
+    double mean = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double v = x[begin + i];
+        if (!std::isfinite(v)) return qnan();
+        mean += v;
+    }
+    mean /= static_cast<double>(n);
+
+    double cumulative = 0.0;
+    double min_cumulative = std::numeric_limits<double>::infinity();
+    double max_cumulative = -std::numeric_limits<double>::infinity();
+    double sum_sq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double centered = x[begin + i] - mean;
+        cumulative += centered;
+        min_cumulative = std::min(min_cumulative, cumulative);
+        max_cumulative = std::max(max_cumulative, cumulative);
+        sum_sq += centered * centered;
+    }
+
+    const double range = max_cumulative - min_cumulative;
+    const double stddev = std::sqrt(sum_sq / static_cast<double>(n));
+    if (range <= 0.0 || stddev <= 0.0 || !std::isfinite(range) || !std::isfinite(stddev)) {
+        return qnan();
+    }
+
+    const double hurst = std::log(range / stddev) / std::log(static_cast<double>(n));
+    return std::isfinite(hurst) ? hurst : qnan();
+}
+
+double rolling_regime_change_value(std::span<const double> x, std::size_t begin, std::size_t n) {
+    if (n < 2) return qnan();
+
+    double mean = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double v = x[begin + i];
+        if (!std::isfinite(v)) return qnan();
+        mean += v;
+    }
+    mean /= static_cast<double>(n);
+
+    double sum_sq = 0.0;
+    double cumulative = 0.0;
+    double max_abs_cumulative = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double centered = x[begin + i] - mean;
+        sum_sq += centered * centered;
+        cumulative += centered;
+        max_abs_cumulative = std::max(max_abs_cumulative, std::fabs(cumulative));
+    }
+
+    const double stddev = std::sqrt(sum_sq / static_cast<double>(n));
+    const double denom = stddev * std::sqrt(static_cast<double>(n));
+    if (denom == 0.0 || !std::isfinite(denom)) return qnan();
+    const double score = max_abs_cumulative / denom;
+    return std::isfinite(score) ? score : qnan();
+}
 } // namespace
 
 std::vector<double> ts_add(std::span<const double> a, std::span<const double> b) { return zip_nanpad(a, b, [](double x, double y) { return x + y; }); }
@@ -243,6 +371,36 @@ std::vector<double> ts_percentile(std::span<const double> x, std::size_t n, doub
     return out;
 }
 
+std::vector<double> ts_entropy(std::span<const double> x, std::size_t n, std::size_t bins) {
+    std::vector<double> out(x.size(), qnan());
+    if (n == 0 || bins == 0 || x.size() < n) return out;
+
+    for (std::size_t i = n - 1; i < x.size(); ++i) {
+        out[i] = rolling_entropy_value(x, i + 1 - n, n, bins);
+    }
+    return out;
+}
+
+std::vector<double> ts_autocorrelation(std::span<const double> x, std::size_t n, std::size_t lag) {
+    std::vector<double> out(x.size(), qnan());
+    if (n < 2 || lag == 0 || lag >= n || x.size() < n) return out;
+
+    for (std::size_t i = n - 1; i < x.size(); ++i) {
+        out[i] = rolling_autocorrelation_value(x, i + 1 - n, n, lag);
+    }
+    return out;
+}
+
+std::vector<double> ts_hurst(std::span<const double> x, std::size_t n) {
+    std::vector<double> out(x.size(), qnan());
+    if (n < 2 || x.size() < n) return out;
+
+    for (std::size_t i = n - 1; i < x.size(); ++i) {
+        out[i] = rolling_hurst_value(x, i + 1 - n, n);
+    }
+    return out;
+}
+
 std::vector<double> ts_normalize_minmax(std::span<const double> x, std::size_t n) {
     const auto rmin = op_kernels_math::rolling_min(x, n);
     const auto rmax = op_kernels_math::rolling_max(x, n);
@@ -422,6 +580,16 @@ std::vector<double> ts_bollinger_width(std::span<const double> x, std::size_t n,
         const double denom = std::fabs(mean[i]);
         if (denom == 0.0) continue;
         out[i] = (2.0 * k * sd[i]) / denom;
+    }
+    return out;
+}
+
+std::vector<double> ts_regime_change(std::span<const double> x, std::size_t n) {
+    std::vector<double> out(x.size(), qnan());
+    if (n < 2 || x.size() < n) return out;
+
+    for (std::size_t i = n - 1; i < x.size(); ++i) {
+        out[i] = rolling_regime_change_value(x, i + 1 - n, n);
     }
     return out;
 }

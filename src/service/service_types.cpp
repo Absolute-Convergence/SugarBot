@@ -1,5 +1,7 @@
 #include "service/service_types.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 
 namespace sugar::service {
@@ -75,6 +77,90 @@ namespace sugar::service {
             return "per_entity_ranked_sweep";
         }
         return "unknown";
+    }
+
+    std::string_view service_profile_name(ServiceProfile profile) {
+        switch (profile) {
+        case ServiceProfile::LocalAi:
+            return "local-ai";
+        case ServiceProfile::HostedPrivate:
+            return "hosted-private";
+        case ServiceProfile::HostedPublic:
+            return "hosted-public";
+        }
+        return "unknown";
+    }
+
+    bool parse_service_profile(std::string_view text, ServiceProfile& out) {
+        std::string normalized(text);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        std::replace(normalized.begin(), normalized.end(), '_', '-');
+
+        if (normalized == "local-ai" ||
+            normalized == "local" ||
+            normalized == "dev" ||
+            normalized == "development") {
+            out = ServiceProfile::LocalAi;
+            return true;
+        }
+        if (normalized == "hosted-private" ||
+            normalized == "private") {
+            out = ServiceProfile::HostedPrivate;
+            return true;
+        }
+        if (normalized == "hosted-public" ||
+            normalized == "public") {
+            out = ServiceProfile::HostedPublic;
+            return true;
+        }
+        return false;
+    }
+
+    QuotaConfig make_quota_config_for_service_profile(ServiceProfile profile) {
+        QuotaConfig quotas{};
+        switch (profile) {
+        case ServiceProfile::LocalAi:
+            quotas.max_upload_size_bytes = 16 * 1024 * 1024;
+            quotas.max_parsed_row_count = 1000000;
+            quotas.max_sweep_candidate_count = 500000;
+            quotas.max_live_sessions = 32;
+            quotas.max_staged_uploads_per_session = 128;
+            quotas.max_staged_upload_bytes_per_session = 256 * 1024 * 1024;
+            quotas.max_concurrent_jobs_per_session = 16;
+            quotas.max_total_active_jobs = 32;
+            quotas.max_retained_result_bytes = 16 * 1024 * 1024;
+            quotas.max_retained_results = 2048;
+            quotas.server_worker_limit = 2;
+            quotas.sweep_warning_minutes = 60;
+            quotas.sweep_reject_minutes = 240;
+            quotas.expensive_sweep_reject_disconnect_streak = 0;
+            quotas.expensive_sweep_reject_pair_disconnect_count = 0;
+            quotas.expensive_sweep_reject_total_before_disconnect = 0;
+            break;
+        case ServiceProfile::HostedPrivate:
+            quotas.max_upload_size_bytes = 8 * 1024 * 1024;
+            quotas.max_parsed_row_count = 500000;
+            quotas.max_sweep_candidate_count = 50000;
+            quotas.max_live_sessions = 16;
+            quotas.max_staged_uploads_per_session = 64;
+            quotas.max_staged_upload_bytes_per_session = 64 * 1024 * 1024;
+            quotas.max_concurrent_jobs_per_session = 8;
+            quotas.max_total_active_jobs = 16;
+            quotas.max_retained_result_bytes = 8 * 1024 * 1024;
+            quotas.max_retained_results = 1024;
+            quotas.server_worker_limit = 2;
+            quotas.sweep_warning_minutes = 30;
+            quotas.sweep_reject_minutes = 120;
+            quotas.expensive_sweep_reject_disconnect_streak = 0;
+            quotas.expensive_sweep_reject_pair_disconnect_count = 0;
+            quotas.expensive_sweep_reject_total_before_disconnect = 0;
+            break;
+        case ServiceProfile::HostedPublic:
+            break;
+        }
+        return quotas;
     }
 
 } // namespace sugar::service

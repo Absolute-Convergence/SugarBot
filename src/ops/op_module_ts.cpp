@@ -67,6 +67,7 @@ void register_ts_ops(OperatorRegistry& r) {
     add_unary_n("ts.donchian_lower", [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
     add_unary_n("ts.donchian_mid", [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
     add_unary_n("ts.donchian_width", [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
+
     {
         OpEntry e;
         OpParamSpec p1; p1.name = "n"; p1.type = "int"; p1.required = true; p1.min_num = 1;
@@ -89,6 +90,75 @@ void register_ts_ops(OperatorRegistry& r) {
         };
         r.add(std::move(e));
     }
+
+    {
+        OpEntry e;
+        OpParamSpec p1; p1.name = "n"; p1.type = "int"; p1.required = true; p1.min_num = 1;
+        OpParamSpec p2; p2.name = "bins"; p2.type = "int"; p2.required = true; p2.min_num = 1;
+        e.spec = OpSpec{
+            "ts.entropy",
+            OpType::Numeric,
+            {ValueType::Num},
+            ValueType::Num,
+            {p1, p2},
+            "ts",
+            false,
+            "child_warmup + (n-1)",
+            OpAxisScope::TimeSeries,
+            {AxisKind::Time}
+        };
+        e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
+            const auto n = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, "n").value_or(1)));
+            return cw.at(0) + (n - 1);
+        };
+        r.add(std::move(e));
+    }
+
+    {
+        OpEntry e;
+        OpParamSpec p1; p1.name = "n"; p1.type = "int"; p1.required = true; p1.min_num = 2;
+        OpParamSpec p2; p2.name = "lag"; p2.type = "int"; p2.required = true; p2.min_num = 1;
+        e.spec = OpSpec{
+            "ts.autocorrelation",
+            OpType::Numeric,
+            {ValueType::Num},
+            ValueType::Num,
+            {p1, p2},
+            "ts",
+            false,
+            "child_warmup + (n-1)",
+            OpAxisScope::TimeSeries,
+            {AxisKind::Time}
+        };
+        e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
+            const auto n = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(pm, "n").value_or(2)));
+            return cw.at(0) + (n - 1);
+        };
+        r.add(std::move(e));
+    }
+
+    {
+        OpEntry e;
+        OpParamSpec p; p.name = "n"; p.type = "int"; p.required = true; p.min_num = 2;
+        e.spec = OpSpec{
+            "ts.hurst",
+            OpType::Numeric,
+            {ValueType::Num},
+            ValueType::Num,
+            {p},
+            "ts",
+            false,
+            "child_warmup + (n-1)",
+            OpAxisScope::TimeSeries,
+            {AxisKind::Time}
+        };
+        e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
+            const auto n = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(pm, "n").value_or(2)));
+            return cw.at(0) + (n - 1);
+        };
+        r.add(std::move(e));
+    }
+
     add_unary_n("ts.normalize_minmax", [](std::size_t child, std::size_t n) { return child + (n - 1); }, "child_warmup + (n-1)", "n");
     add_unary_n("ts.atr", [](std::size_t child, std::size_t n) { return child + n; }, "child_warmup + n", "n");
     add_unary_n("ts.rsi", [](std::size_t child, std::size_t n) { return child + n; }, "child_warmup + n", "n");
@@ -138,6 +208,28 @@ void register_ts_ops(OperatorRegistry& r) {
         };
         e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
             const auto n = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(pm, "n").value_or(1)));
+            return cw.at(0) + (n - 1);
+        };
+        r.add(std::move(e));
+    }
+
+    {
+        OpEntry e;
+        OpParamSpec p; p.name = "n"; p.type = "int"; p.required = true; p.min_num = 2;
+        e.spec = OpSpec{
+            "ts.regime_change",
+            OpType::Numeric,
+            {ValueType::Num},
+            ValueType::Num,
+            {p},
+            "ts",
+            false,
+            "child_warmup + (n-1)",
+            OpAxisScope::TimeSeries,
+            {AxisKind::Time}
+        };
+        e.warmup_num = [](const std::vector<std::size_t>& cw, const ResolvedParamMap& pm) {
+            const auto n = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(pm, "n").value_or(2)));
             return cw.at(0) + (n - 1);
         };
         r.add(std::move(e));

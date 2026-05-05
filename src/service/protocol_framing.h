@@ -84,8 +84,10 @@ namespace sugar::service {
         bool close_connection{ false };
     };
 
+    std::string_view hosted_observability_schema_version();
     std::string_view protocol_command_name(ProtocolCommand command);
     std::string_view protocol_error_code_name(ProtocolErrorCode code);
+    std::string format_hosted_audit_log_line(std::string_view legacy_fields);
 
     std::string serialize_protocol_request_json(const ProtocolRequest& request);
     std::string serialize_protocol_response_json(const ProtocolResponse& response);

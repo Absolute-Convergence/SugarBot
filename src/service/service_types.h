@@ -9,6 +9,7 @@
 
 #include "sweep/metrics.h"
 #include "sweep/panel_runner.h"
+#include "sweep/plan_sweep.h"
 
 namespace sugar::service {
 
@@ -42,6 +43,12 @@ namespace sugar::service {
         PrimarySeriesSweep = 3,
         PerEntityRankedRun = 4,
         PerEntityRankedSweep = 5,
+    };
+
+    enum class ServiceProfile {
+        LocalAi = 0,
+        HostedPrivate = 1,
+        HostedPublic = 2,
     };
 
     struct QuotaConfig {
@@ -121,6 +128,7 @@ namespace sugar::service {
     struct ResultMetadata {
         ValidationMetadata validation{};
         std::optional<BacktestResult> primary_backtest{};
+        std::optional<PlanSweepReport> sweep_report{};
         std::optional<PanelResult> panel{};
         std::optional<RunProvenanceSummary> run_provenance{};
     };
@@ -131,6 +139,7 @@ namespace sugar::service {
         std::string job_id{};
         ResultMetadata metadata{};
         std::string summary_text{};
+        std::vector<ArtifactRecord> input_artifacts{};
         std::vector<ArtifactRecord> output_artifacts{};
     };
 
@@ -149,5 +158,8 @@ namespace sugar::service {
     std::string_view job_state_name(JobState state);
     std::string_view artifact_kind_name(ArtifactKind kind);
     std::string_view resolved_execution_mode_name(ResolvedExecutionMode mode);
+    std::string_view service_profile_name(ServiceProfile profile);
+    bool parse_service_profile(std::string_view text, ServiceProfile& out);
+    QuotaConfig make_quota_config_for_service_profile(ServiceProfile profile);
 
 } // namespace sugar::service

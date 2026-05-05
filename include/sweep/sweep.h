@@ -641,6 +641,10 @@ namespace sugar {
         // How many neighbor-expansion hops to explore around each stage-1 seed in stage2.
         // 1 means evaluate the seed and its direct neighbors; 2 expands one more ring.
         std::size_t stage2_hops = 1;
+
+        // 0 means unbounded. When set, the two-stage engine stops scheduling
+        // new candidate evaluations after this many actual eval calls.
+        std::size_t max_evaluations = 0;
     };
 
     // Coarse → fine sweep using index indirection

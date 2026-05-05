@@ -1,0 +1,18 @@
+{
+  "input_profile": "auto",
+  "time_col": "time",
+  "time_kind": "YyyyMmDd",
+  "header_policy": "RequiredHeaders",
+  "value_cols": ["open", "high", "low", "close", "ma", "volume", "roc"],
+  "primary_value_col": "close",
+  "rename": {
+    "MA": "ma",
+    "Volume": "volume",
+    "ROC": "roc"
+  },
+  "missing_tokens": ["", "NA", "null", "nan", "NaN"],
+  "missing_default": { "kind": "NaN" },
+  "sort_by_time": true,
+  "dedupe": "Error"
+}
+

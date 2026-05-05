@@ -1,35 +1,61 @@
 #include "service/network_session.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <limits>
+#include <string>
 #include <string_view>
 
 #include "service/protocol_framing.h"
 
 #ifdef _WIN32
-
-namespace sugar::service {
-
-    bool handle_protocol_socket_connection(
-        int,
-        ProtocolDispatcher&,
-        std::size_t,
-        const SecurityLogFn&,
-        std::string& err) {
-        err = "socket transport is unsupported on Windows builds";
-        return false;
-    }
-
-} // namespace sugar::service
-
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
 #else
-
 #include <sys/socket.h>
+#endif
 
 namespace sugar::service {
 
     namespace {
+
+#ifdef _WIN32
+        SOCKET to_socket(NativeSocketHandle handle) {
+            return static_cast<SOCKET>(handle);
+        }
+
+        int last_socket_error() {
+            return WSAGetLastError();
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == WSAEINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return "WinSock error " + std::to_string(error_code);
+        }
+#else
+        int to_socket(NativeSocketHandle handle) {
+            return handle;
+        }
+
+        int last_socket_error() {
+            return errno;
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == EINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return std::strerror(error_code);
+        }
+#endif
 
         enum class SocketIoState {
             Complete = 0,
@@ -55,23 +81,27 @@ namespace sugar::service {
             std::string detail{};
         };
 
-        SocketIoResult read_exact(int fd, char* buffer, std::size_t size) {
+        SocketIoResult read_exact(NativeSocketHandle fd, char* buffer, std::size_t size) {
             SocketIoResult result{};
             std::size_t offset = 0;
             while (offset < size) {
-                const auto got = ::recv(fd, buffer + offset, size - offset, 0);
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto got = ::recv(to_socket(fd), buffer + offset, chunk_size, 0);
                 if (got == 0) {
                     result.state = SocketIoState::PeerClosed;
                     result.transferred = offset;
                     return result;
                 }
                 if (got < 0) {
-                    if (errno == EINTR) {
+                    const int error_code = last_socket_error();
+                    if (is_interrupted_socket_error(error_code)) {
                         continue;
                     }
                     result.state = SocketIoState::Error;
                     result.transferred = offset;
-                    result.detail = std::strerror(errno);
+                    result.detail = socket_error_message(error_code);
                     return result;
                 }
                 offset += static_cast<std::size_t>(got);
@@ -81,20 +111,24 @@ namespace sugar::service {
             return result;
         }
 
-        bool write_all(int fd, const char* buffer, std::size_t size, std::string& err) {
+        bool write_all(NativeSocketHandle fd, const char* buffer, std::size_t size, std::string& err) {
             std::size_t offset = 0;
-#ifdef MSG_NOSIGNAL
+#if defined(MSG_NOSIGNAL)
             constexpr int kSendFlags = MSG_NOSIGNAL;
 #else
             constexpr int kSendFlags = 0;
 #endif
             while (offset < size) {
-                const auto sent = ::send(fd, buffer + offset, size - offset, kSendFlags);
-                if (sent < 0 && errno == EINTR) {
-                    continue;
-                }
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto sent = ::send(to_socket(fd), buffer + offset, chunk_size, kSendFlags);
                 if (sent <= 0) {
-                    err = std::strerror(errno);
+                    const int error_code = last_socket_error();
+                    if (sent < 0 && is_interrupted_socket_error(error_code)) {
+                        continue;
+                    }
+                    err = socket_error_message(error_code);
                     return false;
                 }
                 offset += static_cast<std::size_t>(sent);
@@ -103,7 +137,7 @@ namespace sugar::service {
             return true;
         }
 
-        FramedReadResult read_one_framed_message(int fd, std::size_t max_message_bytes) {
+        FramedReadResult read_one_framed_message(NativeSocketHandle fd, std::size_t max_message_bytes) {
             FramedReadResult result{};
 
             std::array<char, 4> header{};
@@ -162,7 +196,7 @@ namespace sugar::service {
     } // namespace
 
     bool handle_protocol_socket_connection(
-        int fd,
+        NativeSocketHandle fd,
         ProtocolDispatcher& dispatcher,
         std::size_t max_message_bytes,
         const SecurityLogFn& security_log,
@@ -197,5 +231,3 @@ namespace sugar::service {
     }
 
 } // namespace sugar::service
-
-#endif

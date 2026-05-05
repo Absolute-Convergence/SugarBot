@@ -25,6 +25,7 @@
 #include "ingest/run_manifest.h"
 #include "ops/op_kernels_math.h"
 #include "ops/op_kernels_ms.h"
+#include "ops/op_kernels_ts.h"
 
 namespace sugar::contract_suite_internal {
 
@@ -98,6 +99,19 @@ bool test_numeric_portability_contracts(ContractAsserts& t) {
             t.expect(nearly_equal(corr_a.back(), 1.0, 1e-12),
                 "ms.correlation stays within epsilon of perfect self-correlation");
         }
+
+        const auto entropy_a = op_kernels::ts_entropy(awkward, 4, 4);
+        const auto entropy_b = op_kernels::ts_entropy(awkward, 4, 4);
+        const auto autocorr_a = op_kernels::ts_autocorrelation(awkward, 4, 1);
+        const auto autocorr_b = op_kernels::ts_autocorrelation(awkward, 4, 1);
+        const auto hurst_a = op_kernels::ts_hurst(awkward, 4);
+        const auto hurst_b = op_kernels::ts_hurst(awkward, 4);
+        const auto regime_a = op_kernels::ts_regime_change(awkward, 4);
+        const auto regime_b = op_kernels::ts_regime_change(awkward, 4);
+        t.expect(exact_series_match(entropy_a, entropy_b), "ts.entropy is deterministic across repeated runs");
+        t.expect(exact_series_match(autocorr_a, autocorr_b), "ts.autocorrelation is deterministic across repeated runs");
+        t.expect(exact_series_match(hurst_a, hurst_b), "ts.hurst is deterministic across repeated runs");
+        t.expect(exact_series_match(regime_a, regime_b), "ts.regime_change is deterministic across repeated runs");
 
         return true;
     }
@@ -717,6 +731,45 @@ bool test_ts_alias_runtime_parity_contracts(ContractAsserts& t) {
                 t.expect(ratio_out.trades > 0, "ts.volatility_ratio representative equivalence case produces trades");
                 t.expect(backtest_equal(ratio_out, formula_out),
                     "ts.volatility_ratio remains runtime-equivalent to fast/slow stddev ratio");
+            }
+        }
+
+        {
+            struct Phase91Case {
+                const char* op_name;
+                ParamMap params;
+                double threshold;
+            };
+
+            const std::vector<Phase91Case> cases = {
+                { "ts.entropy", ParamMap{ {"n", static_cast<std::int64_t>(4)}, {"bins", static_cast<std::int64_t>(4)} }, 1.0 },
+                { "ts.autocorrelation", ParamMap{ {"n", static_cast<std::int64_t>(6)}, {"lag", static_cast<std::int64_t>(1)} }, 0.9 },
+                { "ts.hurst", ParamMap{ {"n", static_cast<std::int64_t>(8)} }, 0.5 },
+                { "ts.regime_change", ParamMap{ {"n", static_cast<std::int64_t>(8)} }, 1.0 },
+            };
+
+            for (const auto& test_case : cases) {
+                PlanSpec spec{};
+                spec.version = 1;
+                spec.name = "contract_phase91_" + std::string(test_case.op_name);
+                spec.trade_mode = TradeMode::LongOnly;
+                spec.numeric_nodes = {
+                    NodeSpec{ "c", "core.close", {}, {} },
+                    NodeSpec{ "thr", "core.const", {}, { {"value", test_case.threshold} } },
+                    NodeSpec{ "x", test_case.op_name, { "c" }, test_case.params },
+                };
+                add_threshold_bindings(spec);
+
+                BacktestResult out{};
+                std::string log;
+                const bool ok = run_plan(spec, out, log);
+                t.expect(ok, std::string(test_case.op_name) + " runtime smoke executes");
+                if (!ok) {
+                    t.out << "    " << test_case.op_name << " smoke error: " << log << "\n";
+                }
+                else {
+                    t.expect(out.trades > 0, std::string(test_case.op_name) + " runtime smoke produces trades");
+                }
             }
         }
 

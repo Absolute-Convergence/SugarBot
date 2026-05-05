@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 #include "ingest/run_manifest.h"
@@ -56,12 +57,21 @@ namespace sugar {
                 provenance.has_entity_axis ||
                 provenance.has_spatial_axis ||
                 provenance.input_warning_count > 0 ||
+                provenance.csv_had_header ||
+                provenance.csv_physical_line_count > 0 ||
+                provenance.csv_blank_line_count > 0 ||
+                provenance.csv_data_row_count > 0 ||
+                provenance.dropped_row_count > 0 ||
+                !provenance.input_warnings.empty() ||
                 provenance.alignment_applied ||
                 !provenance.topology_names.empty() ||
                 provenance.topology_usage_count > 0;
         }
 
         bool metric_prefers_integral_display(const ResultMetricValue& metric) {
+            if (metric.has_exact_u64_value) {
+                return true;
+            }
             if (metric.kind == ResultMetricKind::SignalCount) {
                 return true;
             }
@@ -76,6 +86,10 @@ namespace sugar {
         std::string format_metric_value(const ResultMetricValue& metric) {
             if (!metric.is_finite) {
                 return "NaN";
+            }
+
+            if (metric.has_exact_u64_value) {
+                return std::to_string(metric.exact_u64_value);
             }
 
             std::ostringstream oss;
@@ -102,7 +116,25 @@ namespace sugar {
                 std::move(name),
                 value,
                 kind,
-                is_finite
+                is_finite,
+                false,
+                0
+            });
+        }
+
+        void append_metric(
+            BacktestMetricCatalog& catalog,
+            std::string name,
+            std::uint64_t value,
+            ResultMetricKind kind)
+        {
+            catalog.values.push_back(ResultMetricValue{
+                std::move(name),
+                static_cast<double>(value),
+                kind,
+                true,
+                true,
+                value
             });
         }
 
@@ -111,28 +143,28 @@ namespace sugar {
             BacktestMetricCatalog& catalog)
         {
             append_metric(catalog, "pnl", result.pnl, ResultMetricKind::CoreMetric);
-            append_metric(catalog, "trades", static_cast<double>(result.trades), ResultMetricKind::CoreMetric);
+            append_metric(catalog, "trades", static_cast<std::uint64_t>(result.trades), ResultMetricKind::CoreMetric);
             append_metric(catalog, "max_drawdown", result.max_drawdown, ResultMetricKind::CoreMetric);
-            append_metric(catalog, "long_trades", static_cast<double>(result.long_trades), ResultMetricKind::CoreMetric);
-            append_metric(catalog, "short_trades", static_cast<double>(result.short_trades), ResultMetricKind::CoreMetric);
+            append_metric(catalog, "long_trades", static_cast<std::uint64_t>(result.long_trades), ResultMetricKind::CoreMetric);
+            append_metric(catalog, "short_trades", static_cast<std::uint64_t>(result.short_trades), ResultMetricKind::CoreMetric);
             append_metric(catalog, "pnl_long", result.pnl_long, ResultMetricKind::CoreMetric);
             append_metric(catalog, "pnl_short", result.pnl_short, ResultMetricKind::CoreMetric);
-            append_metric(catalog, "trade_hash", static_cast<double>(result.trade_hash), ResultMetricKind::CoreMetric);
-            append_metric(catalog, "rows_evaluated", static_cast<double>(result.rows_evaluated), ResultMetricKind::CoreMetric);
-            append_metric(catalog, "warmup_rows", static_cast<double>(result.warmup_rows), ResultMetricKind::CoreMetric);
+            append_metric(catalog, "trade_hash", result.trade_hash, ResultMetricKind::CoreMetric);
+            append_metric(catalog, "rows_evaluated", static_cast<std::uint64_t>(result.rows_evaluated), ResultMetricKind::CoreMetric);
+            append_metric(catalog, "warmup_rows", static_cast<std::uint64_t>(result.warmup_rows), ResultMetricKind::CoreMetric);
             if (result.has_best_start_date) {
                 append_metric(
                     catalog,
                     "first_usable_signal_time_key",
-                    static_cast<double>(result.best_start_date),
+                    static_cast<std::uint64_t>(result.best_start_date),
                     ResultMetricKind::CoreMetric);
             }
 
-            append_metric(catalog, "allow_trade_signals", static_cast<double>(result.signal_counts.allow_trade), ResultMetricKind::SignalCount);
-            append_metric(catalog, "entry_long_signals", static_cast<double>(result.signal_counts.entry_long), ResultMetricKind::SignalCount);
-            append_metric(catalog, "exit_long_signals", static_cast<double>(result.signal_counts.exit_long), ResultMetricKind::SignalCount);
-            append_metric(catalog, "entry_short_signals", static_cast<double>(result.signal_counts.entry_short), ResultMetricKind::SignalCount);
-            append_metric(catalog, "exit_short_signals", static_cast<double>(result.signal_counts.exit_short), ResultMetricKind::SignalCount);
+            append_metric(catalog, "allow_trade_signals", static_cast<std::uint64_t>(result.signal_counts.allow_trade), ResultMetricKind::SignalCount);
+            append_metric(catalog, "entry_long_signals", static_cast<std::uint64_t>(result.signal_counts.entry_long), ResultMetricKind::SignalCount);
+            append_metric(catalog, "exit_long_signals", static_cast<std::uint64_t>(result.signal_counts.exit_long), ResultMetricKind::SignalCount);
+            append_metric(catalog, "entry_short_signals", static_cast<std::uint64_t>(result.signal_counts.entry_short), ResultMetricKind::SignalCount);
+            append_metric(catalog, "exit_short_signals", static_cast<std::uint64_t>(result.signal_counts.exit_short), ResultMetricKind::SignalCount);
 
             for (const auto& value : result.reported_values) {
                 append_metric(catalog, value.name, value.value, ResultMetricKind::ReportedValue);
@@ -149,33 +181,46 @@ namespace sugar {
                     std::move(metric_name),
                     value,
                     kind,
-                    std::isfinite(value)
+                    std::isfinite(value),
+                    false,
+                    0
+                };
+                return true;
+            };
+            auto assign_u64 = [&](std::string metric_name, std::uint64_t value, ResultMetricKind kind) {
+                out = ResultMetricValue{
+                    std::move(metric_name),
+                    static_cast<double>(value),
+                    kind,
+                    true,
+                    true,
+                    value
                 };
                 return true;
             };
 
             if (name == "pnl") return assign("pnl", result.pnl, ResultMetricKind::CoreMetric);
-            if (name == "trades") return assign("trades", static_cast<double>(result.trades), ResultMetricKind::CoreMetric);
+            if (name == "trades") return assign_u64("trades", static_cast<std::uint64_t>(result.trades), ResultMetricKind::CoreMetric);
             if (name == "max_drawdown") return assign("max_drawdown", result.max_drawdown, ResultMetricKind::CoreMetric);
-            if (name == "long_trades") return assign("long_trades", static_cast<double>(result.long_trades), ResultMetricKind::CoreMetric);
-            if (name == "short_trades") return assign("short_trades", static_cast<double>(result.short_trades), ResultMetricKind::CoreMetric);
+            if (name == "long_trades") return assign_u64("long_trades", static_cast<std::uint64_t>(result.long_trades), ResultMetricKind::CoreMetric);
+            if (name == "short_trades") return assign_u64("short_trades", static_cast<std::uint64_t>(result.short_trades), ResultMetricKind::CoreMetric);
             if (name == "pnl_long") return assign("pnl_long", result.pnl_long, ResultMetricKind::CoreMetric);
             if (name == "pnl_short") return assign("pnl_short", result.pnl_short, ResultMetricKind::CoreMetric);
-            if (name == "trade_hash") return assign("trade_hash", static_cast<double>(result.trade_hash), ResultMetricKind::CoreMetric);
-            if (name == "rows_evaluated") return assign("rows_evaluated", static_cast<double>(result.rows_evaluated), ResultMetricKind::CoreMetric);
-            if (name == "warmup_rows") return assign("warmup_rows", static_cast<double>(result.warmup_rows), ResultMetricKind::CoreMetric);
+            if (name == "trade_hash") return assign_u64("trade_hash", result.trade_hash, ResultMetricKind::CoreMetric);
+            if (name == "rows_evaluated") return assign_u64("rows_evaluated", static_cast<std::uint64_t>(result.rows_evaluated), ResultMetricKind::CoreMetric);
+            if (name == "warmup_rows") return assign_u64("warmup_rows", static_cast<std::uint64_t>(result.warmup_rows), ResultMetricKind::CoreMetric);
             if (name == "first_usable_signal_time_key" && result.has_best_start_date) {
-                return assign(
+                return assign_u64(
                     "first_usable_signal_time_key",
-                    static_cast<double>(result.best_start_date),
+                    static_cast<std::uint64_t>(result.best_start_date),
                     ResultMetricKind::CoreMetric);
             }
 
-            if (name == "allow_trade_signals") return assign("allow_trade_signals", static_cast<double>(result.signal_counts.allow_trade), ResultMetricKind::SignalCount);
-            if (name == "entry_long_signals") return assign("entry_long_signals", static_cast<double>(result.signal_counts.entry_long), ResultMetricKind::SignalCount);
-            if (name == "exit_long_signals") return assign("exit_long_signals", static_cast<double>(result.signal_counts.exit_long), ResultMetricKind::SignalCount);
-            if (name == "entry_short_signals") return assign("entry_short_signals", static_cast<double>(result.signal_counts.entry_short), ResultMetricKind::SignalCount);
-            if (name == "exit_short_signals") return assign("exit_short_signals", static_cast<double>(result.signal_counts.exit_short), ResultMetricKind::SignalCount);
+            if (name == "allow_trade_signals") return assign_u64("allow_trade_signals", static_cast<std::uint64_t>(result.signal_counts.allow_trade), ResultMetricKind::SignalCount);
+            if (name == "entry_long_signals") return assign_u64("entry_long_signals", static_cast<std::uint64_t>(result.signal_counts.entry_long), ResultMetricKind::SignalCount);
+            if (name == "exit_long_signals") return assign_u64("exit_long_signals", static_cast<std::uint64_t>(result.signal_counts.exit_long), ResultMetricKind::SignalCount);
+            if (name == "entry_short_signals") return assign_u64("entry_short_signals", static_cast<std::uint64_t>(result.signal_counts.entry_short), ResultMetricKind::SignalCount);
+            if (name == "exit_short_signals") return assign_u64("exit_short_signals", static_cast<std::uint64_t>(result.signal_counts.exit_short), ResultMetricKind::SignalCount);
 
             const auto it = std::find_if(
                 result.reported_values.begin(),
@@ -329,6 +374,12 @@ namespace sugar {
         }
         summary.series_count = manifest.preprocess.series_keys.size();
         summary.input_warning_count = manifest.preprocess.input_warnings.size();
+        summary.csv_had_header = manifest.preprocess.csv_had_header;
+        summary.csv_physical_line_count = manifest.preprocess.csv_physical_line_count;
+        summary.csv_blank_line_count = manifest.preprocess.csv_blank_line_count;
+        summary.csv_data_row_count = manifest.preprocess.csv_data_row_count;
+        summary.dropped_row_count = manifest.preprocess.dropped_row_count;
+        summary.input_warnings = manifest.preprocess.input_warnings;
         summary.alignment_applied = manifest.preprocess.alignment_applied;
         if (summary.alignment_applied) {
             summary.alignment_calendar = std::string(
@@ -557,9 +608,18 @@ namespace sugar {
             << (provenance.primary_selection_mode.empty() ? "<unknown>" : provenance.primary_selection_mode) << "\n"
             << indent << "  series_count: " << provenance.series_count << "\n"
             << indent << "  input_warnings: " << provenance.input_warning_count << "\n"
+            << indent << "  csv_had_header: " << (provenance.csv_had_header ? "true" : "false") << "\n"
+            << indent << "  csv_physical_lines: " << provenance.csv_physical_line_count << "\n"
+            << indent << "  csv_blank_lines: " << provenance.csv_blank_line_count << "\n"
+            << indent << "  csv_data_rows: " << provenance.csv_data_row_count << "\n"
+            << indent << "  dropped_rows: " << provenance.dropped_row_count << "\n"
             << indent << "  has_time_axis: " << (provenance.has_time_axis ? "true" : "false") << "\n"
             << indent << "  has_entity_axis: " << (provenance.has_entity_axis ? "true" : "false") << "\n"
             << indent << "  has_spatial_axis: " << (provenance.has_spatial_axis ? "true" : "false") << "\n";
+
+        for (const auto& warning : provenance.input_warnings) {
+            os << indent << "  input_warning: " << warning << "\n";
+        }
 
         if (provenance.has_time_axis) {
             os << indent << "  time_kind: "

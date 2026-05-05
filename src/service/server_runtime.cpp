@@ -91,6 +91,28 @@ namespace sugar::service {
             return out.str();
         }
 
+        std::string make_primary_sweep_summary(
+            const ValidationMetadata& metadata,
+            const PlanSweepReport& sweep_report) {
+            std::ostringstream out;
+            out << make_validation_summary(metadata, "Execution completed");
+            print_plan_sweep_report(sweep_report, out);
+            return out.str();
+        }
+
+        ValidationMetadata make_completed_sweep_validation_metadata(
+            ValidationMetadata metadata,
+            const PlanSweepReport& sweep_report,
+            const QuotaConfig& quotas) {
+            metadata.sweep_candidate_count = sweep_report.evaluations_run;
+            metadata.estimated_sweep_minutes = estimate_sweep_runtime_minutes(
+                sweep_report.evaluations_run,
+                metadata.row_count,
+                sweep_report.requested_sweep.engine);
+            metadata.long_sweep_warning = metadata_has_long_sweep_warning(metadata, quotas);
+            return metadata;
+        }
+
         std::string make_panel_summary(
             const ValidationMetadata& metadata,
             const PanelResult& result,
@@ -364,6 +386,9 @@ namespace sugar::service {
             const auto run_provenance =
                 build_run_provenance_summary(validated.runtime->run_manifest);
             BacktestResult backtest{};
+            PlanSweepReport sweep_report{};
+            const bool wants_sweep_report =
+                validated.metadata.resolved_mode == ResolvedExecutionMode::PrimarySeriesSweep;
             std::ostringstream run_log;
             if (!run_custom_plan_spec(
                     dv,
@@ -372,7 +397,7 @@ namespace sugar::service {
                     runtime_options,
                     run_log,
                     &backtest,
-                    nullptr,
+                    wants_sweep_report ? &sweep_report : nullptr,
                     &run_provenance)) {
                 const std::string detail = append_progress_callback_detail(
                     run_log.str().empty() ? "execution failed" : run_log.str(),
@@ -393,18 +418,35 @@ namespace sugar::service {
                         "progress recording failed",
                         *progress_failure));
             }
+            if (runtime_options.cancel_requested && runtime_options.cancel_requested()) {
+                return finalize_cancellation(
+                    owner_session_id,
+                    job_id,
+                    "job canceled after execution completed",
+                    err);
+            }
 
             JobResult result{};
             result.result_id = jobs_.next_result_id();
             result.owner_session_id = owner_session_id;
             result.job_id = job_id;
-            result.metadata.validation = validated.metadata;
+            result.metadata.validation = wants_sweep_report
+                ? make_completed_sweep_validation_metadata(validated.metadata, sweep_report, config_.quotas)
+                : validated.metadata;
             result.metadata.primary_backtest = backtest;
             result.metadata.run_provenance = run_provenance;
-            result.summary_text = make_primary_run_summary(
-                validated.metadata,
-                backtest,
-                &run_provenance);
+            if (wants_sweep_report) {
+                result.metadata.sweep_report = sweep_report;
+                result.summary_text = make_primary_sweep_summary(
+                    result.metadata.validation,
+                    sweep_report);
+            }
+            else {
+                result.summary_text = make_primary_run_summary(
+                    validated.metadata,
+                    backtest,
+                    &run_provenance);
+            }
 
             ArtifactRecord summary_artifact{};
             std::string artifact_err;
@@ -449,6 +491,13 @@ namespace sugar::service {
                     "panel execution completed",
                     "progress recording failed",
                     *progress_failure));
+        }
+        if (runtime_options.cancel_requested && runtime_options.cancel_requested()) {
+            return finalize_cancellation(
+                owner_session_id,
+                job_id,
+                "job canceled after panel execution completed",
+                err);
         }
         if (panel.entities_ok == 0) {
             return finalize_failure(
@@ -580,6 +629,11 @@ namespace sugar::service {
         result.job_id = job_id;
         result.metadata.validation = validated.metadata;
         result.summary_text = make_validation_summary(validated.metadata, "Validation rejected", &detail);
+        JobStatus status{};
+        std::string status_err;
+        if (jobs_.get_owned_status(owner_session_id, job_id, status, status_err)) {
+            result.input_artifacts = status.staged_artifacts;
+        }
 
         ArtifactRecord summary_artifact{};
         std::string artifact_err;
@@ -609,6 +663,11 @@ namespace sugar::service {
         result.job_id = job_id;
         result.metadata.validation = metadata;
         result.summary_text = make_validation_summary(metadata, "Execution failed", &detail);
+        JobStatus status{};
+        std::string status_err;
+        if (jobs_.get_owned_status(owner_session_id, job_id, status, status_err)) {
+            result.input_artifacts = status.staged_artifacts;
+        }
 
         ArtifactRecord summary_artifact{};
         std::string artifact_err;
@@ -635,10 +694,30 @@ namespace sugar::service {
         const std::string& job_id,
         JobResult result,
         std::string& err) {
+        JobStatus status{};
+        std::string status_err;
+        if (jobs_.get_owned_status(owner_session_id, job_id, status, status_err)) {
+            result.input_artifacts = status.staged_artifacts;
+        }
+        bool canceled_before_store = false;
+        if (!jobs_.reserve_completion(
+                job_id,
+                "job canceled before completion was finalized",
+                canceled_before_store,
+                err)) {
+            return false;
+        }
+        if (canceled_before_store) {
+            sessions_.finish_job(owner_session_id);
+            err.clear();
+            return true;
+        }
         if (!results_.store(result, err)) {
             return finalize_failure(owner_session_id, job_id, result.metadata.validation, err);
         }
         if (!jobs_.finalize_completed(job_id, result.result_id, err)) {
+            std::string erase_err;
+            results_.erase_owned(owner_session_id, job_id, erase_err);
             return finalize_failure(owner_session_id, job_id, result.metadata.validation, err);
         }
         sessions_.finish_job(owner_session_id);

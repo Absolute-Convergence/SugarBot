@@ -1,37 +1,140 @@
 #include "service/network_client.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
+#include "ingest/json_min.h"
+#include "service/network_session.h"
 #include "service/protocol_framing.h"
 
 #ifdef _WIN32
-
-namespace sugar::service {
-
-    int run_tcp_client_from_cli(int, char**, std::ostream&, std::ostream& err) {
-        err << "Error: sugar_client TCP sockets are currently supported only on Linux/WSL builds.\n";
-        return 1;
-    }
-
-} // namespace sugar::service
-
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #else
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#endif
 
 namespace sugar::service {
 
     namespace {
+#ifdef _WIN32
+        constexpr NativeSocketHandle kInvalidSocketHandle = static_cast<NativeSocketHandle>(INVALID_SOCKET);
+
+        SOCKET to_socket(NativeSocketHandle handle) {
+            return static_cast<SOCKET>(handle);
+        }
+
+        NativeSocketHandle to_native_socket_handle(SOCKET socket) {
+            return static_cast<NativeSocketHandle>(socket);
+        }
+
+        int last_socket_error() {
+            return WSAGetLastError();
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == WSAEINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return "WinSock error " + std::to_string(error_code);
+        }
+
+        class SocketRuntime {
+        public:
+            explicit SocketRuntime(std::string& err) {
+                WSADATA data{};
+                const int result = WSAStartup(MAKEWORD(2, 2), &data);
+                if (result != 0) {
+                    err = socket_error_message(result);
+                    return;
+                }
+                active_ = true;
+                err.clear();
+            }
+
+            ~SocketRuntime() {
+                if (active_) {
+                    WSACleanup();
+                }
+            }
+
+            bool active() const {
+                return active_;
+            }
+
+        private:
+            bool active_{ false };
+        };
+#else
+        constexpr NativeSocketHandle kInvalidSocketHandle = -1;
+
+        int to_socket(NativeSocketHandle handle) {
+            return handle;
+        }
+
+        NativeSocketHandle to_native_socket_handle(int socket) {
+            return socket;
+        }
+
+        int last_socket_error() {
+            return errno;
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == EINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return std::strerror(error_code);
+        }
+
+        class SocketRuntime {
+        public:
+            explicit SocketRuntime(std::string& err) {
+                err.clear();
+            }
+
+            bool active() const {
+                return true;
+            }
+        };
+#endif
+
+        bool is_valid_socket(NativeSocketHandle handle) {
+            return handle != kInvalidSocketHandle;
+        }
+
+        void close_socket_quietly(NativeSocketHandle fd) {
+            if (!is_valid_socket(fd)) {
+                return;
+            }
+#ifdef _WIN32
+            ::closesocket(to_socket(fd));
+#else
+            ::close(fd);
+#endif
+        }
+
         bool parse_u16_option(
             std::string_view text,
             const char* label,
@@ -74,7 +177,19 @@ namespace sugar::service {
             }
         }
 
-        bool set_socket_timeout(int fd, int optname, std::uint32_t timeout_ms, std::string& err) {
+        bool set_socket_timeout(NativeSocketHandle fd, int optname, std::uint32_t timeout_ms, std::string& err) {
+#ifdef _WIN32
+            const DWORD timeout = std::max<DWORD>(1, static_cast<DWORD>(timeout_ms));
+            if (::setsockopt(
+                    to_socket(fd),
+                    SOL_SOCKET,
+                    optname,
+                    reinterpret_cast<const char*>(&timeout),
+                    sizeof(timeout)) != 0) {
+                err = "failed to set socket timeout: " + socket_error_message(last_socket_error());
+                return false;
+            }
+#else
             timeval timeout{};
             timeout.tv_sec = static_cast<decltype(timeout.tv_sec)>(timeout_ms / 1000u);
             timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>((timeout_ms % 1000u) * 1000u);
@@ -86,20 +201,33 @@ namespace sugar::service {
                 err = std::string("failed to set socket timeout: ") + std::strerror(errno);
                 return false;
             }
+#endif
             err.clear();
             return true;
         }
 
-        bool set_socket_flag(int fd, int level, int optname, int value, std::string& err) {
+        bool set_socket_flag(NativeSocketHandle fd, int level, int optname, int value, std::string& err) {
+#ifdef _WIN32
+            if (::setsockopt(
+                    to_socket(fd),
+                    level,
+                    optname,
+                    reinterpret_cast<const char*>(&value),
+                    sizeof(value)) != 0) {
+                err = "failed to set socket option: " + socket_error_message(last_socket_error());
+                return false;
+            }
+#else
             if (::setsockopt(fd, level, optname, &value, sizeof(value)) != 0) {
                 err = std::string("failed to set socket option: ") + std::strerror(errno);
                 return false;
             }
+#endif
             err.clear();
             return true;
         }
 
-        bool configure_connected_socket(int fd, std::uint32_t socket_timeout_ms, std::string& err) {
+        bool configure_connected_socket(NativeSocketHandle fd, std::uint32_t socket_timeout_ms, std::string& err) {
             const int enabled = 1;
             return
                 set_socket_timeout(fd, SO_RCVTIMEO, socket_timeout_ms, err) &&
@@ -117,14 +245,55 @@ namespace sugar::service {
             return true;
         }
 
-        bool read_exact(int fd, char* buffer, std::size_t size) {
+        void print_client_usage(std::ostream& out) {
+            out
+                << "SugarBot hosted-service client\n\n"
+                << "Usage:\n"
+                << "  sugar_client --help\n"
+                << "  sugar_client connect [options]\n"
+                << "  sugar_client list-datasets --session <id> [options]\n"
+                << "  sugar_client list-templates --session <id> [options]\n"
+                << "  sugar_client upload --session <id> --kind layout|logic|data --file <path> [--name <filename>] [options]\n"
+                << "  sugar_client run --layout <layout.json> --logic <logic.json> --data <data.csv> [--wait] [options]\n"
+                << "  sugar_client validate --session <id> --layout-upload <id> --logic-upload <id> --data-upload <id> [options]\n"
+                << "  sugar_client submit --session <id> --layout-upload <id> --logic-upload <id> --data-upload <id> [options]\n"
+                << "  sugar_client status --session <id> --job <id> [options]\n"
+                << "  sugar_client result --session <id> --job <id> [options]\n"
+                << "  sugar_client cancel --session <id> --job <id> [options]\n"
+                << "  sugar_client disconnect --session <id> [options]\n\n"
+                << "Options:\n"
+                << "  --host <ipv4>              Server host, default 127.0.0.1\n"
+                << "  --port <port>              Server port, default 4123\n"
+                << "  --socket-timeout-ms <ms>   Bounded socket read/write timeout\n"
+                << "  --compact                  Print one-line JSON for scripts\n\n"
+                << "Run options:\n"
+                << "  --wait                     Accepted for clarity; run waits by default\n"
+                << "  --poll-ms <ms>             Status poll interval, default 250\n"
+                << "  --wait-timeout-ms <ms>     Wait timeout, default 300000\n\n"
+                << "Notes:\n"
+                << "  Run prints the retained hosted summary by default. Use --compact for the full JSON payload.\n"
+                << "  Lower-level commands print pretty JSON by default. Use --compact for one-line JSON.\n"
+                << "  Run connects, uploads layout/logic/data, submits, waits, and prints the final result.\n"
+                << "  Upload --name is optional when --file is provided; the file name is used.\n"
+                << "  Layout and logic uploads are JSON; data uploads are CSV.\n";
+        }
+
+        std::string default_upload_name_for_path(const std::string& path) {
+            return std::filesystem::path(path).filename().string();
+        }
+
+        bool read_exact(NativeSocketHandle fd, char* buffer, std::size_t size) {
             std::size_t offset = 0;
             while (offset < size) {
-                const auto got = ::recv(fd, buffer + offset, size - offset, 0);
-                if (got < 0 && errno == EINTR) {
-                    continue;
-                }
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto got = ::recv(to_socket(fd), buffer + offset, chunk_size, 0);
                 if (got <= 0) {
+                    const int error_code = last_socket_error();
+                    if (got < 0 && is_interrupted_socket_error(error_code)) {
+                        continue;
+                    }
                     return false;
                 }
                 offset += static_cast<std::size_t>(got);
@@ -132,19 +301,23 @@ namespace sugar::service {
             return true;
         }
 
-        bool write_all(int fd, const char* buffer, std::size_t size) {
+        bool write_all(NativeSocketHandle fd, const char* buffer, std::size_t size) {
             std::size_t offset = 0;
             while (offset < size) {
-#ifdef MSG_NOSIGNAL
+#if defined(MSG_NOSIGNAL)
                 constexpr int kSendFlags = MSG_NOSIGNAL;
 #else
                 constexpr int kSendFlags = 0;
 #endif
-                const auto sent = ::send(fd, buffer + offset, size - offset, kSendFlags);
-                if (sent < 0 && errno == EINTR) {
-                    continue;
-                }
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto sent = ::send(to_socket(fd), buffer + offset, chunk_size, kSendFlags);
                 if (sent <= 0) {
+                    const int error_code = last_socket_error();
+                    if (sent < 0 && is_interrupted_socket_error(error_code)) {
+                        continue;
+                    }
                     return false;
                 }
                 offset += static_cast<std::size_t>(sent);
@@ -157,13 +330,21 @@ namespace sugar::service {
             const ProtocolRequest& request,
             std::string& response_json,
             std::string& err) {
-            const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) {
-                err = "failed to create client socket";
+            std::string socket_runtime_err;
+            SocketRuntime socket_runtime(socket_runtime_err);
+            if (!socket_runtime.active()) {
+                err = "failed to initialize socket runtime: " + socket_runtime_err;
+                return false;
+            }
+
+            const NativeSocketHandle fd =
+                to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(fd)) {
+                err = "failed to create client socket: " + socket_error_message(last_socket_error());
                 return false;
             }
             if (!configure_connected_socket(fd, options.socket_timeout_ms, err)) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 return false;
             }
 
@@ -171,27 +352,28 @@ namespace sugar::service {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(options.port);
             if (::inet_pton(AF_INET, options.host.c_str(), &addr.sin_addr) != 1) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "invalid host";
                 return false;
             }
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-                ::close(fd);
-                err = "failed to connect to server";
+            if (::connect(to_socket(fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(fd);
+                err = "failed to connect to server: " + socket_error_message(error_code);
                 return false;
             }
 
             const auto request_json = serialize_protocol_request_json(request);
             const auto framed = frame_json_message(request_json);
             if (!write_all(fd, framed.data(), framed.size())) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "failed to send framed request";
                 return false;
             }
 
             char header[4]{};
             if (!read_exact(fd, header, sizeof(header))) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "failed to read response header";
                 return false;
             }
@@ -201,34 +383,564 @@ namespace sugar::service {
                 (static_cast<std::uint32_t>(static_cast<unsigned char>(header[2])) << 8) |
                 static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
             if (size == 0 || size > options.max_message_bytes) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "response frame length is invalid";
                 return false;
             }
 
             response_json.assign(size, '\0');
             if (!read_exact(fd, response_json.data(), response_json.size())) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "failed to read response body";
                 return false;
             }
 
-            ::close(fd);
+            close_socket_quietly(fd);
             err.clear();
             return true;
+        }
+
+        std::string format_json_pretty(std::string_view json) {
+            std::string out;
+            out.reserve(json.size() * 2);
+
+            auto next_non_space = [json](std::size_t start) {
+                for (std::size_t i = start; i < json.size(); ++i) {
+                    const unsigned char ch = static_cast<unsigned char>(json[i]);
+                    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+                        return json[i];
+                    }
+                }
+                return '\0';
+            };
+            auto append_indent = [&out](int indent) {
+                if (indent > 0) {
+                    out.append(static_cast<std::size_t>(indent) * 4, ' ');
+                }
+            };
+
+            int indent = 0;
+            bool in_string = false;
+            bool escape = false;
+            char previous_token = '\0';
+
+            for (std::size_t i = 0; i < json.size(); ++i) {
+                const char ch = json[i];
+                if (in_string) {
+                    out.push_back(ch);
+                    if (escape) {
+                        escape = false;
+                    }
+                    else if (ch == '\\') {
+                        escape = true;
+                    }
+                    else if (ch == '"') {
+                        in_string = false;
+                    }
+                    continue;
+                }
+
+                if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+                    continue;
+                }
+
+                switch (ch) {
+                case '"':
+                    in_string = true;
+                    out.push_back(ch);
+                    break;
+                case '{':
+                case '[':
+                {
+                    out.push_back(ch);
+                    const char close = (ch == '{') ? '}' : ']';
+                    if (next_non_space(i + 1) != close) {
+                        out.push_back('\n');
+                        ++indent;
+                        append_indent(indent);
+                    }
+                    previous_token = ch;
+                    break;
+                }
+                case '}':
+                case ']':
+                {
+                    const char open = (ch == '}') ? '{' : '[';
+                    if (previous_token != open) {
+                        out.push_back('\n');
+                        if (indent > 0) {
+                            --indent;
+                        }
+                        append_indent(indent);
+                    }
+                    else if (indent > 0) {
+                        --indent;
+                    }
+                    out.push_back(ch);
+                    previous_token = ch;
+                    break;
+                }
+                case ',':
+                    out.push_back(ch);
+                    out.push_back('\n');
+                    append_indent(indent);
+                    previous_token = ch;
+                    break;
+                case ':':
+                    out.push_back(ch);
+                    out.push_back(' ');
+                    previous_token = ch;
+                    break;
+                default:
+                    out.push_back(ch);
+                    previous_token = ch;
+                    break;
+                }
+            }
+
+            return out;
+        }
+
+        struct ClientRunOptions {
+            std::string layout_path{};
+            std::string logic_path{};
+            std::string data_path{};
+            std::uint32_t poll_ms{ 250 };
+            std::uint32_t wait_timeout_ms{ 300000 };
+        };
+
+        struct ClientResponseSummary {
+            bool ok{ false };
+            std::string message{};
+            std::string session_id{};
+            std::string job_id{};
+            std::string upload_id{};
+            std::string job_state{};
+            std::string result_id{};
+            std::string summary_text{};
+        };
+
+        bool read_optional_json_string(
+            const json_min::Object& object,
+            const char* key,
+            std::string& out,
+            std::string& err) {
+            const json_min::Value* value = json_min::obj_get(object, key);
+            if (!value) {
+                return true;
+            }
+            if (!value->is_str()) {
+                err = std::string("response field '") + key + "' must be a string";
+                return false;
+            }
+            out = value->as_str();
+            return true;
+        }
+
+        bool parse_client_response_summary(
+            std::string_view response_json,
+            ClientResponseSummary& out,
+            std::string& err) {
+            json_min::Value root{};
+            json_min::ParseError parse_err{};
+            if (!json_min::parse(response_json, root, parse_err)) {
+                std::ostringstream detail;
+                detail << parse_err.message << " at line " << parse_err.line << ", col " << parse_err.col;
+                err = detail.str();
+                return false;
+            }
+            if (!root.is_obj()) {
+                err = "response root must be an object";
+                return false;
+            }
+
+            out = ClientResponseSummary{};
+            const auto& object = root.as_obj();
+            const json_min::Value* ok_value = json_min::obj_get(object, "ok");
+            if (!ok_value || !ok_value->is_bool()) {
+                err = "response field 'ok' must be a bool";
+                return false;
+            }
+            out.ok = ok_value->as_bool();
+
+            std::string schema_version;
+            if (!read_optional_json_string(object, "schema_version", schema_version, err)) {
+                return false;
+            }
+            if (schema_version != hosted_observability_schema_version()) {
+                err = "response schema_version is not supported";
+                return false;
+            }
+
+            if (!read_optional_json_string(object, "message", out.message, err) ||
+                !read_optional_json_string(object, "session_id", out.session_id, err) ||
+                !read_optional_json_string(object, "job_id", out.job_id, err)) {
+                return false;
+            }
+
+            if (const json_min::Value* upload = json_min::obj_get(object, "upload")) {
+                if (!upload->is_obj()) {
+                    err = "response field 'upload' must be an object";
+                    return false;
+                }
+                if (!read_optional_json_string(upload->as_obj(), "upload_id", out.upload_id, err)) {
+                    return false;
+                }
+            }
+
+            if (const json_min::Value* status = json_min::obj_get(object, "job_status")) {
+                if (!status->is_obj()) {
+                    err = "response field 'job_status' must be an object";
+                    return false;
+                }
+                const auto& status_object = status->as_obj();
+                if (!read_optional_json_string(status_object, "state", out.job_state, err) ||
+                    !read_optional_json_string(status_object, "result_id", out.result_id, err)) {
+                    return false;
+                }
+                if (out.job_id.empty() &&
+                    !read_optional_json_string(status_object, "job_id", out.job_id, err)) {
+                    return false;
+                }
+            }
+
+            if (const json_min::Value* result = json_min::obj_get(object, "job_result")) {
+                if (!result->is_obj()) {
+                    err = "response field 'job_result' must be an object";
+                    return false;
+                }
+                const auto& result_object = result->as_obj();
+                if (!read_optional_json_string(result_object, "result_id", out.result_id, err)) {
+                    return false;
+                }
+                if (!read_optional_json_string(result_object, "summary_text", out.summary_text, err)) {
+                    return false;
+                }
+                if (out.job_id.empty() &&
+                    !read_optional_json_string(result_object, "job_id", out.job_id, err)) {
+                    return false;
+                }
+            }
+
+            err.clear();
+            return true;
+        }
+
+        bool send_and_parse_response(
+            const ClientCliOptions& options,
+            const ProtocolRequest& request,
+            ClientResponseSummary& summary,
+            std::string& response_json,
+            std::string& err) {
+            if (!send_request(options, request, response_json, err)) {
+                return false;
+            }
+            return parse_client_response_summary(response_json, summary, err);
+        }
+
+        void print_json_response(
+            const ClientCliOptions& options,
+            std::string_view response_json,
+            std::ostream& out) {
+            out << (options.compact_output ? std::string(response_json) : format_json_pretty(response_json)) << "\n";
+        }
+
+        void print_run_result_response(
+            const ClientCliOptions& options,
+            const ClientResponseSummary& summary,
+            std::string_view response_json,
+            std::ostream& out) {
+            if (options.compact_output || summary.summary_text.empty()) {
+                print_json_response(options, response_json, out);
+                return;
+            }
+
+            out << summary.summary_text;
+            if (summary.summary_text.back() != '\n') {
+                out << "\n";
+            }
+        }
+
+        bool require_success(
+            std::string_view action,
+            const ClientResponseSummary& summary,
+            std::ostream& err) {
+            if (summary.ok) {
+                return true;
+            }
+            err << "Error: " << action << " failed";
+            if (!summary.message.empty()) {
+                err << ": " << summary.message;
+            }
+            err << "\n";
+            return false;
+        }
+
+        bool terminal_job_state(std::string_view state) {
+            return state == "completed" ||
+                state == "failed" ||
+                state == "rejected" ||
+                state == "canceled";
+        }
+
+        void disconnect_session_best_effort(
+            const ClientCliOptions& options,
+            std::string_view session_id) {
+            if (session_id.empty()) {
+                return;
+            }
+            ProtocolRequest disconnect{};
+            disconnect.command = ProtocolCommand::Disconnect;
+            disconnect.session_id = std::string(session_id);
+            ClientResponseSummary ignored_summary{};
+            std::string ignored_response;
+            std::string ignored_err;
+            (void)send_and_parse_response(options, disconnect, ignored_summary, ignored_response, ignored_err);
+        }
+
+        bool upload_run_artifact(
+            const ClientCliOptions& options,
+            std::string_view session_id,
+            ArtifactKind kind,
+            std::string_view path,
+            std::string_view content,
+            std::string& upload_id,
+            std::ostream& err) {
+            ProtocolRequest upload{};
+            upload.command = ProtocolCommand::UploadArtifact;
+            upload.session_id = std::string(session_id);
+            upload.upload_kind = kind;
+            upload.upload_client_name = default_upload_name_for_path(std::string(path));
+            upload.upload_content = std::string(content);
+            if (upload.upload_client_name.empty()) {
+                err << "Error: upload path '" << path << "' does not contain a file name\n";
+                return false;
+            }
+
+            ClientResponseSummary summary{};
+            std::string response_json;
+            std::string request_err;
+            if (!send_and_parse_response(options, upload, summary, response_json, request_err)) {
+                err << "Error: " << request_err << "\n";
+                return false;
+            }
+            if (!require_success("upload", summary, err)) {
+                return false;
+            }
+            if (summary.upload_id.empty()) {
+                err << "Error: upload response did not include an upload id\n";
+                return false;
+            }
+            upload_id = summary.upload_id;
+            return true;
+        }
+
+        int run_hosted_pipeline(
+            const ClientCliOptions& options,
+            const ClientRunOptions& run_options,
+            std::ostream& out,
+            std::ostream& err) {
+            if (run_options.layout_path.empty()) {
+                err << "Error: run requires --layout <layout.json>\n";
+                return 1;
+            }
+            if (run_options.logic_path.empty()) {
+                err << "Error: run requires --logic <logic.json>\n";
+                return 1;
+            }
+            if (run_options.data_path.empty()) {
+                err << "Error: run requires --data <data.csv>\n";
+                return 1;
+            }
+
+            std::string layout_content;
+            std::string logic_content;
+            std::string data_content;
+            if (!read_file_text(run_options.layout_path, layout_content)) {
+                err << "Error: failed to read layout file '" << run_options.layout_path << "'\n";
+                return 1;
+            }
+            if (!read_file_text(run_options.logic_path, logic_content)) {
+                err << "Error: failed to read logic file '" << run_options.logic_path << "'\n";
+                return 1;
+            }
+            if (!read_file_text(run_options.data_path, data_content)) {
+                err << "Error: failed to read data file '" << run_options.data_path << "'\n";
+                return 1;
+            }
+
+            ProtocolRequest connect{};
+            connect.command = ProtocolCommand::Connect;
+            ClientResponseSummary connect_summary{};
+            std::string response_json;
+            std::string request_err;
+            if (!send_and_parse_response(options, connect, connect_summary, response_json, request_err)) {
+                err << "Error: " << request_err << "\n";
+                return 1;
+            }
+            if (!require_success("connect", connect_summary, err)) {
+                return 1;
+            }
+            if (connect_summary.session_id.empty()) {
+                err << "Error: connect response did not include a session id\n";
+                return 1;
+            }
+            const std::string session_id = connect_summary.session_id;
+            if (!options.compact_output) {
+                err << "Connected session " << session_id << "\n";
+            }
+
+            std::string layout_upload_id;
+            std::string logic_upload_id;
+            std::string data_upload_id;
+            if (!upload_run_artifact(
+                    options,
+                    session_id,
+                    ArtifactKind::LayoutSpec,
+                    run_options.layout_path,
+                    layout_content,
+                    layout_upload_id,
+                    err) ||
+                !upload_run_artifact(
+                    options,
+                    session_id,
+                    ArtifactKind::LogicSpec,
+                    run_options.logic_path,
+                    logic_content,
+                    logic_upload_id,
+                    err) ||
+                !upload_run_artifact(
+                    options,
+                    session_id,
+                    ArtifactKind::DataCsv,
+                    run_options.data_path,
+                    data_content,
+                    data_upload_id,
+                    err)) {
+                disconnect_session_best_effort(options, session_id);
+                return 1;
+            }
+            if (!options.compact_output) {
+                err << "Uploaded artifacts " << layout_upload_id << ", " << logic_upload_id << ", "
+                    << data_upload_id << "\n";
+            }
+
+            ProtocolRequest submit{};
+            submit.command = ProtocolCommand::SubmitJob;
+            submit.session_id = session_id;
+            submit.layout_upload_id = layout_upload_id;
+            submit.logic_upload_id = logic_upload_id;
+            submit.data_upload_id = data_upload_id;
+            ClientResponseSummary submit_summary{};
+            response_json.clear();
+            request_err.clear();
+            if (!send_and_parse_response(options, submit, submit_summary, response_json, request_err)) {
+                err << "Error: " << request_err << "\n";
+                disconnect_session_best_effort(options, session_id);
+                return 1;
+            }
+            if (!require_success("submit", submit_summary, err)) {
+                disconnect_session_best_effort(options, session_id);
+                return 1;
+            }
+            if (submit_summary.job_id.empty()) {
+                err << "Error: submit response did not include a job id\n";
+                disconnect_session_best_effort(options, session_id);
+                return 1;
+            }
+            const std::string job_id = submit_summary.job_id;
+            if (!options.compact_output) {
+                err << "Submitted job " << job_id << "\n";
+            }
+
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(run_options.wait_timeout_ms);
+            std::string final_state;
+            std::string latest_status_json;
+            std::string last_reported_state;
+            while (true) {
+                ProtocolRequest status{};
+                status.command = ProtocolCommand::CheckStatus;
+                status.session_id = session_id;
+                status.job_id = job_id;
+                ClientResponseSummary status_summary{};
+                response_json.clear();
+                request_err.clear();
+                if (!send_and_parse_response(options, status, status_summary, response_json, request_err)) {
+                    err << "Error: " << request_err << "\n";
+                    return 1;
+                }
+                latest_status_json = response_json;
+                if (!require_success("status", status_summary, err)) {
+                    disconnect_session_best_effort(options, session_id);
+                    return 1;
+                }
+                if (status_summary.job_state.empty()) {
+                    err << "Error: status response did not include a job state\n";
+                    disconnect_session_best_effort(options, session_id);
+                    return 1;
+                }
+                if (!options.compact_output && status_summary.job_state != last_reported_state) {
+                    err << "Status: " << status_summary.job_state << "\n";
+                    last_reported_state = status_summary.job_state;
+                }
+                if (terminal_job_state(status_summary.job_state)) {
+                    final_state = status_summary.job_state;
+                    break;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    print_json_response(options, latest_status_json, out);
+                    err << "Error: run timed out after " << run_options.wait_timeout_ms
+                        << " ms; the job may still be running on the server. "
+                        << "To check it later, reuse the same session id with "
+                        << "`sugar_client status --session " << session_id
+                        << " --job " << job_id << "` or "
+                        << "`sugar_client result --session " << session_id
+                        << " --job " << job_id << "`. "
+                        << "Creating a new session will not have access to this job.\n";
+                    return 1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(run_options.poll_ms));
+            }
+
+            ProtocolRequest result{};
+            result.command = ProtocolCommand::RetrieveResults;
+            result.session_id = session_id;
+            result.job_id = job_id;
+            ClientResponseSummary result_summary{};
+            response_json.clear();
+            request_err.clear();
+            if (!send_and_parse_response(options, result, result_summary, response_json, request_err)) {
+                err << "Error: " << request_err << "\n";
+                disconnect_session_best_effort(options, session_id);
+                return 1;
+            }
+            print_run_result_response(options, result_summary, response_json, out);
+            disconnect_session_best_effort(options, session_id);
+            if (!require_success("result", result_summary, err)) {
+                return 1;
+            }
+            return final_state == "completed" ? 0 : 1;
         }
 
     } // namespace
 
     int run_tcp_client_from_cli(int argc, char** argv, std::ostream& out, std::ostream& err) {
         if (argc < 2) {
-            err << "Error: missing client command\n";
-            return 1;
+            print_client_usage(out);
+            return 0;
         }
 
         ClientCliOptions options{};
+        ClientRunOptions run_options{};
         std::string command = argv[1];
         ProtocolRequest request{};
+        std::string upload_file_path{};
+
+        if (command == "--help" || command == "-h" || command == "help") {
+            print_client_usage(out);
+            return 0;
+        }
 
         auto require_value = [&](int& index, const char* label, std::string& value) -> bool {
             if (index + 1 >= argc) {
@@ -241,7 +953,11 @@ namespace sugar::service {
 
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
-            if (arg == "--host") {
+            if (arg == "--help" || arg == "-h") {
+                print_client_usage(out);
+                return 0;
+            }
+            else if (arg == "--host") {
                 if (!require_value(i, "--host", options.host)) return 1;
             }
             else if (arg == "--port") {
@@ -253,6 +969,39 @@ namespace sugar::service {
                 std::string timeout_text;
                 if (!require_value(i, "--socket-timeout-ms", timeout_text)) return 1;
                 if (!parse_u32_option(timeout_text, "--socket-timeout-ms", 1, 600000, options.socket_timeout_ms, err)) return 1;
+            }
+            else if (arg == "--poll-ms" && command == "run") {
+                std::string poll_text;
+                if (!require_value(i, "--poll-ms", poll_text)) return 1;
+                if (!parse_u32_option(poll_text, "--poll-ms", 1, 600000, run_options.poll_ms, err)) return 1;
+            }
+            else if (arg == "--wait-timeout-ms" && command == "run") {
+                std::string timeout_text;
+                if (!require_value(i, "--wait-timeout-ms", timeout_text)) return 1;
+                if (!parse_u32_option(
+                        timeout_text,
+                        "--wait-timeout-ms",
+                        1,
+                        86400000,
+                        run_options.wait_timeout_ms,
+                        err)) {
+                    return 1;
+                }
+            }
+            else if (arg == "--compact") {
+                options.compact_output = true;
+            }
+            else if (arg == "--wait" && command == "run") {
+                // The run command waits by default; accept --wait for command discoverability.
+            }
+            else if (arg == "--layout" && command == "run") {
+                if (!require_value(i, "--layout", run_options.layout_path)) return 1;
+            }
+            else if (arg == "--logic" && command == "run") {
+                if (!require_value(i, "--logic", run_options.logic_path)) return 1;
+            }
+            else if (arg == "--data" && command == "run") {
+                if (!require_value(i, "--data", run_options.data_path)) return 1;
             }
             else if (arg == "--session") {
                 if (!require_value(i, "--session", request.session_id)) return 1;
@@ -296,6 +1045,7 @@ namespace sugar::service {
             else if (arg == "--file") {
                 std::string path;
                 if (!require_value(i, "--file", path)) return 1;
+                upload_file_path = path;
                 if (!read_file_text(path, request.upload_content)) {
                     err << "Error: failed to read file '" << path << "'\n";
                     return 1;
@@ -305,6 +1055,10 @@ namespace sugar::service {
                 err << "Error: unknown client option '" << arg << "'\n";
                 return 1;
             }
+        }
+
+        if (command == "run") {
+            return run_hosted_pipeline(options, run_options, out, err);
         }
 
         if (command == "connect") {
@@ -318,6 +1072,9 @@ namespace sugar::service {
         }
         else if (command == "upload") {
             request.command = ProtocolCommand::UploadArtifact;
+            if (request.upload_client_name.empty() && !upload_file_path.empty()) {
+                request.upload_client_name = default_upload_name_for_path(upload_file_path);
+            }
         }
         else if (command == "validate") {
             request.command = ProtocolCommand::ValidateRequest;
@@ -339,6 +1096,7 @@ namespace sugar::service {
         }
         else {
             err << "Error: unknown client command '" << command << "'\n";
+            err << "Run sugar_client --help for usage.\n";
             return 1;
         }
 
@@ -349,7 +1107,7 @@ namespace sugar::service {
             return 1;
         }
 
-        out << response_json << "\n";
+        out << (options.compact_output ? response_json : format_json_pretty(response_json)) << "\n";
 
         bool ok = false;
         std::string parse_err;
@@ -361,5 +1119,3 @@ namespace sugar::service {
     }
 
 } // namespace sugar::service
-
-#endif

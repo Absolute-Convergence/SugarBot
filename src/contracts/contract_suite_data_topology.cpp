@@ -825,8 +825,12 @@ namespace sugar::contract_suite_internal {
         const auto dc_u = op_kernels::ts_roll_max(high_span, n_dc);
         const auto dc_l = op_kernels::ts_roll_min(low_span, n_dc);
         const auto percentile_hi = op_kernels::ts_percentile(close_span, n_dc, 100.0);
+        const auto entropy = op_kernels::ts_entropy(close_span, 4, 4);
+        const auto autocorrelation = op_kernels::ts_autocorrelation(close_span, 6, 1);
+        const auto hurst = op_kernels::ts_hurst(close_span, 8);
         const auto macd = op_kernels::ts_macd_histogram(close_span, 12, 26, 9);
         const auto bollinger_width = op_kernels::ts_bollinger_width(close_span, n, 2.0);
+        const auto regime_change = op_kernels::ts_regime_change(close_span, 8);
         const auto volatility_ratio = op_kernels::ts_volatility_ratio(close_span, 5, 10);
         const auto sma_vals = op_kernels_math::sma(close_span, n);
         const auto fast_sd = op_kernels_math::stddev(close_span, 5);
@@ -851,13 +855,21 @@ namespace sugar::contract_suite_internal {
         t.expect(first_finite_index(dc_m) == exp_dc, "donchian mid warmup matches contract");
         t.expect(first_finite_index(dc_w) == exp_dc, "donchian width warmup matches contract");
         t.expect(first_finite_index(percentile_hi) == exp_dc, "percentile warmup matches contract");
+        t.expect(first_finite_index(entropy) == 3u, "entropy warmup matches contract");
+        t.expect(first_finite_index(autocorrelation) == 5u, "autocorrelation warmup matches contract");
+        t.expect(first_finite_index(hurst) == 7u, "hurst warmup matches contract");
         t.expect(first_finite_index(macd) == 33u, "macd histogram warmup matches contract");
         t.expect(first_finite_index(bollinger_width) == exp_sd_sma, "bollinger width warmup matches contract");
+        t.expect(first_finite_index(regime_change) == 7u, "regime change warmup matches contract");
         t.expect(first_finite_index(volatility_ratio) == 9u, "volatility ratio warmup matches contract");
 
         bool dc_formula_ok = true;
         bool percentile_ok = true;
+        bool entropy_ok = true;
+        bool autocorrelation_ok = true;
+        bool hurst_ok = true;
         bool bollinger_ok = true;
+        bool regime_change_ok = true;
         bool volatility_ratio_ok = true;
         for (std::size_t i = exp_dc; i < close.size(); ++i) {
             dc_formula_ok =
@@ -867,6 +879,16 @@ namespace sugar::contract_suite_internal {
             percentile_ok =
                 percentile_ok &&
                 equal_or_both_nonfinite(percentile_hi[i], close_roll_max[i]);
+        }
+        for (std::size_t i = 3; i < close.size(); ++i) {
+            entropy_ok = entropy_ok && nearly_equal(entropy[i], std::log(4.0));
+        }
+        for (std::size_t i = 5; i < close.size(); ++i) {
+            autocorrelation_ok = autocorrelation_ok && nearly_equal(autocorrelation[i], 1.0);
+        }
+        for (std::size_t i = 7; i < close.size(); ++i) {
+            hurst_ok = hurst_ok && std::isfinite(hurst[i]) && hurst[i] > 0.0;
+            regime_change_ok = regime_change_ok && std::isfinite(regime_change[i]) && regime_change[i] > 1.0;
         }
         for (std::size_t i = exp_sd_sma; i < close.size(); ++i) {
             if (!std::isfinite(sd_sma[i]) || !std::isfinite(sma_vals[i]) || sma_vals[i] == 0.0) continue;
@@ -880,7 +902,11 @@ namespace sugar::contract_suite_internal {
         }
         t.expect(dc_formula_ok, "donchian mid/width remain derived from upper/lower bands");
         t.expect(percentile_ok, "percentile q=100 remains derived from rolling max");
+        t.expect(entropy_ok, "entropy returns natural-log Shannon entropy for uniform rolling bins");
+        t.expect(autocorrelation_ok, "autocorrelation returns 1 for perfectly linear rolling windows");
+        t.expect(hurst_ok, "hurst returns finite positive rolling R/S estimates for trending finite windows");
         t.expect(bollinger_ok, "bollinger width remains derived from stddev and |sma|");
+        t.expect(regime_change_ok, "regime change returns finite positive CUSUM scores for trending finite windows");
         t.expect(volatility_ratio_ok, "volatility ratio remains derived from fast/slow stddev");
 
         {

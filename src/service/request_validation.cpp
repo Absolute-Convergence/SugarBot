@@ -1,6 +1,7 @@
 #include "service/request_validation.h"
 
 #include <algorithm>
+#include <limits>
 
 #include "ops/op_registry.h"
 #include "sweep/sweep.h"
@@ -9,6 +10,26 @@ namespace sugar::service {
 
     namespace {
         bool plan_spec_has_sweep(const PlanSpec& plan);
+        constexpr std::size_t kBaselineSweepRows = 1000;
+        constexpr std::size_t kBaselineExhaustiveCandidatesPerMinute = 200000;
+        constexpr std::size_t kBaselineCoarseFineCandidatesPerMinute = 20000;
+        constexpr std::size_t kBaselineMonteCarloCandidatesPerMinute = 30000;
+
+        std::size_t estimate_payload_data_row_count(std::string_view csv_text) {
+            if (csv_text.empty()) {
+                return 0;
+            }
+
+            std::size_t physical_lines = static_cast<std::size_t>(
+                std::count(csv_text.begin(), csv_text.end(), '\n'));
+            if (!csv_text.empty() && csv_text.back() != '\n') {
+                ++physical_lines;
+            }
+            if (physical_lines == 0) {
+                return 0;
+            }
+            return physical_lines > 1 ? (physical_lines - 1) : 0;
+        }
 
         std::size_t sweep_warning_candidate_count(const QuotaConfig& quotas) {
             if (quotas.max_sweep_candidate_count == 0 ||
@@ -22,9 +43,39 @@ namespace sugar::service {
             return numerator / quotas.sweep_reject_minutes;
         }
 
+        std::size_t expected_sweep_evaluation_count(
+            const PlanSweepSpec& sweep,
+            const PlanSpecSweepDims& dims) {
+            const std::size_t total_combinations = dims.total_combinations();
+            const bool total_overflow =
+                total_combinations == std::numeric_limits<std::size_t>::max();
+
+            if (sweep.engine == PlanSweepEngineKind::MonteCarlo) {
+                const std::size_t requested_draws =
+                    sweep.monte_carlo.draws_explicit
+                    ? sweep.monte_carlo.draws
+                    : sweep.max_evals;
+                std::size_t count = sweep.max_evals > 0
+                    ? std::min(requested_draws, sweep.max_evals)
+                    : requested_draws;
+                if (sweep.monte_carlo.dedupe && !total_overflow) {
+                    count = std::min(count, total_combinations);
+                }
+                return count;
+            }
+
+            if (total_overflow) {
+                return sweep.max_evals;
+            }
+            return sweep.max_evals > 0
+                ? std::min(total_combinations, sweep.max_evals)
+                : total_combinations;
+        }
+
         bool fill_sweep_policy_metadata(
             const PlanSpec& plan,
             const QuotaConfig& quotas,
+            std::size_t estimated_row_count,
             ValidationMetadata& metadata,
             std::string& err) {
             metadata.sweep_candidate_count = 0;
@@ -42,12 +93,12 @@ namespace sugar::service {
                 return false;
             }
 
-            std::size_t candidate_count = dims.total_combinations();
-            if (plan.sweep->max_evals > 0 && candidate_count > plan.sweep->max_evals) {
-                candidate_count = plan.sweep->max_evals;
-            }
+            std::size_t candidate_count = expected_sweep_evaluation_count(*plan.sweep, dims);
             metadata.sweep_candidate_count = candidate_count;
-            metadata.estimated_sweep_minutes = estimate_sweep_runtime_minutes(candidate_count, quotas);
+            metadata.estimated_sweep_minutes = estimate_sweep_runtime_minutes(
+                candidate_count,
+                estimated_row_count,
+                plan.sweep->engine);
             metadata.long_sweep_warning = metadata_has_long_sweep_warning(metadata, quotas);
 
             if (quotas.max_sweep_candidate_count > 0 &&
@@ -170,16 +221,27 @@ namespace sugar::service {
 
     std::size_t estimate_sweep_runtime_minutes(
         std::size_t sweep_candidate_count,
-        const QuotaConfig& quotas) {
-        if (sweep_candidate_count == 0 ||
-            quotas.max_sweep_candidate_count == 0 ||
-            quotas.sweep_reject_minutes == 0) {
+        std::size_t estimated_row_count,
+        PlanSweepEngineKind engine) {
+        if (sweep_candidate_count == 0) {
             return 0;
         }
+
+        const std::size_t baseline_candidates_per_minute =
+            engine == PlanSweepEngineKind::CoarseFine
+            ? kBaselineCoarseFineCandidatesPerMinute
+            : engine == PlanSweepEngineKind::MonteCarlo
+            ? kBaselineMonteCarloCandidatesPerMinute
+            : kBaselineExhaustiveCandidatesPerMinute;
+
+        const std::size_t scaled_rows =
+            std::max<std::size_t>(1, std::max(estimated_row_count, kBaselineSweepRows));
         const std::size_t numerator =
-            (sweep_candidate_count * quotas.sweep_reject_minutes) +
-            (quotas.max_sweep_candidate_count - 1);
-        return numerator / quotas.max_sweep_candidate_count;
+            sweep_candidate_count * scaled_rows +
+            (baseline_candidates_per_minute * kBaselineSweepRows) - 1;
+        const std::size_t denominator =
+            baseline_candidates_per_minute * kBaselineSweepRows;
+        return std::max<std::size_t>(1, numerator / denominator);
     }
 
     bool metadata_has_long_sweep_warning(
@@ -199,14 +261,16 @@ namespace sugar::service {
         }
 
         return
-            "warning: estimated sweep duration " +
-            std::to_string(metadata.estimated_sweep_minutes) +
-            " minutes exceeds the hosted warning threshold of " +
-            std::to_string(quotas.sweep_warning_minutes) +
-            " minutes (candidate-count estimate: " +
+            "warning: sweep candidate estimate " +
             std::to_string(metadata.sweep_candidate_count) +
-            " of " +
+            " exceeds the hosted warning budget of " +
+            std::to_string(sweep_warning_candidate_count(quotas)) +
+            " candidates (limit " +
             std::to_string(quotas.max_sweep_candidate_count) +
+            ", rough runtime estimate about " +
+            std::to_string(metadata.estimated_sweep_minutes) +
+            " minute" +
+            (metadata.estimated_sweep_minutes == 1 ? "" : "s") +
             ")";
     }
 
@@ -214,14 +278,14 @@ namespace sugar::service {
         const ValidationMetadata& metadata,
         const QuotaConfig& quotas) {
         return
-            "request exceeds hosted sweep budget: estimated sweep duration " +
-            std::to_string(metadata.estimated_sweep_minutes) +
-            " minutes exceeds the " +
-            std::to_string(quotas.sweep_reject_minutes) +
-            "-minute limit (candidate-count estimate: " +
+            "request exceeds hosted sweep candidate budget: estimated candidate count " +
             std::to_string(metadata.sweep_candidate_count) +
-            " of " +
+            " exceeds the configured limit of " +
             std::to_string(quotas.max_sweep_candidate_count) +
+            " (rough runtime estimate about " +
+            std::to_string(metadata.estimated_sweep_minutes) +
+            " minute" +
+            (metadata.estimated_sweep_minutes == 1 ? "" : "s") +
             ")";
     }
 
@@ -279,7 +343,12 @@ namespace sugar::service {
             err = "failed to parse logic spec: " + err;
             return false;
         }
-        if (!fill_sweep_policy_metadata(plan, quotas, metadata, err)) {
+        if (!fill_sweep_policy_metadata(
+                plan,
+                quotas,
+                estimate_payload_data_row_count(request.data.content),
+                metadata,
+                err)) {
             return false;
         }
 
@@ -334,7 +403,12 @@ namespace sugar::service {
         }
 
         const bool has_sweep = plan_spec_has_sweep(out.plan);
-        if (!fill_sweep_policy_metadata(out.plan, quotas, out.metadata, err)) {
+        if (!fill_sweep_policy_metadata(
+                out.plan,
+                quotas,
+                out.metadata.row_count,
+                out.metadata,
+                err)) {
             return false;
         }
 

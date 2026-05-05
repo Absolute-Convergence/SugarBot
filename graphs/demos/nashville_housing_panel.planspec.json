@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "name": "demo_nashville_housing_panel",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "params": {
+    "price_mom_n": 12,
+    "activity_n": 6,
+    "trend_fast": 6,
+    "trend_slow": 18,
+    "score_n": 24,
+    "entry_score": 0.58,
+    "exit_score": 0.42,
+    "sale_to_list_hot": 99.0
+  },
+  "numeric_nodes": [
+    { "id": "price", "op": "core.close" },
+    { "id": "homes", "op": "core.ref", "params": { "ref": "homes_sold" } },
+    { "id": "listings", "op": "core.ref", "params": { "ref": "new_listings" } },
+    { "id": "inventory", "op": "core.ref", "params": { "ref": "inventory" } },
+    { "id": "dom", "op": "core.ref", "params": { "ref": "days_on_market" } },
+    { "id": "sale_to_list", "op": "core.ref", "params": { "ref": "average_sale_to_list" } },
+    { "id": "price_mom", "op": "ts.roc", "args": ["price"], "params": { "k": { "ref": "price_mom_n" } } },
+    { "id": "homes_mom", "op": "ts.roc", "args": ["homes"], "params": { "k": { "ref": "activity_n" } } },
+    { "id": "listings_mom", "op": "ts.roc", "args": ["listings"], "params": { "k": { "ref": "activity_n" } } },
+    { "id": "inventory_mom", "op": "ts.roc", "args": ["inventory"], "params": { "k": { "ref": "activity_n" } } },
+    { "id": "dom_mom", "op": "ts.roc", "args": ["dom"], "params": { "k": { "ref": "activity_n" } } },
+    { "id": "price_fast", "op": "ts.ema", "args": ["price"], "params": { "n": { "ref": "trend_fast" } } },
+    { "id": "price_slow", "op": "ts.ema", "args": ["price"], "params": { "n": { "ref": "trend_slow" } } },
+    { "id": "trend_spread", "op": "ts.sub", "args": ["price_fast", "price_slow"] },
+    { "id": "abs_trend", "op": "ts.abs", "args": ["trend_spread"] },
+    { "id": "price_mom_norm", "op": "ts.normalize_minmax", "args": ["price_mom"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "homes_norm", "op": "ts.normalize_minmax", "args": ["homes_mom"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "listings_norm", "op": "ts.normalize_minmax", "args": ["listings_mom"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "inventory_norm", "op": "ts.normalize_minmax", "args": ["inventory_mom"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "dom_norm", "op": "ts.normalize_minmax", "args": ["dom_mom"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "sale_norm", "op": "ts.normalize_minmax", "args": ["sale_to_list"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "trend_norm", "op": "ts.normalize_minmax", "args": ["abs_trend"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "demand_a", "op": "ts.add", "args": ["price_mom_norm", "homes_norm"] },
+    { "id": "demand_b", "op": "ts.add", "args": ["demand_a", "sale_norm"] },
+    { "id": "supply_a", "op": "ts.add", "args": ["inventory_norm", "listings_norm"] },
+    { "id": "supply_b", "op": "ts.add", "args": ["supply_a", "dom_norm"] },
+    { "id": "heat_raw_a", "op": "ts.sub", "args": ["demand_b", "supply_b"] },
+    { "id": "heat_raw", "op": "ts.add", "args": ["heat_raw_a", "trend_norm"] },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "market_heat_floor", "op": "core.select", "args": ["heat_positive", "heat_raw", "zero"] },
+    { "id": "market_heat_score", "op": "ts.normalize_minmax", "args": ["market_heat_floor"], "params": { "n": { "ref": "score_n" } } },
+    { "id": "entry_level", "op": "core.const", "params": { "value": { "ref": "entry_score" } } },
+    { "id": "exit_level", "op": "core.const", "params": { "value": { "ref": "exit_score" } } },
+    { "id": "sale_to_list_level", "op": "core.const", "params": { "value": { "ref": "sale_to_list_hot" } } }
+  ],
+  "bool_nodes": [
+    { "id": "heat_positive", "op": "cmp.gt", "args": ["heat_raw", "zero"] },
+    { "id": "trend_up", "op": "cmp.gt", "args": ["trend_spread", "zero"] },
+    { "id": "trend_down", "op": "cmp.lt", "args": ["trend_spread", "zero"] },
+    { "id": "price_mom_up", "op": "cmp.gt", "args": ["price_mom", "zero"] },
+    { "id": "inventory_falling", "op": "cmp.lt", "args": ["inventory_mom", "zero"] },
+    { "id": "dom_falling", "op": "cmp.lt", "args": ["dom_mom", "zero"] },
+    { "id": "sale_hot", "op": "cmp.gt", "args": ["sale_to_list", "sale_to_list_level"] },
+    { "id": "score_entry", "op": "cmp.gt", "args": ["market_heat_score", "entry_level"] },
+    { "id": "score_exit", "op": "cmp.lt", "args": ["market_heat_score", "exit_level"] },
+    { "id": "entry_a", "op": "logic.and", "args": ["trend_up", "price_mom_up"] },
+    { "id": "entry_b", "op": "logic.and", "args": ["entry_a", "inventory_falling"] },
+    { "id": "entry_c", "op": "logic.and", "args": ["entry_b", "dom_falling"] },
+    { "id": "entry_d", "op": "logic.and", "args": ["entry_c", "sale_hot"] },
+    { "id": "entry_l", "op": "logic.and", "args": ["entry_d", "score_entry"] },
+    { "id": "exit_a", "op": "logic.or", "args": ["trend_down", "score_exit"] },
+    { "id": "exit_l", "op": "logic.or", "args": ["exit_a", "dom_falling"] },
+    { "id": "allow_trade", "op": "logic.or", "args": ["score_entry", "sale_hot"] }
+  ],
+  "bindings": {
+    "entry_long": "entry_l",
+    "exit_long": "exit_l",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": "allow_trade"
+  },
+  "run": {
+    "scope": "per_entity_ranked",
+    "top_k": 4,
+    "objective": {
+      "value": {
+        "source": "reported_metric",
+        "name": "pnl"
+      },
+      "penalties": [
+        {
+          "value": {
+            "source": "reported_metric",
+            "name": "max_drawdown"
+          },
+          "weight": 1.0
+        }
+      ],
+      "direction": "maximize",
+      "tie_breaks": [
+        { "value": { "source": "reported_metric", "name": "trades" }, "direction": "maximize" }
+      ]
+    }
+  }
+}

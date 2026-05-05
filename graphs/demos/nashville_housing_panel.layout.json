@@ -1,8 +1,9 @@
 {
+  "input_profile": "auto",
   "time_col": "month_ym",
   "time_kind": "YearMonth",
-  "header_policy": "RequiredHeaders",
   "entity_col": "region",
+  "header_policy": "RequiredHeaders",
   "value_cols": [
     "median_sale_price",
     "homes_sold",
@@ -12,8 +13,11 @@
     "average_sale_to_list"
   ],
   "primary_value_col": "median_sale_price",
-  "missing_tokens": ["", "NA", "null", "N/A"],
+  "missing_tokens": ["", "NA", "null", "nan", "NaN"],
   "missing_default": { "kind": "NaN" },
   "sort_by_time": true,
-  "dedupe": "Last"
+  "dedupe": "Error",
+  "alignment_calendar": "Intersection",
+  "alignment_non_temporal_multi_series": "Reject"
 }
+

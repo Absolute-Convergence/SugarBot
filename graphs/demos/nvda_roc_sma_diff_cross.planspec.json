@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "name": "demo_nvda_roc_sma_diff_cross",
+  "trade_mode": "LongShort",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": true,
+    "close_out_at_end": true
+  },
+  "params": {
+    "fast_len": 50,
+    "slow_len": 51,
+    "roc_len": 100,
+    "thresh": 0.15
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "fast_sma", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "fast_len" } } },
+    { "id": "slow_sma", "op": "ts.sma", "args": ["c"], "params": { "n": { "ref": "slow_len" } } },
+    { "id": "fast_roc", "op": "ts.roc", "args": ["fast_sma"], "params": { "k": { "ref": "roc_len" } } },
+    { "id": "slow_roc", "op": "ts.roc", "args": ["slow_sma"], "params": { "k": { "ref": "roc_len" } } },
+    { "id": "diff", "op": "ts.sub", "args": ["fast_roc", "slow_roc"] },
+    { "id": "pos_thresh", "op": "core.const", "params": { "value": { "ref": "thresh" } } },
+    { "id": "neg_thresh", "op": "ts.neg", "args": ["pos_thresh"] }
+  ],
+  "bool_nodes": [
+    { "id": "entry_l", "op": "cmp.cross_up", "args": ["diff", "pos_thresh"] },
+    { "id": "exit_l", "op": "cmp.cross_down", "args": ["diff", "neg_thresh"] },
+    { "id": "entry_s", "op": "cmp.cross_down", "args": ["diff", "neg_thresh"] },
+    { "id": "exit_s", "op": "cmp.cross_up", "args": ["diff", "pos_thresh"] }
+  ],
+  "bindings": {
+    "entry_long": "entry_l",
+    "exit_long": "exit_l",
+    "entry_short": "entry_s",
+    "exit_short": "exit_s",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "exhaustive",
+    "top_k": 8,
+    "max_evals": 336000,
+    "objective": "pnl_dd",
+    "dd_weight": 1.0,
+    "result_diversity": {
+      "enabled": true,
+      "dedupe_trade_hash": true,
+      "basin_aware": true,
+      "oversample_multiplier": 1000,
+      "max_per_basin": 1,
+      "param_bucket_size": 3,
+      "min_param_distance": 1,
+      "min_trades": 8
+    },
+    "params": {
+      "fast_len": { "values": [8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 50], "is_int": true },
+      "slow_len": { "values": [55, 60, 65, 70, 75, 80, 85, 90, 100, 110, 120, 135, 150, 165, 180, 200, 225, 250, 280, 320], "is_int": true },
+      "roc_len": { "values": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 220, 240, 260], "is_int": true },
+      "thresh": { "min": 0.01, "max": 0.59, "step": 0.02, "is_int": false }
+    }
+  }
+}

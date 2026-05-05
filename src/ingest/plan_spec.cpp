@@ -440,18 +440,25 @@ namespace sugar {
             const auto& o = v.as_obj();
 
             // Optional: is_int
+            bool has_explicit_is_int = false;
             if (auto* p = obj_get(o, "is_int")) {
                 if (!p->is_bool()) { err = "is_int must be bool"; return false; }
                 out.is_int = p->as_bool();
+                has_explicit_is_int = true;
             }
 
             // Discrete values mode
             if (auto* pv = obj_get(o, "values")) {
                 if (!pv->is_arr()) { err = "values must be array"; return false; }
                 out.values.clear();
+                bool has_fractional_literal = false;
                 for (const auto& it : pv->as_arr()) {
                     if (!it.is_num()) { err = "values entries must be numbers"; return false; }
+                    has_fractional_literal = has_fractional_literal || it.is_f64();
                     out.values.push_back(it.number_as_f64());
+                }
+                if (!has_explicit_is_int && has_fractional_literal) {
+                    out.is_int = false;
                 }
                 return true;
             }
@@ -466,9 +473,14 @@ namespace sugar {
             out.min = vmin->number_as_f64();
             out.max = vmax->number_as_f64();
             out.step = 1.0;
+            bool has_fractional_literal = vmin->is_f64() || vmax->is_f64();
             if (auto* vs = obj_get(o, "step")) {
                 if (!vs->is_num()) { err = "step must be number"; return false; }
+                has_fractional_literal = has_fractional_literal || vs->is_f64();
                 out.step = vs->number_as_f64();
+            }
+            if (!has_explicit_is_int && has_fractional_literal) {
+                out.is_int = false;
             }
             if (out.step <= 0.0) { err = "step must be > 0"; return false; }
             if (out.max < out.min) { err = "max must be >= min"; return false; }
@@ -563,6 +575,12 @@ namespace sugar {
                         if (n <= 0) { err = "sweep.engine_config.coarse_fine.stage2_hops must be > 0"; return false; }
                         out.coarse_fine.stage2_hops = static_cast<std::size_t>(n);
                     }
+                    if (auto* x = obj_get(cfo, "coarse_step_multiplier")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.coarse_fine.coarse_step_multiplier must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.coarse_fine.coarse_step_multiplier must be >= 0"; return false; }
+                        out.coarse_fine.coarse_step_multiplier = static_cast<std::size_t>(n);
+                    }
                     if (auto* x = obj_get(cfo, "stage1_stride")) {
                         std::int64_t n = 0;
                         if (!as_i64(*x, n)) { err = "sweep.engine_config.coarse_fine.stage1_stride must be number"; return false; }
@@ -580,6 +598,7 @@ namespace sugar {
                         if (!as_i64(*x, n)) { err = "sweep.engine_config.monte_carlo.draws must be number"; return false; }
                         if (n <= 0) { err = "sweep.engine_config.monte_carlo.draws must be > 0"; return false; }
                         out.monte_carlo.draws = static_cast<std::size_t>(n);
+                        out.monte_carlo.draws_explicit = true;
                     }
                     if (auto* x = obj_get(mco, "seed")) {
                         std::int64_t n = 0;
@@ -600,6 +619,55 @@ namespace sugar {
                 }
             }
 
+            if (auto* p = obj_get(o, "result_diversity")) {
+                if (!p->is_obj()) { err = "sweep.result_diversity must be object"; return false; }
+                const auto& rdo = p->as_obj();
+                out.result_diversity.enabled = true;
+
+                if (auto* x = obj_get(rdo, "enabled")) {
+                    if (!x->is_bool()) { err = "sweep.result_diversity.enabled must be bool"; return false; }
+                    out.result_diversity.enabled = x->as_bool();
+                }
+                if (auto* x = obj_get(rdo, "dedupe_trade_hash")) {
+                    if (!x->is_bool()) { err = "sweep.result_diversity.dedupe_trade_hash must be bool"; return false; }
+                    out.result_diversity.dedupe_trade_hash = x->as_bool();
+                }
+                if (auto* x = obj_get(rdo, "basin_aware")) {
+                    if (!x->is_bool()) { err = "sweep.result_diversity.basin_aware must be bool"; return false; }
+                    out.result_diversity.basin_aware = x->as_bool();
+                }
+                if (auto* x = obj_get(rdo, "oversample_multiplier")) {
+                    std::int64_t n = 0;
+                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.oversample_multiplier must be number"; return false; }
+                    if (n <= 0) { err = "sweep.result_diversity.oversample_multiplier must be > 0"; return false; }
+                    out.result_diversity.oversample_multiplier = static_cast<std::size_t>(n);
+                }
+                if (auto* x = obj_get(rdo, "max_per_basin")) {
+                    std::int64_t n = 0;
+                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.max_per_basin must be number"; return false; }
+                    if (n <= 0) { err = "sweep.result_diversity.max_per_basin must be > 0"; return false; }
+                    out.result_diversity.max_per_basin = static_cast<std::size_t>(n);
+                }
+                if (auto* x = obj_get(rdo, "param_bucket_size")) {
+                    std::int64_t n = 0;
+                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.param_bucket_size must be number"; return false; }
+                    if (n <= 0) { err = "sweep.result_diversity.param_bucket_size must be > 0"; return false; }
+                    out.result_diversity.param_bucket_size = static_cast<std::size_t>(n);
+                }
+                if (auto* x = obj_get(rdo, "min_param_distance")) {
+                    std::int64_t n = 0;
+                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.min_param_distance must be number"; return false; }
+                    if (n < 0) { err = "sweep.result_diversity.min_param_distance must be >= 0"; return false; }
+                    out.result_diversity.min_param_distance = static_cast<std::size_t>(n);
+                }
+                if (auto* x = obj_get(rdo, "min_trades")) {
+                    std::int64_t n = 0;
+                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.min_trades must be number"; return false; }
+                    if (n < 0) { err = "sweep.result_diversity.min_trades must be >= 0"; return false; }
+                    out.result_diversity.min_trades = static_cast<std::size_t>(n);
+                }
+            }
+
             if (auto* p = obj_get(o, "params")) {
                 if (!p->is_obj()) { err = "sweep.params must be object"; return false; }
                 out.params.clear();
@@ -612,6 +680,10 @@ namespace sugar {
                     }
                     out.params[kv.first] = std::move(r);
                 }
+            }
+
+            if (out.engine == PlanSweepEngineKind::MonteCarlo && !out.monte_carlo.draws_explicit) {
+                out.monte_carlo.draws = out.max_evals;
             }
 
             return true;

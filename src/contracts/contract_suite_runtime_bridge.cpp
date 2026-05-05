@@ -407,8 +407,12 @@ bool test_operator_axis_contracts(ContractAsserts& t) {
         expect_op("cmp.cross_down", OpAxisScope::TimeSeries, {AxisKind::Time}, "cmp.cross_down");
         expect_op("ts.sma", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.sma");
         expect_op("ts.percentile", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.percentile");
+        expect_op("ts.entropy", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.entropy");
+        expect_op("ts.autocorrelation", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.autocorrelation");
+        expect_op("ts.hurst", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.hurst");
         expect_op("ts.macd", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.macd");
         expect_op("ts.bollinger_width", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.bollinger_width");
+        expect_op("ts.regime_change", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.regime_change");
         expect_op("ts.volatility_ratio", OpAxisScope::TimeSeries, {AxisKind::Time}, "ts.volatility_ratio");
         expect_op("ts.neg", OpAxisScope::RowWise, {}, "ts.neg");
         expect_op("ts.add", OpAxisScope::RowWise, {}, "ts.add");
@@ -518,6 +522,7 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
             "ts.add",
             "ts.atr",
             "ts.atr_wilder",
+            "ts.autocorrelation",
             "ts.bollinger_width",
             "ts.clamp",
             "ts.clamp_const",
@@ -528,7 +533,9 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
             "ts.donchian_width",
             "ts.div",
             "ts.ema",
+            "ts.entropy",
             "ts.exp",
+            "ts.hurst",
             "ts.log",
             "ts.macd",
             "ts.max",
@@ -540,6 +547,7 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
             "ts.percentile",
             "ts.pow_const",
             "ts.ratio_of_ma",
+            "ts.regime_change",
             "ts.roc",
             "ts.roll_max",
             "ts.roll_min",
@@ -835,11 +843,11 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
             sweep_cfg.max_evals = 3;
             dims = PlanSpecSweepDims{};
             err.clear();
-            const bool capped_ok = build_planspec_sweep_dims(sweep_cfg, dims, err);
-            t.expect(capped_ok, "PlanSpec sweep dim expansion stays valid under per-dimension capping");
-            if (capped_ok) {
-                t.expect(dims.values.size() == 1 && dims.values.front().size() == 3,
-                    "PlanSpec sweep dim expansion caps indexed growth at max_evals");
+            const bool uncapped_ok = build_planspec_sweep_dims(sweep_cfg, dims, err);
+            t.expect(uncapped_ok, "PlanSpec sweep dim expansion stays valid when max_evals is smaller than the declared range");
+            if (uncapped_ok) {
+                t.expect(dims.values.size() == 1 && dims.values.front().size() == 4,
+                    "PlanSpec sweep dim expansion preserves the full declared range instead of capping at max_evals");
             }
         }
 
@@ -1291,6 +1299,381 @@ bool test_compile_bridge_registry_surface_contracts(ContractAsserts& t) {
                     });
                 t.expect(progress_has_live_leader,
                     "phase 6 sweep progress exposes a live ranked leader snapshot with parameter values");
+            }
+
+            PlanSpec monte_carlo_spec{};
+            monte_carlo_spec.version = 1;
+            monte_carlo_spec.name = "contract_phase6_monte_carlo_budget";
+            monte_carlo_spec.trade_mode = TradeMode::LongOnly;
+            monte_carlo_spec.params["alpha"] = static_cast<std::int64_t>(1);
+            monte_carlo_spec.numeric_nodes = {
+                NodeSpec{ "zero", "core.const", {}, ParamMap{ {"value", 0.0} } },
+                NodeSpec{ "one", "core.const", {}, ParamMap{ {"value", 1.0} } },
+                NodeSpec{ "score_value", "core.const", {}, ParamMap{ {"value", ParamRef{ "alpha" }} } }
+            };
+            monte_carlo_spec.bool_nodes = {
+                NodeSpec{ "entry", "cmp.gt", { "one", "zero" }, {} }
+            };
+            monte_carlo_spec.bind.entry_long = "entry";
+
+            PlanSweepSpec monte_carlo_cfg{};
+            monte_carlo_cfg.enabled = true;
+            monte_carlo_cfg.engine = PlanSweepEngineKind::MonteCarlo;
+            monte_carlo_cfg.top_k = 2;
+            monte_carlo_cfg.max_evals = 3;
+            monte_carlo_cfg.monte_carlo.draws = 10;
+            monte_carlo_cfg.monte_carlo.seed = 12345;
+            monte_carlo_cfg.monte_carlo.dedupe = true;
+            monte_carlo_cfg.objective_spec = RankingObjectiveSpec{};
+            monte_carlo_cfg.objective_spec->primary.source = ObjectiveValueSource::NumericNodeOutput;
+            monte_carlo_cfg.objective_spec->primary.name = "score_value";
+            monte_carlo_cfg.objective_spec->direction = ObjectiveDirection::Maximize;
+            SweepParamRange monte_carlo_alpha_range{};
+            monte_carlo_alpha_range.min = 1.0;
+            monte_carlo_alpha_range.max = 10.0;
+            monte_carlo_alpha_range.step = 1.0;
+            monte_carlo_alpha_range.is_int = true;
+            monte_carlo_cfg.params["alpha"] = monte_carlo_alpha_range;
+            monte_carlo_spec.sweep = monte_carlo_cfg;
+
+            std::vector<SweepProgress> monte_carlo_progress_log;
+            PlanSweepRuntimeOptions monte_carlo_opt{};
+            monte_carlo_opt.progress_cb = [&](const SweepProgress& progress) {
+                monte_carlo_progress_log.push_back(progress);
+            };
+
+            std::ostringstream monte_carlo_log;
+            BacktestResult monte_carlo_best{};
+            PlanSweepReport monte_carlo_report{};
+            const bool monte_carlo_ok = run_custom_plan_spec(
+                dv,
+                primary,
+                monte_carlo_spec,
+                monte_carlo_opt,
+                monte_carlo_log,
+                &monte_carlo_best,
+                &monte_carlo_report);
+            t.expect(monte_carlo_ok, "phase 6 monte carlo objective sweep executes through custom runtime");
+            if (monte_carlo_ok) {
+                const bool saw_monte_carlo_progress = std::any_of(
+                    monte_carlo_progress_log.begin(),
+                    monte_carlo_progress_log.end(),
+                    [](const SweepProgress& progress) {
+                        return progress.stage == SweepProgressStage::MonteCarloSampling &&
+                            progress.stage_done == 3 &&
+                            progress.stage_total == 3;
+                    });
+                t.expect(saw_monte_carlo_progress,
+                    "phase 6 progress stream reports effective monte carlo draws after max_evals capping");
+                t.expect(monte_carlo_report.candidate_space_size == 10 && !monte_carlo_report.candidate_space_truncated,
+                    "phase 6 structured sweep report preserves the full monte carlo search space");
+                t.expect(monte_carlo_report.evaluations_run == 3,
+                    "phase 6 structured sweep report preserves capped monte carlo evaluation count");
+                const bool has_full_alpha_range =
+                    monte_carlo_report.parameter_ranges.size() == 1 &&
+                    monte_carlo_report.parameter_ranges.front().name == "alpha" &&
+                    monte_carlo_report.parameter_ranges.front().expanded_count == 10;
+                t.expect(has_full_alpha_range,
+                    "phase 6 structured sweep report preserves full declared range expansion under monte carlo");
+                const bool report_has_monte_carlo_stage = std::any_of(
+                    monte_carlo_report.stage_summaries.begin(),
+                    monte_carlo_report.stage_summaries.end(),
+                    [](const SweepStageSummary& stage) {
+                        return stage.stage == SweepProgressStage::MonteCarloSampling &&
+                            stage.done == 3 &&
+                            stage.total == 3;
+                    });
+                t.expect(report_has_monte_carlo_stage,
+                    "phase 6 structured sweep report preserves effective monte carlo draw totals");
+            }
+
+            const std::string default_draws_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_monte_carlo_default_draws_follow_max_evals",
+  "trade_mode": "LongOnly",
+  "params": { "alpha": 1 },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "score_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": { "entry_long": "entry", "exit_long": "", "entry_short": "", "exit_short": "", "allow_trade": "" },
+  "sweep": {
+    "enabled": true,
+    "engine": "monte_carlo",
+    "top_k": 2,
+    "max_evals": 7,
+    "objective": { "value": { "source": "numeric_node_output", "name": "score_value" }, "direction": "maximize" },
+    "params": {
+      "alpha": { "min": 1, "max": 10, "step": 1, "is_int": true }
+    }
+  }
+}
+)JSON";
+            PlanSpec default_draws_spec{};
+            std::string default_draws_err{};
+            const bool default_draws_parsed =
+                parse_plan_spec_json(default_draws_json, default_draws_spec, default_draws_err);
+            t.expect(default_draws_parsed,
+                "PlanSpec parser accepts monte_carlo sweep with omitted draws");
+            if (default_draws_parsed) {
+                t.expect(default_draws_spec.sweep.has_value() &&
+                        default_draws_spec.sweep->monte_carlo.draws == 7 &&
+                        !default_draws_spec.sweep->monte_carlo.draws_explicit,
+                    "omitted monte_carlo draws defaults to the user-facing max_evals budget");
+
+                std::ostringstream default_draws_log;
+                BacktestResult default_draws_best{};
+                PlanSweepReport default_draws_report{};
+                const bool default_draws_ok = run_custom_plan_spec(
+                    dv,
+                    primary,
+                    default_draws_spec,
+                    PlanSweepRuntimeOptions{},
+                    default_draws_log,
+                    &default_draws_best,
+                    &default_draws_report);
+                t.expect(default_draws_ok,
+                    "monte_carlo sweep with omitted draws executes through custom runtime");
+                if (default_draws_ok) {
+                    t.expect(default_draws_report.evaluations_run == 7,
+                        "omitted monte_carlo draws runs max_evals evaluations instead of the old 10000 default ceiling");
+                    t.expect(default_draws_report.requested_sweep.monte_carlo.draws == 7,
+                        "structured monte_carlo report shows the effective default draw count");
+                }
+            }
+
+            const std::string coarse_multiplier_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_coarse_step_multiplier_budget",
+  "trade_mode": "LongOnly",
+  "params": { "alpha": 1, "beta": 1, "gamma": 1 },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "score_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": { "entry_long": "entry", "exit_long": "", "entry_short": "", "exit_short": "", "allow_trade": "" },
+  "sweep": {
+    "enabled": true,
+    "engine": "coarse_fine",
+    "top_k": 2,
+    "max_evals": 40,
+    "objective": { "value": { "source": "numeric_node_output", "name": "score_value" }, "direction": "maximize" },
+    "params": {
+      "alpha": { "min": 1, "max": 4, "step": 1, "is_int": true },
+      "beta": { "min": 1, "max": 4, "step": 1, "is_int": true },
+      "gamma": { "min": 1, "max": 4, "step": 1, "is_int": true }
+    },
+    "engine_config": {
+      "coarse_fine": {
+        "k_stage1": 4,
+        "k_stage2": 2,
+        "coarse_step_multiplier": 2,
+        "depollute_stage1": false,
+        "dedupe_stage2": true
+      }
+    }
+  }
+}
+)JSON";
+            PlanSpec coarse_multiplier_spec{};
+            std::string coarse_multiplier_err{};
+            const bool coarse_multiplier_parsed =
+                parse_plan_spec_json(coarse_multiplier_json, coarse_multiplier_spec, coarse_multiplier_err);
+            t.expect(coarse_multiplier_parsed,
+                "PlanSpec parser accepts coarse_step_multiplier for coarse_fine sweeps");
+            if (coarse_multiplier_parsed) {
+                std::vector<SweepProgress> coarse_multiplier_progress;
+                PlanSweepRuntimeOptions coarse_multiplier_opt{};
+                coarse_multiplier_opt.progress_cb = [&](const SweepProgress& progress) {
+                    coarse_multiplier_progress.push_back(progress);
+                };
+
+                std::ostringstream coarse_multiplier_log;
+                BacktestResult coarse_multiplier_best{};
+                PlanSweepReport coarse_multiplier_report{};
+                const bool coarse_multiplier_ok = run_custom_plan_spec(
+                    dv,
+                    primary,
+                    coarse_multiplier_spec,
+                    coarse_multiplier_opt,
+                    coarse_multiplier_log,
+                    &coarse_multiplier_best,
+                    &coarse_multiplier_report);
+                t.expect(coarse_multiplier_ok,
+                    "coarse_fine sweep with coarse_step_multiplier executes through custom runtime");
+                if (coarse_multiplier_ok) {
+                    t.expect(coarse_multiplier_report.requested_sweep.coarse_fine.coarse_step_multiplier == 2,
+                        "structured coarse_fine report preserves the configured coarse_step_multiplier");
+                    t.expect(coarse_multiplier_report.evaluations_run == 40,
+                        "coarse_fine sweep uses the remaining max_evals budget for local refinement");
+                    t.expect(coarse_multiplier_report.requested_sweep.coarse_fine.stage2_hops > 1,
+                        "coarse_fine sweep derives a wider refinement radius when the default would underuse max_evals");
+                    const bool coarse_stage_was_strided = std::any_of(
+                        coarse_multiplier_report.stage_summaries.begin(),
+                        coarse_multiplier_report.stage_summaries.end(),
+                        [](const SweepStageSummary& stage) {
+                            return stage.stage == SweepProgressStage::CoarseSearch &&
+                                stage.done == 8 &&
+                                stage.total == 8;
+                        });
+                    t.expect(coarse_stage_was_strided,
+                        "coarse_step_multiplier samples every Nth value per dimension instead of scanning the full fine grid");
+                    t.expect(coarse_multiplier_log.str().find("coarse step multiplier: 2") != std::string::npos,
+                        "coarse_fine sweep output makes the effective coarse multiplier visible");
+                }
+            }
+
+            const std::string trade_hash_diversity_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_trade_hash_result_diversity",
+  "trade_mode": "LongOnly",
+  "params": { "alpha": 1, "beta": 1 },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "score_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": { "entry_long": "entry", "exit_long": "", "entry_short": "", "exit_short": "", "allow_trade": "" },
+  "sweep": {
+    "enabled": true,
+    "top_k": 3,
+    "max_evals": 16,
+    "objective": { "value": { "source": "numeric_node_output", "name": "score_value" }, "direction": "maximize" },
+    "result_diversity": {
+      "dedupe_trade_hash": true,
+      "oversample_multiplier": 8,
+      "min_trades": 1
+    },
+    "params": {
+      "alpha": { "min": 1, "max": 4, "step": 1, "is_int": true },
+      "beta": { "min": 1, "max": 4, "step": 1, "is_int": true }
+    }
+  }
+}
+)JSON";
+            PlanSpec trade_hash_diversity_spec{};
+            std::string trade_hash_diversity_err{};
+            const bool trade_hash_diversity_parsed =
+                parse_plan_spec_json(
+                    trade_hash_diversity_json,
+                    trade_hash_diversity_spec,
+                    trade_hash_diversity_err);
+            t.expect(trade_hash_diversity_parsed,
+                "PlanSpec parser accepts final result-diversity controls");
+            if (trade_hash_diversity_parsed) {
+                std::ostringstream diversity_log;
+                BacktestResult diversity_best{};
+                PlanSweepReport diversity_report{};
+                const bool diversity_ok = run_custom_plan_spec(
+                    dv,
+                    primary,
+                    trade_hash_diversity_spec,
+                    PlanSweepRuntimeOptions{},
+                    diversity_log,
+                    &diversity_best,
+                    &diversity_report);
+                t.expect(diversity_ok,
+                    "trade-hash result-diversity sweep executes through custom runtime");
+                if (diversity_ok) {
+                    t.expect(diversity_report.result_diversity.requested &&
+                            diversity_report.result_diversity.dedupe_trade_hash,
+                        "structured sweep report records requested trade-hash result diversity");
+                    t.expect(diversity_report.result_diversity.retained_candidate_pool > trade_hash_diversity_spec.sweep->top_k,
+                        "result diversity retains an oversampled candidate pool before final Top-K filtering");
+                    t.expect(diversity_report.top_candidates.size() == 1 &&
+                            diversity_report.result_diversity.returned_unique_trade_hashes == 1,
+                        "trade-hash result diversity collapses repeated final outcomes to one representative");
+                    t.expect(diversity_report.result_diversity.suppressed_duplicate_trade_hash > 0,
+                        "structured sweep report counts suppressed duplicate trade-hash candidates");
+                    t.expect(diversity_log.str().find("dedupe trade hash: true") != std::string::npos,
+                        "sweep report makes trade-hash result diversity visible");
+                }
+            }
+
+            const std::string basin_diversity_json = R"JSON(
+{
+  "version": 1,
+  "name": "contract_basin_result_diversity",
+  "trade_mode": "LongOnly",
+  "params": { "alpha": 1, "beta": 1 },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "score_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": { "entry_long": "entry", "exit_long": "", "entry_short": "", "exit_short": "", "allow_trade": "" },
+  "sweep": {
+    "enabled": true,
+    "top_k": 4,
+    "max_evals": 16,
+    "objective": { "value": { "source": "numeric_node_output", "name": "score_value" }, "direction": "maximize" },
+    "result_diversity": {
+      "dedupe_trade_hash": false,
+      "basin_aware": true,
+      "oversample_multiplier": 8,
+      "max_per_basin": 1,
+      "param_bucket_size": 2
+    },
+    "params": {
+      "alpha": { "min": 1, "max": 4, "step": 1, "is_int": true },
+      "beta": { "min": 1, "max": 4, "step": 1, "is_int": true }
+    }
+  }
+}
+)JSON";
+            PlanSpec basin_diversity_spec{};
+            std::string basin_diversity_err{};
+            const bool basin_diversity_parsed =
+                parse_plan_spec_json(
+                    basin_diversity_json,
+                    basin_diversity_spec,
+                    basin_diversity_err);
+            t.expect(basin_diversity_parsed,
+                "PlanSpec parser accepts basin-aware result-diversity controls");
+            if (basin_diversity_parsed) {
+                std::ostringstream basin_log;
+                BacktestResult basin_best{};
+                PlanSweepReport basin_report{};
+                const bool basin_ok = run_custom_plan_spec(
+                    dv,
+                    primary,
+                    basin_diversity_spec,
+                    PlanSweepRuntimeOptions{},
+                    basin_log,
+                    &basin_best,
+                    &basin_report);
+                t.expect(basin_ok,
+                    "basin-aware result-diversity sweep executes through custom runtime");
+                if (basin_ok) {
+                    t.expect(basin_report.result_diversity.requested &&
+                            basin_report.result_diversity.basin_aware &&
+                            !basin_report.result_diversity.dedupe_trade_hash,
+                        "structured sweep report records basin-aware result diversity separately from trade-hash dedupe");
+                    t.expect(basin_report.result_diversity.returned_basin_count == basin_report.top_candidates.size() &&
+                            basin_report.top_candidates.size() == 4,
+                        "basin-aware result diversity returns at most one candidate per bucketed parameter basin");
+                    t.expect(basin_report.result_diversity.suppressed_basin > 0,
+                        "structured sweep report counts candidates suppressed by basin diversity");
+                    t.expect(basin_log.str().find("basin aware: true") != std::string::npos,
+                        "sweep report makes basin-aware result diversity visible");
+                }
             }
         }
 

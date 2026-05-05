@@ -7,13 +7,17 @@
 #include <cstdint>
 #include <limits>
 #include <sstream>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "ingest/json_min.h"
 
 namespace sugar::service {
 
     namespace {
+
+        constexpr std::string_view kHostedObservabilitySchemaVersion = "sugarbot.hosted.v1";
 
         std::string escape_json_string(std::string_view value) {
             std::string out;
@@ -88,6 +92,53 @@ namespace sugar::service {
             }
         }
 
+        void append_json_string_array_field(
+            std::ostringstream& out,
+            std::string_view key,
+            const std::vector<std::string>& values,
+            bool& first) {
+            if (!first) out << ",";
+            first = false;
+            out << "\"" << key << "\":[";
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (i != 0) out << ",";
+                out << "\"" << escape_json_string(values[i]) << "\"";
+            }
+            out << "]";
+        }
+
+        void append_param_value_json(std::ostringstream& out, const ParamValue& value) {
+            std::visit([&out](const auto& current) {
+                using Current = std::decay_t<decltype(current)>;
+                if constexpr (std::is_same_v<Current, std::nullptr_t>) {
+                    out << "null";
+                }
+                else if constexpr (std::is_same_v<Current, bool>) {
+                    out << (current ? "true" : "false");
+                }
+                else if constexpr (std::is_same_v<Current, std::int64_t>) {
+                    out << current;
+                }
+                else if constexpr (std::is_same_v<Current, double>) {
+                    if (std::isfinite(current)) {
+                        out << current;
+                    }
+                    else {
+                        out << "null";
+                    }
+                }
+                else if constexpr (std::is_same_v<Current, std::string>) {
+                    out << "\"" << escape_json_string(current) << "\"";
+                }
+                else {
+                    out << "{";
+                    bool first = true;
+                    append_json_string_field(out, "ref", current.name, first);
+                    out << "}";
+                }
+            }, value);
+        }
+
         bool json_string_field(
             const json_min::Object& object,
             const char* key,
@@ -132,6 +183,54 @@ namespace sugar::service {
             if (kind == "data") return ArtifactKind::DataCsv;
             ok = false;
             return ArtifactKind::LayoutSpec;
+        }
+
+        std::string extract_log_field(std::string_view fields, std::string_view key) {
+            const std::string needle = std::string(key) + "=";
+            const std::size_t pos = fields.find(needle);
+            if (pos == std::string_view::npos) {
+                return {};
+            }
+            const std::size_t value_begin = pos + needle.size();
+            const std::size_t value_end = fields.find(' ', value_begin);
+            if (value_end == std::string_view::npos) {
+                return std::string(fields.substr(value_begin));
+            }
+            return std::string(fields.substr(value_begin, value_end - value_begin));
+        }
+
+        std::string_view hosted_log_category_for_event(std::string_view event) {
+            if (event == "connect" ||
+                event == "disconnect" ||
+                event == "session_block" ||
+                event == "remote_bind") {
+                return "session";
+            }
+            if (event == "list_catalog" ||
+                event == "upload") {
+                return "artifact";
+            }
+            if (event == "submit" ||
+                event == "status" ||
+                event == "cancel") {
+                return "job";
+            }
+            if (event == "result") {
+                return "result_lifecycle";
+            }
+            return "protocol";
+        }
+
+        std::string_view sweep_engine_name(PlanSweepEngineKind engine) {
+            switch (engine) {
+            case PlanSweepEngineKind::CoarseFine:
+                return "coarse_fine";
+            case PlanSweepEngineKind::MonteCarlo:
+                return "monte_carlo";
+            case PlanSweepEngineKind::Exhaustive:
+            default:
+                return "exhaustive";
+            }
         }
 
         void append_artifact_record_json(std::ostringstream& out, const ArtifactRecord& artifact) {
@@ -181,6 +280,12 @@ namespace sugar::service {
                 provenance.has_entity_axis ||
                 provenance.has_spatial_axis ||
                 provenance.input_warning_count > 0 ||
+                provenance.csv_had_header ||
+                provenance.csv_physical_line_count > 0 ||
+                provenance.csv_blank_line_count > 0 ||
+                provenance.csv_data_row_count > 0 ||
+                provenance.dropped_row_count > 0 ||
+                !provenance.input_warnings.empty() ||
                 provenance.alignment_applied ||
                 !provenance.alignment_calendar.empty() ||
                 !provenance.alignment_missing.empty() ||
@@ -201,6 +306,28 @@ namespace sugar::service {
             append_json_bool_field(out, "has_entity_axis", provenance.has_entity_axis, first);
             append_json_bool_field(out, "has_spatial_axis", provenance.has_spatial_axis, first);
             append_json_u64_field(out, "input_warning_count", static_cast<std::uint64_t>(provenance.input_warning_count), first);
+            append_json_bool_field(out, "csv_had_header", provenance.csv_had_header, first);
+            append_json_u64_field(
+                out,
+                "csv_physical_line_count",
+                static_cast<std::uint64_t>(provenance.csv_physical_line_count),
+                first);
+            append_json_u64_field(
+                out,
+                "csv_blank_line_count",
+                static_cast<std::uint64_t>(provenance.csv_blank_line_count),
+                first);
+            append_json_u64_field(
+                out,
+                "csv_data_row_count",
+                static_cast<std::uint64_t>(provenance.csv_data_row_count),
+                first);
+            append_json_u64_field(
+                out,
+                "dropped_row_count",
+                static_cast<std::uint64_t>(provenance.dropped_row_count),
+                first);
+            append_json_string_array_field(out, "input_warnings", provenance.input_warnings, first);
             append_json_bool_field(out, "alignment_applied", provenance.alignment_applied, first);
             append_json_string_field(out, "alignment_calendar", provenance.alignment_calendar, first);
             append_json_string_field(out, "alignment_missing", provenance.alignment_missing, first);
@@ -214,13 +341,7 @@ namespace sugar::service {
                 "topology_usage_count",
                 static_cast<std::uint64_t>(provenance.topology_usage_count),
                 first);
-            if (!first) out << ",";
-            out << "\"topology_names\":[";
-            for (std::size_t i = 0; i < provenance.topology_names.size(); ++i) {
-                if (i != 0) out << ",";
-                out << "\"" << escape_json_string(provenance.topology_names[i]) << "\"";
-            }
-            out << "]";
+            append_json_string_array_field(out, "topology_names", provenance.topology_names, first);
             out << "}";
         }
 
@@ -275,7 +396,12 @@ namespace sugar::service {
                     out << "{";
                     append_json_string_field(out, "name", report.metric_catalog.values[i].name, metric_first);
                     append_json_string_field(out, "kind", result_metric_kind_name(report.metric_catalog.values[i].kind), metric_first);
-                    append_json_double_field(out, "value", report.metric_catalog.values[i].value, metric_first);
+                    if (report.metric_catalog.values[i].has_exact_u64_value) {
+                        append_json_u64_field(out, "value", report.metric_catalog.values[i].exact_u64_value, metric_first);
+                    }
+                    else {
+                        append_json_double_field(out, "value", report.metric_catalog.values[i].value, metric_first);
+                    }
                     append_json_bool_field(out, "is_finite", report.metric_catalog.values[i].is_finite, metric_first);
                     out << "}";
                 }
@@ -352,6 +478,292 @@ namespace sugar::service {
             out << "}";
         }
 
+        void append_sweep_param_range_json(std::ostringstream& out, const SweepParamRange& range) {
+            bool first = true;
+            out << "{";
+            if (!range.values.empty()) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"values\":[";
+                for (std::size_t i = 0; i < range.values.size(); ++i) {
+                    if (i != 0) out << ",";
+                    out << range.values[i];
+                }
+                out << "]";
+            }
+            append_json_double_field(out, "min", range.min, first);
+            append_json_double_field(out, "max", range.max, first);
+            append_json_double_field(out, "step", range.step, first);
+            append_json_bool_field(out, "is_int", range.is_int, first);
+            out << "}";
+        }
+
+        void append_run_outcome_counts_json(std::ostringstream& out, const RunOutcomeCounts& counts) {
+            bool first = true;
+            out << "{";
+            append_json_u64_field(out, "completed", static_cast<std::uint64_t>(counts.completed), first);
+            append_json_u64_field(
+                out,
+                "completed_with_non_finite_metrics",
+                static_cast<std::uint64_t>(counts.completed_with_non_finite_metrics),
+                first);
+            append_json_u64_field(out, "failed", static_cast<std::uint64_t>(counts.failed), first);
+            append_json_u64_field(out, "canceled", static_cast<std::uint64_t>(counts.canceled), first);
+            out << "}";
+        }
+
+        void append_run_rankability_counts_json(std::ostringstream& out, const RunRankabilityCounts& counts) {
+            bool first = true;
+            out << "{";
+            append_json_u64_field(out, "not_evaluated", static_cast<std::uint64_t>(counts.not_evaluated), first);
+            append_json_u64_field(out, "rankable", static_cast<std::uint64_t>(counts.rankable), first);
+            append_json_u64_field(
+                out,
+                "missing_primary_value",
+                static_cast<std::uint64_t>(counts.missing_primary_value),
+                first);
+            append_json_u64_field(
+                out,
+                "non_finite_primary_value",
+                static_cast<std::uint64_t>(counts.non_finite_primary_value),
+                first);
+            append_json_u64_field(
+                out,
+                "missing_penalty_value",
+                static_cast<std::uint64_t>(counts.missing_penalty_value),
+                first);
+            append_json_u64_field(
+                out,
+                "non_finite_penalty_value",
+                static_cast<std::uint64_t>(counts.non_finite_penalty_value),
+                first);
+            out << "}";
+        }
+
+        void append_sweep_result_diversity_json(
+            std::ostringstream& out,
+            const SweepResultDiversitySummary& diversity) {
+            bool first = true;
+            out << "{";
+            append_json_bool_field(out, "requested", diversity.requested, first);
+            append_json_bool_field(out, "dedupe_trade_hash", diversity.dedupe_trade_hash, first);
+            append_json_bool_field(out, "basin_aware", diversity.basin_aware, first);
+            append_json_u64_field(out, "oversample_multiplier", static_cast<std::uint64_t>(diversity.oversample_multiplier), first);
+            append_json_u64_field(out, "max_per_basin", static_cast<std::uint64_t>(diversity.max_per_basin), first);
+            append_json_u64_field(out, "param_bucket_size", static_cast<std::uint64_t>(diversity.param_bucket_size), first);
+            append_json_u64_field(out, "min_param_distance", static_cast<std::uint64_t>(diversity.min_param_distance), first);
+            append_json_u64_field(out, "min_trades", static_cast<std::uint64_t>(diversity.min_trades), first);
+            append_json_u64_field(out, "retained_candidate_pool", static_cast<std::uint64_t>(diversity.retained_candidate_pool), first);
+            append_json_u64_field(out, "returned_unique_trade_hashes", static_cast<std::uint64_t>(diversity.returned_unique_trade_hashes), first);
+            append_json_u64_field(out, "returned_duplicate_trade_hash_groups", static_cast<std::uint64_t>(diversity.returned_duplicate_trade_hash_groups), first);
+            append_json_u64_field(out, "returned_largest_trade_hash_group", static_cast<std::uint64_t>(diversity.returned_largest_trade_hash_group), first);
+            append_json_u64_field(out, "returned_basin_count", static_cast<std::uint64_t>(diversity.returned_basin_count), first);
+            append_json_u64_field(out, "suppressed_duplicate_trade_hash", static_cast<std::uint64_t>(diversity.suppressed_duplicate_trade_hash), first);
+            append_json_u64_field(out, "suppressed_basin", static_cast<std::uint64_t>(diversity.suppressed_basin), first);
+            append_json_u64_field(out, "suppressed_min_trades", static_cast<std::uint64_t>(diversity.suppressed_min_trades), first);
+            out << "}";
+        }
+
+        void append_sweep_json(std::ostringstream& out, const PlanSweepReport& report) {
+            bool first = true;
+            out << "{";
+            append_json_string_field(out, "engine", sweep_engine_name(report.requested_sweep.engine), first);
+            append_json_string_field(out, "resolved_objective", describe_ranking_objective(report.resolved_objective), first);
+            append_json_u64_field(
+                out,
+                "requested_top_k",
+                static_cast<std::uint64_t>(report.requested_sweep.top_k),
+                first);
+            append_json_u64_field(
+                out,
+                "returned_top_k",
+                static_cast<std::uint64_t>(report.top_candidates.size()),
+                first);
+            append_json_u64_field(
+                out,
+                "max_evals",
+                static_cast<std::uint64_t>(report.requested_sweep.max_evals),
+                first);
+            append_json_u64_field(
+                out,
+                "parameter_count",
+                static_cast<std::uint64_t>(report.parameter_count),
+                first);
+            append_json_u64_field(
+                out,
+                "total_combinations",
+                static_cast<std::uint64_t>(report.total_combinations),
+                first);
+            append_json_bool_field(out, "total_combinations_overflow", report.total_combinations_overflow, first);
+            append_json_u64_field(
+                out,
+                "candidate_space_size",
+                static_cast<std::uint64_t>(report.candidate_space_size),
+                first);
+            append_json_bool_field(out, "candidate_space_truncated", report.candidate_space_truncated, first);
+            append_json_u64_field(
+                out,
+                "evaluations_run",
+                static_cast<std::uint64_t>(report.evaluations_run),
+                first);
+            append_json_u64_field(
+                out,
+                "execution_failures",
+                static_cast<std::uint64_t>(report.execution_failures),
+                first);
+            append_json_u64_field(
+                out,
+                "compile_failures",
+                static_cast<std::uint64_t>(report.compile_failures),
+                first);
+            append_json_bool_field(out, "canceled", report.canceled, first);
+            append_json_string_field(out, "last_execution_failure", report.last_execution_failure, first);
+            append_json_string_field(out, "last_compile_error", report.last_compile_error, first);
+            append_json_string_array_field(out, "warnings", report.warnings, first);
+            if (!first) out << ",";
+            out << "\"candidate_outcomes\":";
+            append_run_outcome_counts_json(out, report.candidate_outcomes);
+            out << ",\"candidate_rankability\":";
+            append_run_rankability_counts_json(out, report.candidate_rankability);
+            out << ",\"result_diversity\":";
+            append_sweep_result_diversity_json(out, report.result_diversity);
+            out << ",\"stage_summaries\":[";
+            for (std::size_t i = 0; i < report.stage_summaries.size(); ++i) {
+                if (i != 0) out << ",";
+                bool stage_first = true;
+                out << "{";
+                append_json_string_field(
+                    out,
+                    "stage",
+                    sweep_progress_stage_name(report.stage_summaries[i].stage),
+                    stage_first);
+                append_json_u64_field(
+                    out,
+                    "done",
+                    static_cast<std::uint64_t>(report.stage_summaries[i].done),
+                    stage_first);
+                append_json_u64_field(
+                    out,
+                    "total",
+                    static_cast<std::uint64_t>(report.stage_summaries[i].total),
+                    stage_first);
+                out << "}";
+            }
+            out << "],\"parameter_ranges\":[";
+            for (std::size_t i = 0; i < report.parameter_ranges.size(); ++i) {
+                if (i != 0) out << ",";
+                bool range_first = true;
+                out << "{";
+                append_json_string_field(out, "name", report.parameter_ranges[i].name, range_first);
+                append_json_u64_field(
+                    out,
+                    "expanded_count",
+                    static_cast<std::uint64_t>(report.parameter_ranges[i].expanded_count),
+                    range_first);
+                out << ",\"requested_range\":";
+                append_sweep_param_range_json(out, report.parameter_ranges[i].requested_range);
+                out << "}";
+            }
+            out << "],\"top_candidates\":[";
+            for (std::size_t i = 0; i < report.top_candidates.size(); ++i) {
+                if (i != 0) out << ",";
+                const RunReport candidate_report = build_run_report(
+                    report.top_candidates[i].result,
+                    &report.resolved_objective);
+                bool candidate_first = true;
+                out << "{";
+                append_json_u64_field(out, "rank", static_cast<std::uint64_t>(i + 1), candidate_first);
+                append_json_u64_field(
+                    out,
+                    "candidate_index",
+                    static_cast<std::uint64_t>(report.top_candidates[i].candidate_index),
+                    candidate_first);
+                append_json_double_field(out, "score", report.top_candidates[i].score, candidate_first);
+                append_json_string_field(
+                    out,
+                    "run_outcome",
+                    run_outcome_state_name(candidate_report.outcome),
+                    candidate_first);
+                append_json_string_field(
+                    out,
+                    "objective_rankability",
+                    run_rankability_state_name(candidate_report.objective.rankability),
+                    candidate_first);
+                if (candidate_report.objective.rankability == RunRankabilityState::Rankable) {
+                    append_json_double_field(
+                        out,
+                        "objective_score",
+                        candidate_report.objective.score,
+                        candidate_first);
+                }
+                out << ",\"parameter_values\":[";
+                for (std::size_t j = 0; j < report.top_candidates[i].parameter_values.size(); ++j) {
+                    if (j != 0) out << ",";
+                    bool setting_first = true;
+                    out << "{";
+                    append_json_string_field(
+                        out,
+                        "name",
+                        report.top_candidates[i].parameter_values[j].name,
+                        setting_first);
+                    if (!setting_first) out << ",";
+                    out << "\"value\":";
+                    append_param_value_json(out, report.top_candidates[i].parameter_values[j].value);
+                    out << "}";
+                }
+                out << "],\"backtest\":";
+                append_backtest_json(out, report.top_candidates[i].result);
+                out << "}";
+            }
+            out << "]";
+            out << "}";
+        }
+
+        void append_result_audit_json(std::ostringstream& out, const JobResult& result) {
+            bool first = true;
+            out << "{";
+            append_json_string_field(out, "owner_session_id", result.owner_session_id, first);
+            append_json_string_field(out, "job_id", result.job_id, first);
+            append_json_u64_field(
+                out,
+                "input_artifact_count",
+                static_cast<std::uint64_t>(result.input_artifacts.size()),
+                first);
+            append_json_u64_field(
+                out,
+                "output_artifact_count",
+                static_cast<std::uint64_t>(result.output_artifacts.size()),
+                first);
+            if (!first) out << ",";
+            out << "\"report_sources\":[";
+            bool source_written = false;
+            auto append_source = [&](std::string_view source) {
+                if (source_written) {
+                    out << ",";
+                }
+                source_written = true;
+                out << "\"" << escape_json_string(source) << "\"";
+            };
+            append_source("service.validation_metadata");
+            if (result.metadata.run_provenance.has_value()) {
+                append_source("engine.run_provenance");
+            }
+            if (result.metadata.primary_backtest.has_value()) {
+                append_source("engine.run_report");
+            }
+            if (result.metadata.sweep_report.has_value()) {
+                append_source("engine.sweep_report");
+            }
+            if (result.metadata.panel.has_value()) {
+                append_source("engine.panel_report");
+            }
+            if (!result.output_artifacts.empty()) {
+                append_source("service.output_artifacts");
+            }
+            out << "]";
+            out << "}";
+        }
+
         void append_job_status_json(std::ostringstream& out, const JobStatus& status) {
             bool first = true;
             out << "{";
@@ -398,14 +810,25 @@ namespace sugar::service {
                 out << ",\"primary_backtest\":";
                 append_backtest_json(out, *result.metadata.primary_backtest, provenance);
             }
+            if (result.metadata.sweep_report.has_value()) {
+                out << ",\"sweep\":";
+                append_sweep_json(out, *result.metadata.sweep_report);
+            }
             if (result.metadata.panel.has_value()) {
                 out << ",\"panel\":";
                 append_panel_json(out, *result.metadata.panel, provenance);
             }
+            out << ",\"audit\":";
+            append_result_audit_json(out, result);
             out << "},\"output_artifacts\":[";
             for (std::size_t i = 0; i < result.output_artifacts.size(); ++i) {
                 if (i != 0) out << ",";
                 append_artifact_record_json(out, result.output_artifacts[i]);
+            }
+            out << "],\"input_artifacts\":[";
+            for (std::size_t i = 0; i < result.input_artifacts.size(); ++i) {
+                if (i != 0) out << ",";
+                append_artifact_record_json(out, result.input_artifacts[i]);
             }
             out << "]";
             out << "}";
@@ -426,6 +849,10 @@ namespace sugar::service {
         }
 
     } // namespace
+
+    std::string_view hosted_observability_schema_version() {
+        return kHostedObservabilitySchemaVersion;
+    }
 
     std::string_view protocol_command_name(ProtocolCommand command) {
         switch (command) {
@@ -459,6 +886,21 @@ namespace sugar::service {
         case ProtocolErrorCode::InternalError: return "internal_error";
         }
         return "internal_error";
+    }
+
+    std::string format_hosted_audit_log_line(std::string_view legacy_fields) {
+        if (legacy_fields.find("schema_version=") != std::string_view::npos) {
+            return std::string(legacy_fields);
+        }
+
+        const std::string event = extract_log_field(legacy_fields, "event");
+        std::ostringstream out;
+        out << "schema_version=" << hosted_observability_schema_version()
+            << " category=" << hosted_log_category_for_event(event);
+        if (!legacy_fields.empty()) {
+            out << " " << legacy_fields;
+        }
+        return out.str();
     }
 
     std::string serialize_protocol_request_json(const ProtocolRequest& request) {
@@ -500,6 +942,7 @@ namespace sugar::service {
         bool first = true;
         out << "{";
         append_json_bool_field(out, "ok", response.ok, first);
+        append_json_string_field(out, "schema_version", hosted_observability_schema_version(), first);
         append_json_string_field(out, "op", protocol_command_name(response.command), first);
         append_json_string_field(out, "error_code", protocol_error_code_name(response.error_code), first);
         append_json_string_field(out, "message", response.message, first);

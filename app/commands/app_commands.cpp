@@ -417,19 +417,28 @@ namespace {
             << "    - `k_stage1` (default `25`)\n"
             << "    - `k_stage2` (default `50`; internal stage-2 candidate breadth, not final output count)\n"
             << "    - `depollute_stage1` (default `true`)\n"
-            << "    - `dedupe_stage2` (default `true`)\n"
+            << "    - `dedupe_stage2` (default `true`; stage-2 candidate-index dedupe, not final `trade_hash` outcome dedupe)\n"
             << "    - `suppression_hops` (default `1`)\n"
             << "    - `stage2_hops` (default `1`)\n"
+            << "    - `coarse_step_multiplier` (default `0`; when >1, stage 1 samples every Nth value per sweep dimension and derives local refinement from remaining `max_evals` budget)\n"
             << "    - `stage1_stride` (default `0`)\n"
             << "    - final displayed sweep rows are still capped by top-level `sweep.top_k`\n"
             << "  - `sweep.engine_config.monte_carlo` fields:\n"
-            << "    - `draws` (default `10000`)\n"
+            << "    - `draws` (default: use `sweep.max_evals`; explicit values are still capped by `max_evals`)\n"
             << "    - `seed` (default `0`, which means non-deterministic random_device seeding)\n"
-            << "    - `dedupe` (default `true`)\n"
+            << "    - `dedupe` (default `true`; samples parameter indices without replacement, not final `trade_hash` outcome dedupe)\n"
             << "    - `top_k` (default `0`, which means use `sweep.top_k`)\n"
+            << "  - `sweep.result_diversity` is the final leaderboard control for glassy parameter manifolds and repeated trade paths:\n"
+            << "    - object presence enables the control unless `enabled=false`\n"
+            << "    - `dedupe_trade_hash` (default `true`) suppresses repeated final candidates with identical `trade_hash`\n"
+            << "    - `basin_aware` (default `false`) limits repeated final candidates from the same bucketed parameter basin\n"
+            << "    - `oversample_multiplier` (default `10`) retains a larger internal candidate pool before final diversity filtering\n"
+            << "    - `max_per_basin` (default `1`), `param_bucket_size` (default `4`), and `min_param_distance` (default `0`) tune basin suppression in parameter-step units\n"
+            << "    - `min_trades` (default `0`) suppresses final candidates with too few round-trip trades\n"
             << "\n"
             << "Cross-series and alignment guidance\n"
             << "  - `--align-dump` is the planning tool for advanced DAGs, not just an alignment debugger.\n"
+            << "  - `--series-key-col <col>` is required for `--align-dump`; it names the CSV column whose values become the aligned series/entity keys.\n"
             << "  - `series_count=1` means `ms.*` ops will fail because there is only one aligned series lane.\n"
             << "  - `series_count>1` is the signal that cross-series ops and `run.scope=per_entity_ranked` may be valid.\n"
             << "  - `ms.diff`, `ms.ratio`, `ms.zscore`, and other `ms.*` ops are for comparisons across aligned series/entity lanes.\n"
@@ -533,6 +542,7 @@ namespace sugar::app {
             << "Reports and diagnostics:\n"
             << "  - `--obs-report` prints observation-world provenance, ingest diagnostics, and capability surfaces.\n"
             << "  - `--plan-report` prints the same observation diagnostics plus plan-compatibility results for the current logic.\n"
+            << "  - `--align-dump` requires `--series-key-col <col>` because it groups the CSV by that column to show concrete series/entity lanes; use columns such as `symbol`, `ticker`, or `region`.\n"
             << "  - `run` prints the final execution report for the selected path: single-run, sweep report, or ranked panel report.\n"
             << "  - interactive mode exposes these same report surfaces before execution, so the report-first workflow is discoverable without remembering flags.\n"
             << "\n"
@@ -1131,12 +1141,13 @@ namespace sugar::app {
     }
 
     int run_align_dump_command(const AppCommand& cmd, std::ostream& out, std::ostream& err) {
-        sugar::DataSpec ds;
+        sugar::LayoutSpec layout{};
         std::string load_err;
-        if (!sugar::load_data_spec_file(cmd.align_dump.spec_path, ds, load_err)) {
-            err << "Error: failed to load DataSpec: " << load_err << "\n";
+        if (!sugar::load_layout_spec_file(cmd.align_dump.spec_path, layout, load_err)) {
+            err << "Error: failed to load layout spec: " << load_err << "\n";
             return 1;
         }
+        sugar::DataSpec ds = layout.ingest;
         ds.entity_col = cmd.align_dump.series_key_col;
 
         sugar::FrameSet fs{};

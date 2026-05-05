@@ -376,6 +376,63 @@ namespace sugar {
             return true;
         }
 
+        struct ColumnDegeneracyStats {
+            std::size_t total_values{ 0 };
+            std::size_t finite_values{ 0 };
+            bool has_nonzero_finite{ false };
+        };
+
+        void accumulate_column_degeneracy(
+            const NumericFrame& frame,
+            ColumnId column,
+            ColumnDegeneracyStats& stats) {
+            const auto values = frame.col(column);
+            stats.total_values += values.size();
+            for (const double value : values) {
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                ++stats.finite_values;
+                if (value != 0.0) {
+                    stats.has_nonzero_finite = true;
+                }
+            }
+        }
+
+        void append_degenerate_value_column_warnings(
+            const std::vector<std::string>& ingest_cols,
+            const std::vector<ColumnId>& value_ids,
+            std::size_t value_col_count,
+            const PreprocessResult& result,
+            std::vector<std::string>& warnings) {
+            const std::size_t ncols = std::min(
+                value_col_count,
+                std::min(ingest_cols.size(), value_ids.size()));
+            for (std::size_t i = 0; i < ncols; ++i) {
+                ColumnDegeneracyStats stats{};
+                if (result.frame.has_value()) {
+                    accumulate_column_degeneracy(*result.frame, value_ids[i], stats);
+                }
+                if (result.frameset.has_value()) {
+                    for (const auto& kv : result.frameset->by_entity) {
+                        accumulate_column_degeneracy(kv.second, value_ids[i], stats);
+                    }
+                }
+
+                if (stats.total_values == 0) {
+                    continue;
+                }
+                if (stats.finite_values == 0) {
+                    warnings.push_back(
+                        "value column '" + ingest_cols[i] + "' contains no finite values after preprocessing");
+                }
+                else if (!stats.has_nonzero_finite) {
+                    warnings.push_back(
+                        "value column '" + ingest_cols[i] + "' is uniformly zero after preprocessing");
+                }
+            }
+        }
+
     } // namespace
 
     PreprocessResult preprocess_csv(const DataSpec& spec,
@@ -616,6 +673,12 @@ namespace sugar {
                 r.warnings.push_back(
                     "drop-row missing policy removed " + std::to_string(total_dropped_rows) + " row(s)");
             }
+            append_degenerate_value_column_warnings(
+                ingest_cols,
+                value_ids,
+                spec.value_cols.size(),
+                r,
+                r.warnings);
             return r;
         }
 
@@ -641,6 +704,12 @@ namespace sugar {
             r.warnings.push_back(
                 "drop-row missing policy removed " + std::to_string(total_dropped_rows) + " row(s)");
         }
+        append_degenerate_value_column_warnings(
+            ingest_cols,
+            value_ids,
+            spec.value_cols.size(),
+            r,
+            r.warnings);
         return r;
     }
 

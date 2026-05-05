@@ -26,7 +26,8 @@ namespace sugar::service {
 
     [[nodiscard]] std::size_t estimate_sweep_runtime_minutes(
         std::size_t sweep_candidate_count,
-        const QuotaConfig& quotas);
+        std::size_t estimated_row_count,
+        PlanSweepEngineKind engine);
     [[nodiscard]] bool metadata_has_long_sweep_warning(
         const ValidationMetadata& metadata,
         const QuotaConfig& quotas);

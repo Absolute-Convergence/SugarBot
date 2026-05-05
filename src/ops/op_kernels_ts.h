@@ -37,6 +37,9 @@ std::vector<double> ts_donchian_lower(std::span<const double> x, std::size_t n);
 std::vector<double> ts_donchian_mid(std::span<const double> x, std::size_t n);
 std::vector<double> ts_donchian_width(std::span<const double> x, std::size_t n);
 std::vector<double> ts_percentile(std::span<const double> x, std::size_t n, double q);
+std::vector<double> ts_entropy(std::span<const double> x, std::size_t n, std::size_t bins);
+std::vector<double> ts_autocorrelation(std::span<const double> x, std::size_t n, std::size_t lag);
+std::vector<double> ts_hurst(std::span<const double> x, std::size_t n);
 std::vector<double> ts_normalize_minmax(std::span<const double> x, std::size_t n);
 std::vector<double> ts_true_range_ohlc(std::span<const double> high, std::span<const double> low, std::span<const double> close);
 std::vector<double> ts_true_range_delta(std::span<const double> x);
@@ -45,6 +48,7 @@ std::vector<double> ts_atr_from_series(std::span<const double> x, std::size_t n)
 std::vector<double> ts_rsi_wilder(std::span<const double> close, std::size_t n);
 std::vector<double> ts_macd_histogram(std::span<const double> x, std::size_t fast, std::size_t slow, std::size_t signal);
 std::vector<double> ts_bollinger_width(std::span<const double> x, std::size_t n, double k);
+std::vector<double> ts_regime_change(std::span<const double> x, std::size_t n);
 std::vector<double> ts_volatility_ratio(std::span<const double> x, std::size_t fast_n, std::size_t slow_n);
 
 } // namespace sugar::op_kernels

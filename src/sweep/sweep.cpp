@@ -142,9 +142,10 @@ namespace sugar {
                     return false;
                 }
 
-                // Expand [min,max] from integer step indices instead of additive
-                // floating-point drift, and cap per-dimension growth for safety.
-                d.values = make_drange(a, b, step, sw.max_evals);
+                // Expand the declared range exactly once here. Evaluation-budget
+                // limits belong in the engine layer, not in the author-facing
+                // range definition.
+                d.values = make_drange(a, b, step);
             }
 
             if (d.values.empty()) {
@@ -240,7 +241,8 @@ namespace sugar {
         }
 
         // Collect indices within `hops` neighbor-expansions from start_idx (inclusive).
-        // Uses `seen` to optionally dedupe across different seeds.
+        // `seen` dedupes evaluations across seeds, while local `visited` keeps
+        // traversal correct when seed neighborhoods overlap.
         template <typename SeenT>
         void collect_region(
             std::size_t param_count,
@@ -248,23 +250,30 @@ namespace sugar {
             std::size_t hops,
             const std::function<std::vector<std::size_t>(std::size_t)>& neighbors,
             SeenT* seen,
-            const std::function<void(std::size_t)>& on_index)
+            const std::function<void(std::size_t)>& on_index,
+            const std::function<bool()>& stop_requested = {})
         {
             if (start_idx >= param_count) return;
 
             std::queue<std::pair<std::size_t, std::size_t>> q;
+            std::unordered_set<std::size_t> visited;
             q.push({ start_idx, 0 });
 
             while (!q.empty()) {
                 auto [idx, depth] = q.front();
                 q.pop();
 
+                if (stop_requested && stop_requested()) return;
                 if (idx >= param_count) continue;
-                if (seen) {
-                    if (!seen->insert(idx).second) continue;
-                }
+                if (!visited.insert(idx).second) continue;
 
-                on_index(idx);
+                bool should_evaluate = true;
+                if (seen) {
+                    should_evaluate = seen->insert(idx).second;
+                }
+                if (should_evaluate) {
+                    on_index(idx);
+                }
 
                 if (depth >= hops) continue;
                 for (auto nb : neighbors(idx)) {
@@ -298,9 +307,17 @@ namespace sugar {
         // Stage 1 total is exact; stage 2 is estimated (neighbor BFS).
         const std::size_t stage1_total = stage1_indices ? stage1_indices->size() : param_count;
         const std::size_t stage2_est = k_stage1 * 250; // ~243 for radius=1 hypercube-ish
-        const std::size_t total_est = stage1_total + stage2_est;
+        const std::size_t uncapped_total_est = stage1_total + stage2_est;
+        const std::size_t total_est =
+            opt.max_evaluations > 0
+            ? opt.max_evaluations
+            : uncapped_total_est;
 
         std::size_t done = 0;
+        std::size_t stage1_done = 0;
+        auto budget_reached = [&]() {
+            return opt.max_evaluations > 0 && done >= opt.max_evaluations;
+            };
 
         auto report = [&](SweepProgressStage stage,
                           std::size_t stage_done,
@@ -344,12 +361,13 @@ namespace sugar {
         if (!opt.depollute_stage1) {
             TopK<std::size_t> top1(k_stage1);
             for (std::size_t i : s1) {
-                if (cancel_cb && cancel_cb()) {
+                if ((cancel_cb && cancel_cb()) || budget_reached()) {
                     break;
                 }
                 if (i >= param_count) continue;
                 const auto res = eval(i);
                 ++done;
+                ++stage1_done;
                 const double sc = score(res);
                 if (std::isfinite(sc)) {
                     progress_top1.consider(sc, res, i);
@@ -357,7 +375,7 @@ namespace sugar {
                 }
                 report(
                     SweepProgressStage::CoarseSearch,
-                    std::min<std::size_t>(done, stage1_total),
+                    stage1_done,
                     stage1_total,
                     make_ranked_progress_candidates(progress_top1));
             }
@@ -374,12 +392,13 @@ namespace sugar {
             order.reserve(s1.size());
 
             for (std::size_t i : s1) {
-                if (cancel_cb && cancel_cb()) {
+                if ((cancel_cb && cancel_cb()) || budget_reached()) {
                     break;
                 }
                 if (i >= param_count) continue;
                 const auto res = eval(i);
                 ++done;
+                ++stage1_done;
                 double sc = score(res);
                 if (!std::isfinite(sc)) sc = -std::numeric_limits<double>::infinity();
                 results[i] = res;
@@ -390,7 +409,7 @@ namespace sugar {
                 }
                 report(
                     SweepProgressStage::CoarseSearch,
-                    std::min<std::size_t>(done, stage1_total),
+                    stage1_done,
                     stage1_total,
                     make_ranked_progress_candidates(progress_top1));
             }
@@ -412,7 +431,7 @@ namespace sugar {
 
         report(
             SweepProgressStage::CoarseSearch,
-            std::min<std::size_t>(done, stage1_total),
+            stage1_done,
             stage1_total,
             make_ranked_progress_candidates(stage1),
             true);
@@ -421,54 +440,77 @@ namespace sugar {
         // Stage 2
         // -------------------------
         TopK<std::size_t> top2(k_stage2);
+        const std::size_t stage2_total =
+            (opt.max_evaluations > stage1_done)
+            ? (opt.max_evaluations - stage1_done)
+            : stage2_est;
         std::unordered_set<std::size_t> seen;
         if (opt.dedupe_stage2) {
             seen.reserve(stage1.size() * 64);
         }
 
-        for (const auto& seed : stage1) {
-            if (cancel_cb && cancel_cb()) {
-                break;
+        const auto stop_refinement = [&]() {
+            return (cancel_cb && cancel_cb()) || budget_reached();
+            };
+        auto evaluate_refinement = [&](std::size_t idx) {
+            if (stop_refinement()) {
+                return;
             }
-            if (opt.dedupe_stage2) {
-                collect_region(param_count, seed.index, opt.stage2_hops, neighbors, &seen,
-                    [&](std::size_t idx) {
-                        if (cancel_cb && cancel_cb()) {
-                            return;
-                        }
-                        const auto res = eval(idx);
-                        ++done;
-                        const double sc = score(res);
-                        if (std::isfinite(sc)) {
-                            top2.consider(sc, res, idx);
-                        }
-                        report(
-                            SweepProgressStage::LocalRefinement,
-                            (done > stage1_total) ? (done - stage1_total) : 0,
-                            stage2_est,
-                            make_ranked_progress_candidates(top2));
-                    });
+            const auto res = eval(idx);
+            ++done;
+            const double sc = score(res);
+            if (std::isfinite(sc)) {
+                top2.consider(sc, res, idx);
             }
-            else {
+            report(
+                SweepProgressStage::LocalRefinement,
+                (done > stage1_done) ? (done - stage1_done) : 0,
+                stage2_total,
+                make_ranked_progress_candidates(top2));
+            };
+
+        if (opt.dedupe_stage2) {
+            std::size_t hops = std::max<std::size_t>(1, opt.stage2_hops);
+            const std::size_t max_budget_fill_hops =
+                (opt.max_evaluations > stage1_done)
+                ? std::min<std::size_t>(
+                    std::max<std::size_t>(hops, opt.max_evaluations - stage1_done),
+                    static_cast<std::size_t>(65536))
+                : hops;
+            while (!stop_refinement()) {
+                const std::size_t before = done;
+                for (const auto& seed : stage1) {
+                    if (stop_refinement()) {
+                        break;
+                    }
+                    collect_region(
+                        param_count,
+                        seed.index,
+                        hops,
+                        neighbors,
+                        &seen,
+                        evaluate_refinement,
+                        stop_refinement);
+                }
+                if (stop_refinement()) {
+                    break;
+                }
+                if (opt.max_evaluations == 0 || done == before || hops >= max_budget_fill_hops) {
+                    break;
+                }
+                ++hops;
+            }
+        }
+        else {
+            for (const auto& seed : stage1) {
+                if (stop_refinement()) {
+                    break;
+                }
                 collect_region<std::unordered_set<std::size_t>>(
                     param_count, seed.index, opt.stage2_hops, neighbors,
                     (std::unordered_set<std::size_t>*)nullptr,
-                    [&](std::size_t idx) {
-                        if (cancel_cb && cancel_cb()) {
-                            return;
-                        }
-                        const auto res = eval(idx);
-                        ++done;
-                        const double sc = score(res);
-                        if (std::isfinite(sc)) {
-                            top2.consider(sc, res, idx);
-                        }
-                        report(
-                            SweepProgressStage::LocalRefinement,
-                            (done > stage1_total) ? (done - stage1_total) : 0,
-                            stage2_est,
-                            make_ranked_progress_candidates(top2));
-                    });
+                    evaluate_refinement,
+                    stop_refinement);
             }
         }
 
@@ -476,19 +518,22 @@ namespace sugar {
         for (const auto& c : top2.sorted_best_first()) {
             stage2.push_back(IndexedCandidate{ c.params, c.score, c.result });
         }
+        if (stage2.empty()) {
+            stage2 = stage1;
+        }
 
         report(
             SweepProgressStage::LocalRefinement,
-            (done > stage1_total) ? (done - stage1_total) : 0,
-            stage2_est,
+            (done > stage1_done) ? (done - stage1_done) : 0,
+            stage2_total,
             make_ranked_progress_candidates(top2),
             true);
 
         TwoStageSweepResult out;
         out.stage1_best_first = std::move(stage1);
         out.stage2_best_first = std::move(stage2);
-        out.stage1_evaluated = stage1_total;
-        out.stage2_evaluated = (done > stage1_total) ? (done - stage1_total) : 0;
+        out.stage1_evaluated = stage1_done;
+        out.stage2_evaluated = (done > stage1_done) ? (done - stage1_done) : 0;
         return out;
     }
 

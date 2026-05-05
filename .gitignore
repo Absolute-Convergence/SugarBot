@@ -2,6 +2,7 @@
 out/
 .sandbox/
 AI_Log/
+build/
 Expansion_Plan/
 sandbox_build/
 sandbox_asan/

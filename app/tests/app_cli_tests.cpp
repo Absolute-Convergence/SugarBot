@@ -192,7 +192,8 @@ namespace sugar::app::tests {
             std::string err;
             const bool ok = parse_app_command(4, argv, cmd, err);
             t.check(!ok, "align-dump parse fails without --series-key-col");
-            t.check(err == "--series-key-col <col> is required for --align-dump",
+            t.check(err.find("--series-key-col <col> is required for --align-dump") != std::string::npos &&
+                    err.find("identifies each series/entity") != std::string::npos,
                 "align-dump failure message is explicit");
             return t.failed == 0;
         }

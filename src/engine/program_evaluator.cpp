@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -21,6 +23,34 @@
 namespace sugar {
 
     namespace {
+        const char* debug_warnings_env() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+            const char* raw = std::getenv("SUGARBOT_DEBUG_WARNINGS");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+            return raw;
+        }
+
+        bool cross_relation_debug_enabled() {
+            static const bool enabled = [] {
+                const char* raw = debug_warnings_env();
+                if (raw == nullptr) {
+                    return false;
+                }
+                const std::string value(raw);
+                return !value.empty() &&
+                    value != "0" &&
+                    value != "false" &&
+                    value != "FALSE" &&
+                    value != "off" &&
+                    value != "OFF";
+            }();
+            return enabled;
+        }
 
         bool is_supported_numeric_op(const std::string& op) {
             static const std::unordered_set<std::string> kOps = {
@@ -50,12 +80,16 @@ namespace sugar {
                 "ts.donchian_mid",
                 "ts.donchian_width",
                 "ts.percentile",
+                "ts.entropy",
+                "ts.autocorrelation",
+                "ts.hurst",
                 "ts.normalize_minmax",
                 "ts.atr",
                 "ts.rsi",
                 "ts.atr_wilder",
                 "ts.macd",
                 "ts.bollinger_width",
+                "ts.regime_change",
                 "ts.volatility_ratio",
                 "ts.shift",
                 "ts.delta",
@@ -281,7 +315,10 @@ namespace sugar {
                 if (out[i]) ++crosses;
             }
 
-            if (finite_pairs >= 50 && rhs_relation_true == 0 && crosses == 0) {
+            if (cross_relation_debug_enabled() &&
+                finite_pairs >= 50 &&
+                rhs_relation_true == 0 &&
+                crosses == 0) {
                 static bool warned = false;
                 if (!warned) {
                     warned = true;
@@ -447,6 +484,23 @@ namespace sugar {
                 out = op_kernels::ts_percentile(inputs.at(0).num, window, percentile);
                 return validate_numeric_size(out, n, err, op);
             }
+            if (op == "ts.entropy") {
+                const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(node.params, "n").value_or(1)));
+                const std::size_t bins = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(node.params, "bins").value_or(1)));
+                out = op_kernels::ts_entropy(inputs.at(0).num, window, bins);
+                return validate_numeric_size(out, n, err, op);
+            }
+            if (op == "ts.autocorrelation") {
+                const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(node.params, "n").value_or(2)));
+                const std::size_t lag = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(node.params, "lag").value_or(1)));
+                out = op_kernels::ts_autocorrelation(inputs.at(0).num, window, lag);
+                return validate_numeric_size(out, n, err, op);
+            }
+            if (op == "ts.hurst") {
+                const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(node.params, "n").value_or(2)));
+                out = op_kernels::ts_hurst(inputs.at(0).num, window);
+                return validate_numeric_size(out, n, err, op);
+            }
             if (op == "ts.normalize_minmax") {
                 const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(node.params, "n").value_or(1)));
                 out = op_kernels::ts_normalize_minmax(inputs.at(0).num, window);
@@ -478,6 +532,11 @@ namespace sugar {
                 const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(1, as_i64(node.params, "n").value_or(1)));
                 const double k = as_f64(node.params, "k").value_or(2.0);
                 out = op_kernels::ts_bollinger_width(inputs.at(0).num, window, k);
+                return validate_numeric_size(out, n, err, op);
+            }
+            if (op == "ts.regime_change") {
+                const std::size_t window = static_cast<std::size_t>(std::max<std::int64_t>(2, as_i64(node.params, "n").value_or(2)));
+                out = op_kernels::ts_regime_change(inputs.at(0).num, window);
                 return validate_numeric_size(out, n, err, op);
             }
             if (op == "ts.volatility_ratio") {

@@ -1,9 +1,13 @@
 #include "contract_suite_internal.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -13,48 +17,24 @@
 #include <vector>
 
 #include "ingest/json_min.h"
+#include "service/network_client.h"
 #include "service/network_server.h"
 #include "service/network_session.h"
 #include "service/protocol_dispatch.h"
 #include "service/protocol_framing.h"
 
 #ifdef _WIN32
-
-namespace sugar::contract_suite_internal {
-
-    bool test_service_protocol_network_socket_contracts(ContractAsserts& t) {
-        t.out << "[service_protocol_network_socket] skipped on Windows stub builds\n";
-        return true;
-    }
-
-    bool test_service_protocol_live_multi_client_contracts(ContractAsserts& t) {
-        t.out << "[service_protocol_live_multi_client] skipped on Windows stub builds\n";
-        return true;
-    }
-
-    bool test_service_protocol_live_cancel_polling_contracts(ContractAsserts& t) {
-        t.out << "[service_protocol_live_cancel_polling] skipped on Windows stub builds\n";
-        return true;
-    }
-
-    bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t) {
-        t.out << "[service_protocol_remote_bind_policy] skipped on Windows stub builds\n";
-        return true;
-    }
-
-    bool test_service_protocol_slow_client_resilience_contracts(ContractAsserts& t) {
-        t.out << "[service_protocol_slow_client_resilience] skipped on Windows stub builds\n";
-        return true;
-    }
-
-} // namespace sugar::contract_suite_internal
-
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #else
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 namespace sugar::contract_suite_internal {
 
@@ -62,16 +42,221 @@ namespace sugar::contract_suite_internal {
         constexpr std::size_t kProtocolMessageLimit = 4 * 1024 * 1024;
         constexpr std::size_t kSocketContractFrameLimit = 4096;
         constexpr auto kLiveServerStartTimeout = std::chrono::seconds(2);
-        constexpr auto kTcpTerminalWaitTimeout = std::chrono::seconds(15);
+        constexpr auto kTcpTerminalWaitTimeout = std::chrono::seconds(30);
         constexpr auto kTcpCancelPollerTimeout = std::chrono::seconds(10);
         constexpr auto kTcpCancelActiveWaitTimeout = std::chrono::seconds(5);
-        constexpr auto kTcpPollInterval = std::chrono::milliseconds(2);
+        constexpr auto kTcpPollInterval = std::chrono::milliseconds(50);
         constexpr auto kTcpWaitInterval = std::chrono::milliseconds(5);
+
+#ifdef _WIN32
+        constexpr sugar::service::NativeSocketHandle kInvalidSocketHandle =
+            static_cast<sugar::service::NativeSocketHandle>(INVALID_SOCKET);
+        constexpr std::uint16_t kWindowsLoopbackTestPortBase = 20000;
+        constexpr std::uint16_t kWindowsLoopbackTestPortCount = 20000;
+
+        SOCKET to_socket(sugar::service::NativeSocketHandle handle) {
+            return static_cast<SOCKET>(handle);
+        }
+
+        sugar::service::NativeSocketHandle to_native_socket_handle(SOCKET socket) {
+            return static_cast<sugar::service::NativeSocketHandle>(socket);
+        }
+
+        int last_socket_error() {
+            return WSAGetLastError();
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == WSAEINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return "WinSock error " + std::to_string(error_code);
+        }
+
+        class ScopedSocketRuntime {
+        public:
+            explicit ScopedSocketRuntime(std::string& err) {
+                WSADATA data{};
+                const int result = WSAStartup(MAKEWORD(2, 2), &data);
+                if (result != 0) {
+                    err = socket_error_message(result);
+                    return;
+                }
+                active_ = true;
+                err.clear();
+            }
+
+            ~ScopedSocketRuntime() {
+                if (active_) {
+                    WSACleanup();
+                }
+            }
+
+            bool active() const {
+                return active_;
+            }
+
+        private:
+            bool active_{ false };
+        };
+#else
+        constexpr sugar::service::NativeSocketHandle kInvalidSocketHandle = -1;
+
+        int to_socket(sugar::service::NativeSocketHandle handle) {
+            return handle;
+        }
+
+        sugar::service::NativeSocketHandle to_native_socket_handle(int socket) {
+            return socket;
+        }
+
+        int last_socket_error() {
+            return errno;
+        }
+
+        bool is_interrupted_socket_error(int error_code) {
+            return error_code == EINTR;
+        }
+
+        std::string socket_error_message(int error_code) {
+            return std::strerror(error_code);
+        }
+
+        class ScopedSocketRuntime {
+        public:
+            explicit ScopedSocketRuntime(std::string& err) {
+                err.clear();
+            }
+
+            bool active() const {
+                return true;
+            }
+        };
+#endif
+
+        bool is_valid_socket(sugar::service::NativeSocketHandle handle) {
+            return handle != kInvalidSocketHandle;
+        }
+
+#ifdef _WIN32
+        bool is_address_in_use_error(int error_code) {
+            return error_code == WSAEADDRINUSE || error_code == WSAEACCES;
+        }
+
+        std::uint16_t next_windows_loopback_test_port() {
+            static std::atomic_uint counter{ 0 };
+            const auto tick = static_cast<unsigned int>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            const unsigned int offset =
+                (counter.fetch_add(1, std::memory_order_relaxed) + tick) %
+                kWindowsLoopbackTestPortCount;
+            return static_cast<std::uint16_t>(kWindowsLoopbackTestPortBase + offset);
+        }
+#endif
+
+        void close_socket_quietly(sugar::service::NativeSocketHandle fd) {
+            if (!is_valid_socket(fd)) {
+                return;
+            }
+#ifdef _WIN32
+            ::closesocket(to_socket(fd));
+#else
+            ::close(fd);
+#endif
+        }
+
+        void shutdown_socket_write(sugar::service::NativeSocketHandle fd) {
+            if (!is_valid_socket(fd)) {
+                return;
+            }
+#ifdef _WIN32
+            ::shutdown(to_socket(fd), SD_SEND);
+#else
+            ::shutdown(fd, SHUT_WR);
+#endif
+        }
+
+        bool bind_loopback_test_listener(
+            sugar::service::NativeSocketHandle fd,
+            std::uint16_t requested_port,
+            std::uint16_t& out_port,
+            std::string& err) {
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(requested_port);
+            if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+                err = "failed to encode loopback listener address";
+                return false;
+            }
+
+            if (::bind(to_socket(fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+                err = "failed to bind loopback listener: " + socket_error_message(last_socket_error());
+                return false;
+            }
+
+            sockaddr_in bound_addr{};
+#ifdef _WIN32
+            int bound_size = sizeof(bound_addr);
+#else
+            socklen_t bound_size = sizeof(bound_addr);
+#endif
+            if (::getsockname(to_socket(fd), reinterpret_cast<sockaddr*>(&bound_addr), &bound_size) != 0) {
+                err = "failed to query loopback listener: " + socket_error_message(last_socket_error());
+                return false;
+            }
+
+            out_port = ntohs(bound_addr.sin_port);
+            err.clear();
+            return true;
+        }
+
+        bool bind_available_loopback_test_listener(
+            sugar::service::NativeSocketHandle fd,
+            std::uint16_t& out_port,
+            std::string& err) {
+#ifdef _WIN32
+            std::string last_err;
+            for (std::size_t attempt = 0; attempt < kWindowsLoopbackTestPortCount; ++attempt) {
+                sockaddr_in addr{};
+                addr.sin_family = AF_INET;
+                addr.sin_port = htons(next_windows_loopback_test_port());
+                if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+                    err = "failed to encode loopback listener address";
+                    return false;
+                }
+                if (::bind(to_socket(fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                    sockaddr_in bound_addr{};
+                    int bound_size = sizeof(bound_addr);
+                    if (::getsockname(to_socket(fd), reinterpret_cast<sockaddr*>(&bound_addr), &bound_size) != 0) {
+                        err = "failed to query loopback listener: " + socket_error_message(last_socket_error());
+                        return false;
+                    }
+                    out_port = ntohs(bound_addr.sin_port);
+                    err.clear();
+                    return true;
+                }
+
+                const int error_code = last_socket_error();
+                last_err = socket_error_message(error_code);
+                if (!is_address_in_use_error(error_code)) {
+                    err = "failed to bind loopback listener: " + last_err;
+                    return false;
+                }
+            }
+
+            err = "failed to bind loopback listener after probing Windows test ports: " + last_err;
+            return false;
+#else
+            return bind_loopback_test_listener(fd, 0, out_port, err);
+#endif
+        }
 
         struct ParsedProtocolResponse {
             sugar::service::ProtocolCommand command{ sugar::service::ProtocolCommand::Unknown };
             bool ok{ false };
             sugar::service::ProtocolErrorCode error_code{ sugar::service::ProtocolErrorCode::InternalError };
+            std::string schema_version{};
             std::string message{};
             std::string session_id{};
             std::string job_id{};
@@ -83,16 +268,22 @@ namespace sugar::contract_suite_internal {
             bool has_job_result{ false };
             std::string result_owner_session_id{};
             bool result_has_primary_backtest{ false };
+            bool result_has_sweep_report{ false };
+            std::size_t result_sweep_top_candidate_count{ 0 };
         };
 
-        bool read_exact(int fd, char* buffer, std::size_t size) {
+        bool read_exact(sugar::service::NativeSocketHandle fd, char* buffer, std::size_t size) {
             std::size_t offset = 0;
             while (offset < size) {
-                const auto got = ::recv(fd, buffer + offset, size - offset, 0);
-                if (got < 0 && errno == EINTR) {
-                    continue;
-                }
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto got = ::recv(to_socket(fd), buffer + offset, chunk_size, 0);
                 if (got <= 0) {
+                    const int error_code = last_socket_error();
+                    if (got < 0 && is_interrupted_socket_error(error_code)) {
+                        continue;
+                    }
                     return false;
                 }
                 offset += static_cast<std::size_t>(got);
@@ -100,19 +291,23 @@ namespace sugar::contract_suite_internal {
             return true;
         }
 
-        bool write_all(int fd, const char* buffer, std::size_t size) {
+        bool write_all(sugar::service::NativeSocketHandle fd, const char* buffer, std::size_t size) {
             std::size_t offset = 0;
             while (offset < size) {
-#ifdef MSG_NOSIGNAL
+#if defined(MSG_NOSIGNAL)
                 constexpr int kSendFlags = MSG_NOSIGNAL;
 #else
                 constexpr int kSendFlags = 0;
 #endif
-                const auto sent = ::send(fd, buffer + offset, size - offset, kSendFlags);
-                if (sent < 0 && errno == EINTR) {
-                    continue;
-                }
+                const int chunk_size = static_cast<int>(std::min<std::size_t>(
+                    size - offset,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto sent = ::send(to_socket(fd), buffer + offset, chunk_size, kSendFlags);
                 if (sent <= 0) {
+                    const int error_code = last_socket_error();
+                    if (sent < 0 && is_interrupted_socket_error(error_code)) {
+                        continue;
+                    }
                     return false;
                 }
                 offset += static_cast<std::size_t>(sent);
@@ -120,7 +315,11 @@ namespace sugar::contract_suite_internal {
             return true;
         }
 
-        bool read_framed_json(int fd, std::size_t max_message_bytes, std::string& out_json, std::string& err) {
+        bool read_framed_json(
+            sugar::service::NativeSocketHandle fd,
+            std::size_t max_message_bytes,
+            std::string& out_json,
+            std::string& err) {
             char header[4]{};
             if (!read_exact(fd, header, sizeof(header))) {
                 err = "failed to read response header";
@@ -298,11 +497,20 @@ namespace sugar::contract_suite_internal {
 
             const auto& object = root.as_obj();
             const auto* ok_value = obj_get(object, "ok");
+            const auto* schema_version_value = obj_get(object, "schema_version");
             const auto* op_value = obj_get(object, "op");
             const auto* error_value = obj_get(object, "error_code");
             const auto* message_value = obj_get(object, "message");
             if (!ok_value || !ok_value->is_bool()) {
                 err = "protocol response missing bool ok field";
+                return false;
+            }
+            if (!schema_version_value || !schema_version_value->is_str()) {
+                err = "protocol response missing string schema_version field";
+                return false;
+            }
+            if (schema_version_value->as_str() != sugar::service::hosted_observability_schema_version()) {
+                err = "protocol response uses unsupported hosted observability schema version";
                 return false;
             }
             if (!op_value || !op_value->is_str()) {
@@ -320,6 +528,7 @@ namespace sugar::contract_suite_internal {
 
             out = ParsedProtocolResponse{};
             out.ok = ok_value->as_bool();
+            out.schema_version = schema_version_value->as_str();
             out.message = message_value->as_str();
 
             if (!parse_protocol_command_name(op_value->as_str(), out.command, err) ||
@@ -404,6 +613,24 @@ namespace sugar::contract_suite_internal {
                 out.has_job_result = true;
                 out.result_owner_session_id = owner_value->as_str();
                 out.result_has_primary_backtest = obj_get(metadata_value->as_obj(), "primary_backtest") != nullptr;
+                if (const auto* sweep_value = obj_get(metadata_value->as_obj(), "sweep");
+                    sweep_value != nullptr) {
+                    if (!sweep_value->is_obj()) {
+                        err = "protocol response job_result.metadata.sweep must be an object";
+                        return false;
+                    }
+                    out.result_has_sweep_report = true;
+                    if (const auto* top_candidates_value =
+                            obj_get(sweep_value->as_obj(), "top_candidates");
+                        top_candidates_value != nullptr) {
+                        if (!top_candidates_value->is_arr()) {
+                            err = "protocol response job_result.metadata.sweep.top_candidates must be an array";
+                            return false;
+                        }
+                        out.result_sweep_top_candidate_count =
+                            top_candidates_value->as_arr().size();
+                    }
+                }
             }
 
             err.clear();
@@ -483,47 +710,46 @@ namespace sugar::contract_suite_internal {
             return out.str();
         }
 
+        bool write_text_file(
+            const std::filesystem::path& path,
+            std::string_view content,
+            std::string& err) {
+            std::ofstream out(path, std::ios::binary);
+            if (!out) {
+                err = "failed to open contract fixture file: " + path.string();
+                return false;
+            }
+            out << content;
+            if (!out) {
+                err = "failed to write contract fixture file: " + path.string();
+                return false;
+            }
+            err.clear();
+            return true;
+        }
+
         bool reserve_loopback_port(std::uint16_t& out_port, std::string& err) {
             out_port = 0;
 
-            const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) {
+            const auto fd = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(fd)) {
                 err = "failed to create probe socket";
                 return false;
             }
 
-            sockaddr_in addr{};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(0);
-            if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
-                ::close(fd);
-                err = "failed to encode loopback probe address";
+            if (!bind_available_loopback_test_listener(fd, out_port, err)) {
+                close_socket_quietly(fd);
                 return false;
             }
 
-            if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-                ::close(fd);
-                err = "failed to reserve loopback port";
-                return false;
-            }
-
-            sockaddr_in bound_addr{};
-            socklen_t bound_size = sizeof(bound_addr);
-            if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound_addr), &bound_size) != 0) {
-                ::close(fd);
-                err = "failed to query reserved loopback port";
-                return false;
-            }
-
-            out_port = ntohs(bound_addr.sin_port);
-            ::close(fd);
+            close_socket_quietly(fd);
             err.clear();
             return out_port != 0;
         }
 
         bool can_connect_loopback(std::uint16_t port) {
-            const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) {
+            const auto fd = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(fd)) {
                 return false;
             }
 
@@ -531,12 +757,12 @@ namespace sugar::contract_suite_internal {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(port);
             if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 return false;
             }
 
-            const bool ok = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
-            ::close(fd);
+            const bool ok = ::connect(to_socket(fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+            close_socket_quietly(fd);
             return ok;
         }
 
@@ -623,9 +849,9 @@ namespace sugar::contract_suite_internal {
             ParsedProtocolResponse& out_response,
             std::string& out_response_json,
             std::string& err) {
-            const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) {
-                err = "failed to create client socket";
+            const auto fd = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(fd)) {
+                err = "failed to create client socket: " + socket_error_message(last_socket_error());
                 return false;
             }
 
@@ -633,30 +859,31 @@ namespace sugar::contract_suite_internal {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(port);
             if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "failed to encode client loopback address";
                 return false;
             }
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-                ::close(fd);
-                err = "failed to connect to live TCP server";
+            if (::connect(to_socket(fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(fd);
+                err = "failed to connect to live TCP server: " + socket_error_message(error_code);
                 return false;
             }
 
             const std::string request_json = sugar::service::serialize_protocol_request_json(request);
             const std::string framed = sugar::service::frame_json_message(request_json);
             if (!write_all(fd, framed.data(), framed.size())) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 err = "failed to send framed request";
                 return false;
             }
 
             if (!read_framed_json(fd, kProtocolMessageLimit, out_response_json, err)) {
-                ::close(fd);
+                close_socket_quietly(fd);
                 return false;
             }
 
-            ::close(fd);
+            close_socket_quietly(fd);
             if (!parse_protocol_response_json(out_response_json, out_response, err)) {
                 return false;
             }
@@ -674,9 +901,12 @@ namespace sugar::contract_suite_internal {
             return send_tcp_protocol_request(port, request, out_response, ignored_response_json, err);
         }
 
-        bool open_connected_loopback_socket(std::uint16_t port, int& out_fd, std::string& err) {
-            out_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (out_fd < 0) {
+        bool open_connected_loopback_socket(
+            std::uint16_t port,
+            sugar::service::NativeSocketHandle& out_fd,
+            std::string& err) {
+            out_fd = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(out_fd)) {
                 err = "failed to create raw client socket";
                 return false;
             }
@@ -685,15 +915,82 @@ namespace sugar::contract_suite_internal {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(port);
             if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
-                ::close(out_fd);
-                out_fd = -1;
+                close_socket_quietly(out_fd);
+                out_fd = kInvalidSocketHandle;
                 err = "failed to encode client loopback address";
                 return false;
             }
-            if (::connect(out_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-                ::close(out_fd);
-                out_fd = -1;
+            if (::connect(to_socket(out_fd), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+                close_socket_quietly(out_fd);
+                out_fd = kInvalidSocketHandle;
                 err = "failed to connect raw client socket";
+                return false;
+            }
+
+            err.clear();
+            return true;
+        }
+
+        bool make_connected_socket_pair(
+            sugar::service::NativeSocketHandle (&fds)[2],
+            std::string& err) {
+            fds[0] = kInvalidSocketHandle;
+            fds[1] = kInvalidSocketHandle;
+
+            const auto listener = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(listener)) {
+                err = "failed to create loopback socket-pair listener: " + socket_error_message(last_socket_error());
+                return false;
+            }
+
+            std::uint16_t bound_port = 0;
+            if (!bind_available_loopback_test_listener(listener, bound_port, err)) {
+                close_socket_quietly(listener);
+                return false;
+            }
+            (void)bound_port;
+            if (::listen(to_socket(listener), 1) != 0) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(listener);
+                err = "failed to listen on loopback socket-pair listener: " + socket_error_message(error_code);
+                return false;
+            }
+
+            sockaddr_in bound_addr{};
+#ifdef _WIN32
+            int bound_size = sizeof(bound_addr);
+#else
+            socklen_t bound_size = sizeof(bound_addr);
+#endif
+            if (::getsockname(to_socket(listener), reinterpret_cast<sockaddr*>(&bound_addr), &bound_size) != 0) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(listener);
+                err = "failed to query loopback socket-pair listener: " + socket_error_message(error_code);
+                return false;
+            }
+
+            fds[0] = to_native_socket_handle(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (!is_valid_socket(fds[0])) {
+                close_socket_quietly(listener);
+                err = "failed to create loopback socket-pair client: " + socket_error_message(last_socket_error());
+                return false;
+            }
+            if (::connect(to_socket(fds[0]), reinterpret_cast<sockaddr*>(&bound_addr), sizeof(bound_addr)) != 0) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(fds[0]);
+                close_socket_quietly(listener);
+                fds[0] = kInvalidSocketHandle;
+                err = "failed to connect loopback socket-pair client: " + socket_error_message(error_code);
+                return false;
+            }
+
+            fds[1] = to_native_socket_handle(::accept(to_socket(listener), nullptr, nullptr));
+            close_socket_quietly(listener);
+            if (!is_valid_socket(fds[1])) {
+                const int error_code = last_socket_error();
+                close_socket_quietly(fds[0]);
+                fds[0] = kInvalidSocketHandle;
+                err = "failed to accept loopback socket-pair server: " + socket_error_message(error_code);
                 return false;
             }
 
@@ -850,15 +1147,24 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_network_socket_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_network_socket] socket-level protocol transport behavior\n";
 
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for protocol socket contracts");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
+
         sugar::service::ProtocolDispatcherConfig config{};
         config.runtime.storage_root = contract_tmp_case_dir("service_protocol_network_socket");
         config.source_root = std::filesystem::current_path();
         sugar::service::ProtocolDispatcher dispatcher(config);
 
         {
-            int fds[2]{ -1, -1 };
-            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                return t.expect(false, "socketpair creates transport fixture");
+            sugar::service::NativeSocketHandle fds[2]{ kInvalidSocketHandle, kInvalidSocketHandle };
+            std::string err;
+            if (!make_connected_socket_pair(fds, err)) {
+                return t.expect(false, "loopback socket pair creates transport fixture");
             }
 
             sugar::service::ProtocolRequest request{};
@@ -868,7 +1174,6 @@ namespace sugar::contract_suite_internal {
             t.expect(write_all(fds[0], framed.data(), framed.size()),
                 "socket fixture writes valid framed connect request");
 
-            std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
                 fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles valid framed request");
@@ -884,14 +1189,15 @@ namespace sugar::contract_suite_internal {
             t.expect(parsed && response.error_code == sugar::service::ProtocolErrorCode::None,
                 "network session reports error_code=none for valid request");
 
-            ::close(fds[0]);
-            ::close(fds[1]);
+            close_socket_quietly(fds[0]);
+            close_socket_quietly(fds[1]);
         }
 
         {
-            int fds[2]{ -1, -1 };
-            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                return t.expect(false, "socketpair recreates transport fixture for truncated frame");
+            sugar::service::NativeSocketHandle fds[2]{ kInvalidSocketHandle, kInvalidSocketHandle };
+            std::string err;
+            if (!make_connected_socket_pair(fds, err)) {
+                return t.expect(false, "loopback socket pair recreates transport fixture for truncated frame");
             }
 
             sugar::service::ProtocolRequest request{};
@@ -901,9 +1207,8 @@ namespace sugar::contract_suite_internal {
             framed.pop_back();
             t.expect(write_all(fds[0], framed.data(), framed.size()),
                 "socket fixture writes truncated framed request bytes");
-            ::shutdown(fds[0], SHUT_WR);
+            shutdown_socket_write(fds[0]);
 
-            std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
                 fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles truncated request without crashing server loop");
@@ -921,22 +1226,22 @@ namespace sugar::contract_suite_internal {
             t.expect(parsed && response.message.find("frame body") != std::string::npos,
                 "network session preserves truncated-body detail in malformed response");
 
-            ::close(fds[0]);
-            ::close(fds[1]);
+            close_socket_quietly(fds[0]);
+            close_socket_quietly(fds[1]);
         }
 
         {
-            int fds[2]{ -1, -1 };
-            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                return t.expect(false, "socketpair recreates transport fixture for zero-length frame");
+            sugar::service::NativeSocketHandle fds[2]{ kInvalidSocketHandle, kInvalidSocketHandle };
+            std::string err;
+            if (!make_connected_socket_pair(fds, err)) {
+                return t.expect(false, "loopback socket pair recreates transport fixture for zero-length frame");
             }
 
             const std::string zero_length_header(4, '\0');
             t.expect(write_all(fds[0], zero_length_header.data(), zero_length_header.size()),
                 "socket fixture writes zero-length frame header bytes");
-            ::shutdown(fds[0], SHUT_WR);
+            shutdown_socket_write(fds[0]);
 
-            std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
                 fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles zero-length frame without crashing server loop");
@@ -954,22 +1259,22 @@ namespace sugar::contract_suite_internal {
             t.expect(parsed && response.message.find("frame length is invalid") != std::string::npos,
                 "network session preserves zero-length-frame detail in malformed response");
 
-            ::close(fds[0]);
-            ::close(fds[1]);
+            close_socket_quietly(fds[0]);
+            close_socket_quietly(fds[1]);
         }
 
         {
-            int fds[2]{ -1, -1 };
-            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                return t.expect(false, "socketpair recreates transport fixture for oversized frame header");
+            sugar::service::NativeSocketHandle fds[2]{ kInvalidSocketHandle, kInvalidSocketHandle };
+            std::string err;
+            if (!make_connected_socket_pair(fds, err)) {
+                return t.expect(false, "loopback socket pair recreates transport fixture for oversized frame header");
             }
 
             const std::string oversized_header(4, static_cast<char>(0xFF));
             t.expect(write_all(fds[0], oversized_header.data(), oversized_header.size()),
                 "socket fixture writes oversized frame header bytes");
-            ::shutdown(fds[0], SHUT_WR);
+            shutdown_socket_write(fds[0]);
 
-            std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
                 fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles oversized frame header without crashing server loop");
@@ -987,14 +1292,15 @@ namespace sugar::contract_suite_internal {
             t.expect(parsed && response.message.find("frame length is invalid") != std::string::npos,
                 "network session preserves oversized-frame detail in malformed response");
 
-            ::close(fds[0]);
-            ::close(fds[1]);
+            close_socket_quietly(fds[0]);
+            close_socket_quietly(fds[1]);
         }
 
         {
-            int fds[2]{ -1, -1 };
-            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                return t.expect(false, "socketpair recreates transport fixture for partial frame header");
+            sugar::service::NativeSocketHandle fds[2]{ kInvalidSocketHandle, kInvalidSocketHandle };
+            std::string err;
+            if (!make_connected_socket_pair(fds, err)) {
+                return t.expect(false, "loopback socket pair recreates transport fixture for partial frame header");
             }
 
             std::string partial_header;
@@ -1002,9 +1308,8 @@ namespace sugar::contract_suite_internal {
             partial_header.push_back('\x10');
             t.expect(write_all(fds[0], partial_header.data(), partial_header.size()),
                 "socket fixture writes partial frame header bytes");
-            ::shutdown(fds[0], SHUT_WR);
+            shutdown_socket_write(fds[0]);
 
-            std::string err;
             const bool handled = sugar::service::handle_protocol_socket_connection(
                 fds[1], dispatcher, kSocketContractFrameLimit, sugar::service::SecurityLogFn{}, err);
             t.expect(handled, "network session handles partial frame header without crashing server loop");
@@ -1022,8 +1327,250 @@ namespace sugar::contract_suite_internal {
             t.expect(parsed && response.message.find("frame header") != std::string::npos,
                 "network session preserves partial-header detail in malformed response");
 
-            ::close(fds[0]);
-            ::close(fds[1]);
+            close_socket_quietly(fds[0]);
+            close_socket_quietly(fds[1]);
+        }
+
+        return true;
+    }
+
+    bool test_service_protocol_live_client_run_contracts(ContractAsserts& t) {
+        t.out << "[service_protocol_live_client_run] live TCP one-command client run\n";
+
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for live client run contract");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
+
+        const auto case_dir = contract_tmp_case_dir("service_protocol_live_client_run");
+        const auto fixture_dir = case_dir / "fixtures";
+        std::filesystem::create_directories(fixture_dir);
+        const auto layout_path = fixture_dir / "layout.json";
+        const auto logic_path = fixture_dir / "logic.json";
+        const auto data_path = fixture_dir / "data.csv";
+
+        std::string err;
+        const bool fixtures_written =
+            write_text_file(layout_path, single_series_layout_json(), err) &&
+            write_text_file(logic_path, single_series_sweep_logic_json(8), err) &&
+            write_text_file(data_path, single_series_csv_text(32), err);
+        t.expect(fixtures_written, "live client run contract writes layout, logic, and data fixtures");
+        if (!fixtures_written) {
+            t.out << "  fixture error: " << err << "\n";
+            return true;
+        }
+
+        ScopedLiveTcpServer server{};
+        sugar::service::ServerCliOptions options{};
+        options.storage_root = case_dir / "storage";
+        options.source_root = std::filesystem::current_path();
+        options.worker_limit = 2;
+        options.connection_worker_limit = 2;
+        options.max_pending_connections = 8;
+
+        const bool started = server.start(options, err);
+        t.expect(started, "live TCP server starts for one-command client run");
+        if (!started) {
+            t.out << "  server start error: " << err << "\n";
+            return true;
+        }
+
+        std::vector<std::string> args{
+            "sugar_client",
+            "run",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            std::to_string(server.port()),
+            "--layout",
+            layout_path.string(),
+            "--logic",
+            logic_path.string(),
+            "--data",
+            data_path.string(),
+            "--poll-ms",
+            "25",
+            "--wait-timeout-ms",
+            "30000",
+            "--compact",
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& arg : args) {
+            argv.push_back(arg.data());
+        }
+
+        std::ostringstream client_out;
+        std::ostringstream client_err;
+        const int rc = sugar::service::run_tcp_client_from_cli(
+            static_cast<int>(argv.size()),
+            argv.data(),
+            client_out,
+            client_err);
+        t.expect(rc == 0, "sugar_client run completes a hosted layout/logic/data job over live TCP");
+        t.expect(client_err.str().empty(), "sugar_client run --compact keeps progress chatter off stderr on success");
+
+        ParsedProtocolResponse result_response{};
+        std::string parse_err;
+        const bool parsed = parse_protocol_response_json(client_out.str(), result_response, parse_err);
+        t.expect(parsed, "sugar_client run prints parseable final hosted result JSON");
+        if (!parsed) {
+            t.out << "  client parse error: " << parse_err << "\n";
+            t.out << "  client stdout:\n" << client_out.str() << "\n";
+            t.out << "  client stderr:\n" << client_err.str() << "\n";
+        }
+        t.expect(
+            parsed &&
+                result_response.ok &&
+                result_response.command == sugar::service::ProtocolCommand::RetrieveResults &&
+                result_response.has_job_result,
+            "sugar_client run returns the final retrieve_results payload instead of intermediate ids");
+        t.expect(
+            parsed &&
+                result_response.result_has_sweep_report &&
+                result_response.result_sweep_top_candidate_count > 0,
+            "sugar_client run preserves hosted sweep report metadata in the final result");
+
+        std::vector<std::string> human_args = args;
+        human_args.pop_back();
+        std::vector<char*> human_argv;
+        human_argv.reserve(human_args.size());
+        for (auto& arg : human_args) {
+            human_argv.push_back(arg.data());
+        }
+
+        std::ostringstream human_out;
+        std::ostringstream human_err;
+        const int human_rc = sugar::service::run_tcp_client_from_cli(
+            static_cast<int>(human_argv.size()),
+            human_argv.data(),
+            human_out,
+            human_err);
+        t.expect(human_rc == 0, "sugar_client run completes in default human-output mode");
+        t.expect(
+            human_out.str().find("Execution completed") != std::string::npos &&
+                human_out.str().find("PlanSpec Sweep Results") != std::string::npos,
+            "sugar_client run default output prints the hosted summary text");
+        t.expect(
+            human_out.str().find("\"job_result\"") == std::string::npos,
+            "sugar_client run default output avoids dumping raw hosted JSON");
+        t.expect(
+            human_err.str().find("Connected session") != std::string::npos &&
+                human_err.str().find("Submitted job") != std::string::npos,
+            "sugar_client run default output keeps progress chatter on stderr");
+
+        const auto timeout_logic_path = fixture_dir / "timeout_logic.json";
+        const auto timeout_data_path = fixture_dir / "timeout_data.csv";
+        const bool timeout_fixtures_written =
+            write_text_file(timeout_logic_path, single_series_sweep_logic_json(10000), err) &&
+            write_text_file(timeout_data_path, single_series_csv_text(256), err);
+        t.expect(timeout_fixtures_written, "live client run timeout contract writes long-running fixtures");
+        if (!timeout_fixtures_written) {
+            t.out << "  timeout fixture error: " << err << "\n";
+        }
+
+        if (timeout_fixtures_written) {
+            std::vector<std::string> timeout_args{
+                "sugar_client",
+                "run",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                std::to_string(server.port()),
+                "--layout",
+                layout_path.string(),
+                "--logic",
+                timeout_logic_path.string(),
+                "--data",
+                timeout_data_path.string(),
+                "--poll-ms",
+                "1",
+                "--wait-timeout-ms",
+                "1",
+                "--compact",
+            };
+            std::vector<char*> timeout_argv;
+            timeout_argv.reserve(timeout_args.size());
+            for (auto& arg : timeout_args) {
+                timeout_argv.push_back(arg.data());
+            }
+
+            std::ostringstream timeout_out;
+            std::ostringstream timeout_err;
+            const int timeout_rc = sugar::service::run_tcp_client_from_cli(
+                static_cast<int>(timeout_argv.size()),
+                timeout_argv.data(),
+                timeout_out,
+                timeout_err);
+            t.expect(timeout_rc == 1, "sugar_client run returns failure after wait-timeout expiry");
+            t.expect(
+                timeout_err.str().find("reuse the same session id") != std::string::npos &&
+                    timeout_err.str().find("Creating a new session will not have access to this job.") != std::string::npos,
+                "sugar_client run timeout guidance tells operators to reuse the same session id");
+
+            ParsedProtocolResponse timeout_status{};
+            std::string timeout_parse_err;
+            const bool timeout_status_parsed = parse_protocol_response_json(
+                timeout_out.str(),
+                timeout_status,
+                timeout_parse_err);
+            t.expect(timeout_status_parsed, "sugar_client run timeout prints parseable latest status JSON");
+            if (timeout_status_parsed) {
+                t.expect(
+                    timeout_status.command == sugar::service::ProtocolCommand::CheckStatus &&
+                        timeout_status.has_job_status &&
+                        !timeout_status.session_id.empty() &&
+                        !timeout_status.job_id.empty(),
+                    "sugar_client run timeout preserves the original session and job ids in the latest status payload");
+
+                sugar::service::JobState terminal_state{};
+                bool saw_active_state = false;
+                std::string failure_message;
+                std::size_t poll_count = 0;
+                std::string wait_err;
+                const bool reached_terminal = wait_for_terminal_status_over_tcp(
+                    server.port(),
+                    timeout_status.session_id,
+                    timeout_status.job_id,
+                    terminal_state,
+                    saw_active_state,
+                    failure_message,
+                    poll_count,
+                    wait_err);
+                t.expect(reached_terminal, "same-session polling can resume after sugar_client run times out");
+                if (reached_terminal) {
+                    ParsedProtocolResponse resumed_result{};
+                    std::string resumed_result_json;
+                    std::string resumed_err;
+                    sugar::service::ProtocolRequest resumed_request{};
+                    resumed_request.command = sugar::service::ProtocolCommand::RetrieveResults;
+                    resumed_request.session_id = timeout_status.session_id;
+                    resumed_request.job_id = timeout_status.job_id;
+                    const bool resumed_ok = send_tcp_protocol_request(
+                        server.port(),
+                        resumed_request,
+                        resumed_result,
+                        resumed_result_json,
+                        resumed_err);
+                    t.expect(
+                        resumed_ok &&
+                            resumed_result.ok &&
+                            resumed_result.command == sugar::service::ProtocolCommand::RetrieveResults,
+                        "same-session result retrieval succeeds after sugar_client run timeout guidance");
+                }
+            }
+        }
+
+        server.stop();
+        t.expect(server.exit_code() == 0, "live client run server stops cleanly after one-command run");
+        if (server.exit_code() != 0 || rc != 0) {
+            t.out << "  server stderr:\n" << server.stderr_text();
+            t.out << "  server stdout:\n" << server.stdout_text();
+            t.out << "  client stderr:\n" << client_err.str();
+            t.out << "  client stdout:\n" << client_out.str();
         }
 
         return true;
@@ -1031,6 +1578,14 @@ namespace sugar::contract_suite_internal {
 
     bool test_service_protocol_live_multi_client_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_live_multi_client] live TCP multi-client submit/status/result concurrency\n";
+
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for live multi-client contracts");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
 
         ScopedLiveTcpServer server{};
         sugar::service::ServerCliOptions options{};
@@ -1144,9 +1699,11 @@ namespace sugar::contract_suite_internal {
                 if (!runs[i].result_response.ok ||
                     !runs[i].result_response.has_job_result ||
                     runs[i].result_response.result_owner_session_id != runs[i].session_id ||
-                    !runs[i].result_response.result_has_primary_backtest) {
+                    !runs[i].result_response.result_has_primary_backtest ||
+                    !runs[i].result_response.result_has_sweep_report ||
+                    runs[i].result_response.result_sweep_top_candidate_count == 0) {
                     runs[i].error = runs[i].result_response.message.empty()
-                        ? "result response did not preserve owned primary_backtest metadata"
+                        ? "result response did not preserve owned hosted sweep metadata"
                         : runs[i].result_response.message;
                     return;
                 }
@@ -1179,6 +1736,23 @@ namespace sugar::contract_suite_internal {
             saw_active_state = saw_active_state || run.saw_active_state;
         }
         t.expect(all_clients_ok, "live TCP multi-client workers submit, observe, and retrieve results without per-client failures");
+        if (!all_clients_ok) {
+            t.out << "  server exit code while diagnosing multi-client failure: " << server.exit_code() << "\n";
+            const std::string server_stderr = server.stderr_text();
+            const std::string server_stdout = server.stdout_text();
+            if (!server_stderr.empty()) {
+                t.out << "  server stderr:\n" << server_stderr;
+            }
+            if (!server_stdout.empty()) {
+                t.out << "  server stdout:\n" << server_stdout;
+            }
+            for (std::size_t i = 0; i < runs.size(); ++i) {
+                const auto& run = runs[i];
+                if (!run.error.empty()) {
+                    t.out << "  client " << (i + 1) << " error: " << run.error << "\n";
+                }
+            }
+        }
         t.expect(session_ids.size() == kClientCount, "live TCP multi-client run assigns distinct session ids");
         t.expect(job_ids.size() == kClientCount, "live TCP multi-client run assigns distinct job ids");
         t.expect(saw_active_state, "live TCP multi-client polling observes queued/running progress while jobs are in flight");
@@ -1212,6 +1786,14 @@ namespace sugar::contract_suite_internal {
 
     bool test_service_protocol_live_cancel_polling_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_live_cancel_polling] live TCP repeated status polling and cancellation\n";
+
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for live cancel-polling contracts");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
 
         ScopedLiveTcpServer server{};
         sugar::service::ServerCliOptions options{};
@@ -1518,6 +2100,14 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_remote_bind_policy] live TCP remote-bind policy enforcement\n";
 
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for remote-bind contracts");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
+
         {
             sugar::service::ServerCliOptions options{};
             options.bind_host = "0.0.0.0";
@@ -1565,6 +2155,14 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_slow_client_resilience_contracts(ContractAsserts& t) {
         t.out << "[service_protocol_slow_client_resilience] live TCP slow-client and flood resilience\n";
 
+        std::string socket_runtime_err;
+        ScopedSocketRuntime socket_runtime(socket_runtime_err);
+        t.expect(socket_runtime.active(), "socket runtime initializes for slow-client contracts");
+        if (!socket_runtime.active()) {
+            t.out << "  socket runtime error: " << socket_runtime_err << "\n";
+            return true;
+        }
+
         ScopedLiveTcpServer server{};
         sugar::service::ServerCliOptions options{};
         options.storage_root = contract_tmp_case_dir("service_protocol_slow_client_resilience");
@@ -1581,9 +2179,9 @@ namespace sugar::contract_suite_internal {
             return true;
         }
 
-        int slow_header_fd = -1;
-        int slow_body_fd = -1;
-        std::vector<int> idle_fds;
+        sugar::service::NativeSocketHandle slow_header_fd = kInvalidSocketHandle;
+        sugar::service::NativeSocketHandle slow_body_fd = kInvalidSocketHandle;
+        std::vector<sugar::service::NativeSocketHandle> idle_fds;
         const bool opened_header = open_connected_loopback_socket(server.port(), slow_header_fd, err);
         const bool opened_body = open_connected_loopback_socket(server.port(), slow_body_fd, err);
         t.expect(opened_header && opened_body,
@@ -1603,7 +2201,7 @@ namespace sugar::contract_suite_internal {
         }
 
         for (int i = 0; i < 4; ++i) {
-            int idle_fd = -1;
+            sugar::service::NativeSocketHandle idle_fd = kInvalidSocketHandle;
             if (open_connected_loopback_socket(server.port(), idle_fd, err)) {
                 idle_fds.push_back(idle_fd);
             }
@@ -1622,24 +2220,24 @@ namespace sugar::contract_suite_internal {
             (void)disconnect_session(server.port(), session_id, disconnect_err);
         }
 
-        if (slow_header_fd >= 0) {
-            ::close(slow_header_fd);
+        if (is_valid_socket(slow_header_fd)) {
+            close_socket_quietly(slow_header_fd);
         }
-        if (slow_body_fd >= 0) {
-            ::close(slow_body_fd);
+        if (is_valid_socket(slow_body_fd)) {
+            close_socket_quietly(slow_body_fd);
         }
-        for (const int fd : idle_fds) {
-            ::close(fd);
+        for (const auto fd : idle_fds) {
+            close_socket_quietly(fd);
         }
 
         server.stop();
         t.expect(server.exit_code() == 0, "slow-client resilience server stops cleanly after timeout pressure");
-        t.expect(server.stdout_text().find("SECURITY event=malformed_frame") != std::string::npos,
-            "slow-client resilience path records malformed-frame security events");
+        t.expect(
+            server.stdout_text().find("SECURITY schema_version=sugarbot.hosted.v1 category=protocol event=malformed_frame")
+                != std::string::npos,
+            "slow-client resilience path records schema-stamped malformed-frame protocol audit events");
 
         return true;
     }
 
 } // namespace sugar::contract_suite_internal
-
-#endif

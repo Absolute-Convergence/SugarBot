@@ -9,6 +9,7 @@ Files:
 - `interactive_swing.txt`: interactive menu run, template `Swing_Breakout_Validation` via PlanSpec path.
 - `panel_gdc.txt`: `--run-panel` non-custom template run (`Gated_Diff_Cross`) via PlanSpec panel path.
 - `tmp_panel_dataspec_iso8601.json`: temporary ISO8601 DataSpec fixture used for smoke runs over `data/BTCUSD_420.csv`.
+- `legacy_cli_artifacts/`: older ad hoc CLI fixtures and captured outputs moved out of the root `graphs/` folder so they are not confused with end-user demos.
 
 Last validated baseline:
 - Contract suite: Passed 98 / Failed 0

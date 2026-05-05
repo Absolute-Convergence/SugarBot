@@ -1,14 +1,19 @@
 #include "tests/app_test_support.h"
 
+#include <cstdint>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include "commands/app_commands.h"
 #include "ingest/layout_spec.h"
+#include "ops/op_registry.h"
 #include "reporting/app_reporters.h"
 #include "runtime/app_runtime.h"
 #include "sweep/metrics.h"
+#include "sweep/plan_sweep.h"
 #include "sweep/runtime_graph_preview.h"
 
 namespace sugar::app::tests {
@@ -27,6 +32,10 @@ namespace sugar::app::tests {
             t.check(text.find("core.select") != std::string::npos, "dump-ops output includes core.select");
             t.check(text.find("ts.macd") != std::string::npos, "dump-ops output includes ts.macd");
             t.check(text.find("ts.bollinger_width") != std::string::npos, "dump-ops output includes ts.bollinger_width");
+            t.check(text.find("ts.entropy") != std::string::npos, "dump-ops output includes ts.entropy");
+            t.check(text.find("ts.autocorrelation") != std::string::npos, "dump-ops output includes ts.autocorrelation");
+            t.check(text.find("ts.hurst") != std::string::npos, "dump-ops output includes ts.hurst");
+            t.check(text.find("ts.regime_change") != std::string::npos, "dump-ops output includes ts.regime_change");
             t.check(text.find("ms.correlation") != std::string::npos, "dump-ops output includes ms.correlation");
             t.check(text.find("spatial.identity") != std::string::npos, "dump-ops output includes spatial.identity");
             t.check(text.find("spatial.radius_mean") != std::string::npos, "dump-ops output includes spatial.radius_mean");
@@ -151,6 +160,8 @@ namespace sugar::app::tests {
                 "help output warns about the unsupported data_spec wrapper");
             t.check(text.find("--align-dump layout.json data.csv --series-key-col <col>") != std::string::npos,
                 "help output promotes align-dump as a planning tool");
+            t.check(text.find("groups the CSV by that column") != std::string::npos,
+                "help output explains why align-dump requires --series-key-col");
             t.check(text.find("Reports and diagnostics:") != std::string::npos,
                 "help output includes a reporting/discovery section");
             t.check(text.find("final execution report for the selected path") != std::string::npos,
@@ -203,6 +214,8 @@ namespace sugar::app::tests {
                 "dump-plan output documents canonical run objective shape");
             t.check(text.find("`--align-dump`") != std::string::npos,
                 "dump-plan output points users to align-dump before cross-series authoring");
+            t.check(text.find("values become the aligned series/entity keys") != std::string::npos,
+                "dump-plan output explains --series-key-col semantics");
             t.check(text.find("`ts.sub`") != std::string::npos,
                 "dump-plan output includes same-series subtraction guidance");
             return t.failed == 0;
@@ -311,6 +324,62 @@ namespace sugar::app::tests {
                 "drop-row obs-report reports dropped rows");
             t.check(text.find("drop-row missing policy removed 1 row(s)") != std::string::npos,
                 "drop-row obs-report preserves input warning text");
+            return t.failed == 0;
+        }
+
+        bool test_obs_report_warns_on_degenerate_value_columns(TestContext& t) {
+            t.out << "[app_dispatch] obs-report degenerate value-column warnings\n";
+            std::string fixture_err;
+            const auto fixture_dir = app_fixture_dir(fixture_err);
+            t.check(!fixture_dir.empty(), "degenerate value-column fixture dir is available");
+            if (fixture_dir.empty()) return false;
+
+            const auto layout_path = fixture_dir / "app_tests_tmp_degenerate_columns_layout.json";
+            const auto csv_path = fixture_dir / "app_tests_tmp_degenerate_columns.csv";
+
+            {
+                std::ofstream layout_out(layout_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(layout_out), "degenerate value-column layout file opens");
+                if (!layout_out) return false;
+                layout_out <<
+                    "{\n"
+                    "  \"ingest\": {\n"
+                    "    \"time_col\": \"time\",\n"
+                    "    \"time_kind\": \"YyyyMmDd\",\n"
+                    "    \"value_cols\": [\"close\", \"volume\", \"ma\"],\n"
+                    "    \"primary_value_col\": \"close\",\n"
+                    "    \"missing_tokens\": [\"\", \"NA\", \"null\", \"nan\", \"NaN\"],\n"
+                    "    \"missing_default\": { \"kind\": \"NaN\" }\n"
+                    "  }\n"
+                    "}\n";
+            }
+
+            {
+                std::ofstream csv_out(csv_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(csv_out), "degenerate value-column csv file opens");
+                if (!csv_out) return false;
+                csv_out <<
+                    "time,close,volume,ma\n"
+                    "20240101,10,0,NaN\n"
+                    "20240102,11,0,NA\n";
+            }
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::ObsReport;
+            cmd.obs_report.layout_path = layout_path.string();
+            cmd.obs_report.csv_path = csv_path.string();
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_obs_report_command(cmd, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "degenerate value-column obs-report returns success");
+            t.check(err.str().empty(), "degenerate value-column obs-report produces no error output");
+            t.check(text.find("value column 'volume' is uniformly zero after preprocessing") != std::string::npos,
+                "obs-report warns on uniformly-zero value columns");
+            t.check(text.find("value column 'ma' contains no finite values after preprocessing") != std::string::npos,
+                "obs-report warns on all-NaN value columns");
             return t.failed == 0;
         }
 
@@ -476,6 +545,179 @@ namespace sugar::app::tests {
                 "coarse-fine run output advertises the candidate report section");
             t.check(text.find("Run report:") != std::string::npos,
                 "coarse-fine run output prints candidate details through the run report seam");
+            return t.failed == 0;
+        }
+
+        bool test_plan_sweep_report_preserves_fractional_param_ranges(TestContext& t) {
+            t.out << "[app_reporters] fractional sweep range display\n";
+
+            sugar::PlanSweepReport report{};
+            report.requested_sweep.enabled = true;
+            report.requested_sweep.engine = sugar::PlanSweepEngineKind::MonteCarlo;
+            report.requested_sweep.objective = "pnl";
+            report.requested_sweep.top_k = 1;
+            report.requested_sweep.max_evals = 3;
+            report.resolved_objective.primary.name = "pnl";
+            report.parameter_count = 1;
+            report.total_combinations = 3;
+            report.candidate_space_size = 3;
+            report.evaluations_run = 3;
+
+            sugar::SweepParameterRangeSummary threshold{};
+            threshold.name = "threshold";
+            threshold.requested_range.values = { 0.9, 1.1, 1.3 };
+            threshold.requested_range.is_int = false;
+            threshold.expanded_count = 3;
+            report.parameter_ranges.push_back(std::move(threshold));
+
+            std::ostringstream out;
+            sugar::print_plan_sweep_report(report, out);
+            const std::string text = out.str();
+
+            t.check(text.find("Engine: monte_carlo") != std::string::npos,
+                "sweep report prints the selected engine");
+            t.check(text.find("threshold: [0.9, 1.1, 1.3]") != std::string::npos,
+                "sweep report preserves fractional requested values");
+            t.check(text.find("threshold: [1, 1, 1]") == std::string::npos,
+                "sweep report no longer rounds fractional requested values to integers");
+
+            const std::string plan_json =
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"name\": \"fractional_sweep_parse\",\n"
+                "  \"numeric_nodes\": [],\n"
+                "  \"bool_nodes\": [],\n"
+                "  \"bindings\": {\n"
+                "    \"entry_long\": \"\",\n"
+                "    \"exit_long\": \"\",\n"
+                "    \"entry_short\": \"\",\n"
+                "    \"exit_short\": \"\",\n"
+                "    \"allow_trade\": \"\"\n"
+                "  },\n"
+                "  \"sweep\": {\n"
+                "    \"enabled\": true,\n"
+                "    \"params\": {\n"
+                "      \"threshold\": { \"values\": [0.9, 1.1, 1.3] },\n"
+                "      \"window\": { \"values\": [8, 16, 24] },\n"
+                "      \"forced_int\": { \"values\": [0.9, 1.1], \"is_int\": true }\n"
+                "    }\n"
+                "  }\n"
+                "}\n";
+            sugar::PlanSpec spec{};
+            std::string err;
+            const bool parsed = sugar::parse_plan_spec_json(plan_json, spec, err);
+            t.check(parsed, "PlanSpec parser accepts fractional sweep fixture");
+            t.check(parsed && spec.sweep.has_value() &&
+                    !spec.sweep->params.at("threshold").is_int,
+                "PlanSpec parser infers float sweep params from decimal values");
+            t.check(parsed && spec.sweep.has_value() &&
+                    spec.sweep->params.at("window").is_int,
+                "PlanSpec parser keeps integer sweep params integer by default");
+            t.check(parsed && spec.sweep.has_value() &&
+                    spec.sweep->params.at("forced_int").is_int,
+                "PlanSpec parser honors explicit integer sweep params");
+            return t.failed == 0;
+        }
+
+        bool test_plan_sweep_report_derives_qol_warnings(TestContext& t) {
+            t.out << "[app_reporters] sweep QoL warning derivation\n";
+
+            sugar::PlanSweepReport report{};
+            report.requested_sweep.enabled = true;
+            report.requested_sweep.engine = sugar::PlanSweepEngineKind::CoarseFine;
+            report.requested_sweep.objective = "pnl";
+            report.requested_sweep.top_k = 2;
+            report.requested_sweep.max_evals = 10;
+            report.resolved_objective.primary.source = sugar::ObjectiveValueSource::ReportedMetric;
+            report.resolved_objective.primary.name = "pnl";
+            report.resolved_objective.direction = sugar::ObjectiveDirection::Maximize;
+            report.parameter_count = 3;
+            report.total_combinations = 10;
+            report.candidate_space_size = 10;
+            report.evaluations_run = 10;
+
+            sugar::SweepParameterRangeSummary breakout{};
+            breakout.name = "breakout_n";
+            breakout.requested_range.min = 12;
+            breakout.requested_range.max = 30;
+            breakout.requested_range.step = 6;
+            breakout.requested_range.is_int = true;
+            breakout.expanded_count = 4;
+            report.parameter_ranges.push_back(std::move(breakout));
+
+            sugar::SweepParameterRangeSummary fast{};
+            fast.name = "n_fast";
+            fast.requested_range.min = 10;
+            fast.requested_range.max = 30;
+            fast.requested_range.step = 1;
+            fast.requested_range.is_int = true;
+            fast.expanded_count = 21;
+            report.parameter_ranges.push_back(std::move(fast));
+
+            sugar::SweepParameterRangeSummary slow{};
+            slow.name = "n_slow";
+            slow.requested_range.min = 20;
+            slow.requested_range.max = 40;
+            slow.requested_range.step = 1;
+            slow.requested_range.is_int = true;
+            slow.expanded_count = 21;
+            report.parameter_ranges.push_back(std::move(slow));
+
+            for (std::size_t i = 0; i < 2; ++i) {
+                sugar::SweepRankedCandidate candidate{};
+                candidate.candidate_index = i;
+                candidate.score = 10.0 - static_cast<double>(i);
+                candidate.result.pnl = candidate.score;
+                candidate.parameter_values = {
+                    sugar::SweepParameterSetting{ "breakout_n", static_cast<std::int64_t>(12) },
+                    sugar::SweepParameterSetting{ "n_fast", static_cast<std::int64_t>(27) },
+                    sugar::SweepParameterSetting{ "n_slow", static_cast<std::int64_t>(20) },
+                };
+                report.top_candidates.push_back(std::move(candidate));
+            }
+
+            report.warnings = sugar::derive_plan_sweep_report_warnings(report);
+
+            std::ostringstream out;
+            sugar::print_plan_sweep_report(report, out);
+            const std::string text = out.str();
+
+            t.check(report.warnings.size() >= 2,
+                "sweep report derives boundary and semantic warning text");
+            t.check(text.find("sweep boundary concentration") != std::string::npos &&
+                    text.find("breakout_n=12") != std::string::npos,
+                "sweep report annotates returned candidates concentrated at a sweep boundary");
+            t.check(text.find("semantic fast/slow warning") != std::string::npos &&
+                    text.find("n_fast > n_slow") != std::string::npos,
+                "sweep report annotates likely fast/slow parameter inversions");
+            return t.failed == 0;
+        }
+
+        bool test_param_string_literal_error_hints_ref_syntax(TestContext& t) {
+            t.out << "[op_registry] param string literal ref-syntax hint\n";
+
+            const auto registry = sugar::make_default_registry();
+            const auto* op = registry.get("ts.sma");
+            t.check(op != nullptr, "ts.sma registry entry is available");
+            if (op == nullptr) return false;
+
+            sugar::ParamMap node_params{};
+            node_params["n"] = std::string("n_fast");
+            sugar::ParamMap plan_params{};
+            plan_params["n_fast"] = static_cast<std::int64_t>(5);
+            sugar::ResolvedParamMap resolved{};
+            std::string err;
+            const bool ok = sugar::resolve_and_validate_params(
+                *op,
+                node_params,
+                plan_params,
+                nullptr,
+                resolved,
+                err);
+
+            t.check(!ok, "string literal numeric param is rejected");
+            t.check(err.find("Use {\"ref\":\"n_fast\"}") != std::string::npos,
+                "wrong-type error points at missing param-ref syntax");
             return t.failed == 0;
         }
 
@@ -991,6 +1233,37 @@ namespace sugar::app::tests {
             return t.failed == 0;
         }
 
+        bool test_align_dump_accepts_wrapped_layout_spec(TestContext& t) {
+            t.out << "[app_dispatch] align-dump accepts wrapped LayoutSpec\n";
+            RunFixturePaths fixture{};
+            std::string fixture_err;
+            const bool fixture_ok = create_unified_panel_ranked_fixture(fixture, fixture_err);
+            t.check(fixture_ok, "wrapped LayoutSpec align-dump fixture files are created");
+            if (!fixture_ok) return false;
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::AlignDump;
+            cmd.align_dump.spec_path = fixture.layout_path;
+            cmd.align_dump.csv_path = fixture.csv_path;
+            cmd.align_dump.series_key_col = "symbol";
+            cmd.align_dump.calendar = sugar::align::CalendarPolicy::Intersection;
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = run_align_dump_command(cmd, out, err);
+            const std::string text = out.str();
+
+            t.check(rc == 0, "wrapped LayoutSpec align-dump returns success");
+            t.check(err.str().empty(), "wrapped LayoutSpec align-dump produces no error output");
+            t.check(text.find("Alignment dump") != std::string::npos,
+                "wrapped LayoutSpec align-dump reaches the aligned output surface");
+            t.check(text.find("series_count=2") != std::string::npos,
+                "wrapped LayoutSpec align-dump reports the aligned series count");
+            t.check(text.find("builtin.temporal.window") != std::string::npos,
+                "wrapped LayoutSpec align-dump preserves topology guidance");
+            return t.failed == 0;
+        }
+
         bool test_plan_capability_report_hints_bool_node_numeric_bridge(TestContext& t) {
             t.out << "[app_reporters] bool node used in numeric arg hint\n";
             RunFixturePaths fixture{};
@@ -1077,6 +1350,7 @@ namespace sugar::app::tests {
             result.max_drawdown = 3.25;
             result.best_start_date = 20211123;
             result.has_best_start_date = true;
+            result.trade_hash = 13693342942469747168ull;
 
             const sugar::DataView dv(*runtime.aligned_bundle);
             std::ostringstream out;
@@ -1097,8 +1371,103 @@ namespace sugar::app::tests {
                 "metric catalog keeps integer trade counts after runtime preview output");
             t.check(text.find("first_usable_signal_time_key [core_metric]: 20211123\n") != std::string::npos,
                 "metric catalog prints time-key metrics without scientific notation");
+            t.check(text.find("trade_hash [core_metric]: 13693342942469747168\n") != std::string::npos,
+                "metric catalog preserves exact trade_hash integers instead of scientific notation");
             t.check(text.find("20.0000") == std::string::npos,
                 "runtime preview formatting no longer leaks fixed precision into later run reports");
+            return t.failed == 0;
+        }
+
+        bool test_unified_run_suppresses_internal_cross_debug_warning_by_default(TestContext& t) {
+            t.out << "[app_dispatch] internal cross debug warning stays off by default\n";
+
+            std::string fixture_err;
+            const auto fixture_dir = app_fixture_dir(fixture_err);
+            t.check(!fixture_dir.empty(), "cross-warning fixture dir is available");
+            if (fixture_dir.empty()) return false;
+
+            const auto layout_path = fixture_dir / "app_tests_tmp_cross_warning_layout.json";
+            const auto logic_path = fixture_dir / "app_tests_tmp_cross_warning_logic.json";
+            const auto csv_path = fixture_dir / "app_tests_tmp_cross_warning.csv";
+
+            {
+                std::ofstream layout_out(layout_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(layout_out), "cross-warning layout file opens");
+                if (!layout_out) return false;
+                layout_out <<
+                    "{\n"
+                    "  \"ingest\": {\n"
+                    "    \"time_col\": \"row_id\",\n"
+                    "    \"time_kind\": \"Index\",\n"
+                    "    \"header_policy\": \"RequiredHeaders\",\n"
+                    "    \"value_cols\": [\"close\"],\n"
+                    "    \"primary_value_col\": \"close\",\n"
+                    "    \"missing_tokens\": [\"\", \"NA\", \"null\", \"nan\", \"NaN\"],\n"
+                    "    \"missing_default\": { \"kind\": \"NaN\" },\n"
+                    "    \"sort_by_time\": true,\n"
+                    "    \"dedupe\": \"Error\"\n"
+                    "  }\n"
+                    "}\n";
+            }
+
+            {
+                std::ofstream logic_out(logic_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(logic_out), "cross-warning logic file opens");
+                if (!logic_out) return false;
+                logic_out <<
+                    "{\n"
+                    "  \"version\": 1,\n"
+                    "  \"name\": \"app_tests_cross_warning_default_off\",\n"
+                    "  \"trade_mode\": \"LongOnly\",\n"
+                    "  \"numeric_nodes\": [\n"
+                    "    { \"id\": \"c\", \"op\": \"core.close\" },\n"
+                    "    { \"id\": \"hi\", \"op\": \"ts.roll_max\", \"args\": [\"c\"], \"params\": { \"n\": 5 } },\n"
+                    "    { \"id\": \"z\", \"op\": \"core.const\", \"params\": { \"value\": 0.0 } }\n"
+                    "  ],\n"
+                    "  \"bool_nodes\": [\n"
+                    "    { \"id\": \"entry\", \"op\": \"cmp.cross_up\", \"args\": [\"c\", \"hi\"] },\n"
+                    "    { \"id\": \"exit\", \"op\": \"cmp.lt\", \"args\": [\"c\", \"z\"] }\n"
+                    "  ],\n"
+                    "  \"bindings\": {\n"
+                    "    \"entry_long\": \"entry\",\n"
+                    "    \"exit_long\": \"exit\",\n"
+                    "    \"entry_short\": \"\",\n"
+                    "    \"exit_short\": \"\",\n"
+                    "    \"allow_trade\": \"\"\n"
+                    "  }\n"
+                    "}\n";
+            }
+
+            {
+                std::ofstream csv_out(csv_path, std::ios::binary | std::ios::trunc);
+                t.check(static_cast<bool>(csv_out), "cross-warning csv file opens");
+                if (!csv_out) return false;
+                csv_out << "row_id,close\n";
+                for (int i = 0; i < 64; ++i) {
+                    csv_out << (i + 1) << "," << (100 + i) << "\n";
+                }
+            }
+
+            AppCommand cmd{};
+            cmd.kind = CommandKind::Run;
+            cmd.run.layout_path = layout_path.string();
+            cmd.run.logic_path = logic_path.string();
+            cmd.run.csv_path = csv_path.string();
+
+            std::ostringstream out;
+            std::ostringstream err;
+            std::ostringstream captured_cerr;
+            auto* const old_cerr = std::cerr.rdbuf(captured_cerr.rdbuf());
+            const int rc = run_unified_cli_command(cmd, out, err);
+            std::cerr.rdbuf(old_cerr);
+
+            t.check(rc == 0, "cross-warning probe run succeeds");
+            t.check(captured_cerr.str().find("[SugarBot][debug]") == std::string::npos,
+                "internal cross debug warning does not leak to stderr by default");
+            t.check(out.str().find("[SugarBot][debug]") == std::string::npos,
+                "internal cross debug warning does not leak to stdout by default");
+            t.check(err.str().find("[SugarBot][debug]") == std::string::npos,
+                "internal cross debug warning does not leak through command error output by default");
             return t.failed == 0;
         }
 
@@ -1133,11 +1502,15 @@ namespace sugar::app::tests {
         tests.push_back(test_dump_plan_dispatch_smoke);
         tests.push_back(test_obs_report_dispatch_smoke);
         tests.push_back(test_obs_report_exposes_drop_row_diagnostics);
+        tests.push_back(test_obs_report_warns_on_degenerate_value_columns);
         tests.push_back(test_obs_report_time_parse_failure_includes_time_kind_hint);
         tests.push_back(test_plan_report_dispatch_smoke);
         tests.push_back(test_plan_report_reports_multi_entity_missing_scope);
         tests.push_back(test_feature_dump_dispatch_smoke);
         tests.push_back(test_unified_run_coarse_fine_displays_top_level_topk);
+        tests.push_back(test_plan_sweep_report_preserves_fractional_param_ranges);
+        tests.push_back(test_plan_sweep_report_derives_qol_warnings);
+        tests.push_back(test_param_string_literal_error_hints_ref_syntax);
         tests.push_back(test_dump_ops_dispatch_smoke);
         tests.push_back(test_dump_ops_module_catalog_example_sections);
         tests.push_back(test_prep_dump_dispatch_smoke);
@@ -1146,6 +1519,7 @@ namespace sugar::app::tests {
         tests.push_back(test_prep_dump_reports_panel_capability_incompatibility);
         tests.push_back(test_runtime_graph_preview_spatial_output_is_row_domain_honest);
         tests.push_back(test_align_dump_reports_observation_capabilities);
+        tests.push_back(test_align_dump_accepts_wrapped_layout_spec);
         tests.push_back(test_align_dump_rejects_non_temporal_multiseries_alignment);
         tests.push_back(test_align_dump_honors_dataspec_non_temporal_policy);
         tests.push_back(test_plan_capability_report_surfaces_topology_conditions);
@@ -1154,6 +1528,7 @@ namespace sugar::app::tests {
         tests.push_back(test_plan_capability_report_hints_bool_op_node_list);
         tests.push_back(test_plan_capability_report_hints_bool_node_numeric_bridge);
         tests.push_back(test_runtime_graph_preview_restores_stream_formatting_for_run_reports);
+        tests.push_back(test_unified_run_suppresses_internal_cross_debug_warning_by_default);
         tests.push_back(test_layout_parser_rejects_data_spec_wrapper_with_explicit_hint);
     }
 

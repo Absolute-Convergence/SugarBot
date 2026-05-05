@@ -99,6 +99,7 @@ namespace sugar::contract_suite_internal {
     bool test_service_protocol_framing_contracts(ContractAsserts& t);
     bool test_service_protocol_dispatch_contracts(ContractAsserts& t);
     bool test_service_protocol_network_socket_contracts(ContractAsserts& t);
+    bool test_service_protocol_live_client_run_contracts(ContractAsserts& t);
     bool test_service_protocol_live_multi_client_contracts(ContractAsserts& t);
     bool test_service_protocol_live_cancel_polling_contracts(ContractAsserts& t);
     bool test_service_protocol_remote_bind_policy_contracts(ContractAsserts& t);

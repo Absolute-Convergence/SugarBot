@@ -73,6 +73,8 @@ namespace sugar {
 		double value{};
 		ResultMetricKind kind{ ResultMetricKind::CoreMetric };
 		bool is_finite{ true };
+        bool has_exact_u64_value{ false };
+        std::uint64_t exact_u64_value{ 0 };
 	};
 
 	struct BacktestMetricCatalog {
@@ -148,6 +150,12 @@ namespace sugar {
         bool has_entity_axis{ false };
         bool has_spatial_axis{ false };
         std::size_t input_warning_count{ 0 };
+        bool csv_had_header{ false };
+        std::size_t csv_physical_line_count{ 0 };
+        std::size_t csv_blank_line_count{ 0 };
+        std::size_t csv_data_row_count{ 0 };
+        std::size_t dropped_row_count{ 0 };
+        std::vector<std::string> input_warnings{};
         bool alignment_applied{ false };
         std::string alignment_calendar{};
         std::string alignment_missing{};

@@ -1,6 +1,7 @@
 #include "service/protocol_dispatch.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <sstream>
 namespace sugar::service {
 
@@ -26,6 +27,7 @@ namespace sugar::service {
 
         bool is_expensive_sweep_policy_detail(std::string_view detail) {
             return detail.find("hosted sweep budget") != std::string_view::npos ||
+                detail.find("sweep candidate budget") != std::string_view::npos ||
                 detail.find("estimated sweep duration") != std::string_view::npos;
         }
 
@@ -37,6 +39,90 @@ namespace sugar::service {
                 return "job is unavailable to the requesting session";
             }
             return std::string(detail);
+        }
+
+        const char* artifact_kind_label(ArtifactKind kind) {
+            switch (kind) {
+            case ArtifactKind::LayoutSpec:
+                return "layout";
+            case ArtifactKind::LogicSpec:
+                return "logic";
+            case ArtifactKind::DataCsv:
+                return "data";
+            case ArtifactKind::SummaryText:
+                return "summary";
+            }
+            return "artifact";
+        }
+
+        const char* default_upload_client_name(ArtifactKind kind) {
+            switch (kind) {
+            case ArtifactKind::LayoutSpec:
+                return "layout.json";
+            case ArtifactKind::LogicSpec:
+                return "logic.json";
+            case ArtifactKind::DataCsv:
+                return "data.csv";
+            case ArtifactKind::SummaryText:
+                return "summary.txt";
+            }
+            return "artifact.txt";
+        }
+
+        const char* expected_upload_extension(ArtifactKind kind) {
+            switch (kind) {
+            case ArtifactKind::LayoutSpec:
+            case ArtifactKind::LogicSpec:
+                return ".json";
+            case ArtifactKind::DataCsv:
+                return ".csv";
+            case ArtifactKind::SummaryText:
+                return ".txt";
+            }
+            return ".txt";
+        }
+
+        bool normalize_upload_client_name(
+            ArtifactKind kind,
+            std::string_view requested_name,
+            std::string& out_name,
+            std::string& err) {
+            const char* label = artifact_kind_label(kind);
+            const char* extension = expected_upload_extension(kind);
+            out_name = requested_name.empty()
+                ? std::string(default_upload_client_name(kind))
+                : std::string(requested_name);
+
+            if (std::filesystem::path(out_name).extension().empty()) {
+                out_name += extension;
+            }
+
+            const std::filesystem::path path(out_name);
+            if (path.is_absolute() || path.has_root_name()) {
+                err = std::string(label) + " upload client name must not be absolute";
+                return false;
+            }
+            if (out_name.find('/') != std::string::npos ||
+                out_name.find('\\') != std::string::npos ||
+                path.has_parent_path()) {
+                err = std::string(label) + " upload client name must be a single filename";
+                return false;
+            }
+            if (out_name.find("..") != std::string::npos) {
+                err = std::string(label) + " upload client name must not contain parent traversal";
+                return false;
+            }
+            if (path.filename().empty() || path.filename() == "." || path.filename() == "..") {
+                err = std::string(label) + " upload client name must be a single filename";
+                return false;
+            }
+            if (path.extension() != extension) {
+                err = std::string(label) + " upload client name must end with " + extension;
+                return false;
+            }
+
+            err.clear();
+            return true;
         }
     } // namespace
 
@@ -56,7 +142,7 @@ namespace sugar::service {
         if (!config_.security_log) {
             return;
         }
-        config_.security_log(line);
+        config_.security_log(format_hosted_audit_log_line(line));
     }
 
     std::optional<std::string> ProtocolDispatcher::blocked_session_message(const std::string& session_id) const {
@@ -343,6 +429,22 @@ namespace sugar::service {
             return false;
         }
 
+        std::string normalized_client_name;
+        std::string name_err;
+        if (!normalize_upload_client_name(
+                request.upload_kind,
+                request.upload_client_name,
+                normalized_client_name,
+                name_err)) {
+            response.ok = false;
+            response.error_code = ProtocolErrorCode::InvalidArtifact;
+            response.message = name_err;
+            emit_security_log(
+                "event=upload result=reject session=" + request.session_id +
+                " reason=invalid_client_name detail=" + name_err);
+            return false;
+        }
+
         StoredUpload upload{};
         {
             std::lock_guard<std::mutex> lock(uploads_mutex_);
@@ -371,7 +473,7 @@ namespace sugar::service {
 
             upload.receipt.upload_id = next_upload_id_unlocked();
             upload.receipt.kind = request.upload_kind;
-            upload.receipt.client_name = request.upload_client_name;
+            upload.receipt.client_name = normalized_client_name;
             upload.receipt.byte_count = request.upload_content.size();
             upload.content = request.upload_content;
             session_uploads[upload.receipt.upload_id] = upload;

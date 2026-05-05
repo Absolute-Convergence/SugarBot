@@ -62,6 +62,11 @@ namespace sugar::service {
             std::string_view detail,
             const std::optional<std::string>& result_id,
             std::string& err);
+        bool reserve_completion(
+            const std::string& job_id,
+            std::string_view cancel_detail,
+            bool& out_canceled,
+            std::string& err);
         bool finalize_completed(
             const std::string& job_id,
             const std::string& result_id,
@@ -82,6 +87,7 @@ namespace sugar::service {
             std::shared_ptr<std::atomic_bool> cancel_requested{
                 std::make_shared<std::atomic_bool>(false)
             };
+            bool completion_reserved{ false };
         };
 
         static void append_progress_unlocked(

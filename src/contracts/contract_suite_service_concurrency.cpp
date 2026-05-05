@@ -408,6 +408,8 @@ namespace sugar::contract_suite_internal {
             }
             t.expect(has_result && result.metadata.primary_backtest.has_value(),
                 "service background worker pool preserves machine-readable execution results");
+            t.expect(has_result && result.metadata.sweep_report.has_value(),
+                "service background worker pool preserves machine-readable sweep reports");
         }
 
         return true;
@@ -615,7 +617,7 @@ namespace sugar::contract_suite_internal {
             }
         }
 
-        const auto request = make_single_series_request(sugar::service::JobIntent::Execute);
+        const auto request = make_sweep_request(8, 64);
         std::vector<std::vector<std::string>> job_ids(kSessionCount);
         std::vector<std::vector<std::string>> submit_errors(kSessionCount);
         std::vector<std::thread> submitters;
@@ -681,11 +683,12 @@ namespace sugar::contract_suite_internal {
                     all_results_owned &&
                     has_result &&
                     result.owner_session_id == sessions[i].session_id &&
-                    result.metadata.primary_backtest.has_value();
+                    result.metadata.primary_backtest.has_value() &&
+                    result.metadata.sweep_report.has_value();
             }
         }
         t.expect(all_results_owned,
-            "multi-client stress preserves owned machine-readable results for every completed job");
+            "multi-client stress preserves owned machine-readable sweep results for every completed job");
 
         return true;
     }

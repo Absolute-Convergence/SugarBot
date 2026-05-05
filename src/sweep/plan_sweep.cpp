@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -14,6 +15,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "ingest/data_view.h"
@@ -302,16 +304,175 @@ namespace sugar {
             }, value);
         }
 
-        std::vector<SweepParameterSetting> make_candidate_parameter_values(
+        std::vector<std::size_t> decode_candidate_point(
             const PlanSpecSweepDims& dims,
-            const std::vector<std::vector<std::size_t>>& points,
             std::size_t candidate_index) {
-            std::vector<SweepParameterSetting> out;
-            if (candidate_index >= points.size()) {
-                return out;
+            std::vector<std::size_t> point;
+            point.reserve(dims.values.size());
+            for (const auto& values : dims.values) {
+                if (values.empty()) {
+                    return {};
+                }
+                point.push_back(candidate_index % values.size());
+                candidate_index /= values.size();
+            }
+            return point;
+        }
+
+        std::size_t pack_candidate_point(
+            const PlanSpecSweepDims& dims,
+            const std::vector<std::size_t>& point) {
+            std::size_t multiplier = 1;
+            std::size_t index = 0;
+            for (std::size_t i = 0; i < point.size() && i < dims.values.size(); ++i) {
+                index += point[i] * multiplier;
+                multiplier *= dims.values[i].size();
+            }
+            return index;
+        }
+
+        std::size_t ceil_div(std::size_t numerator, std::size_t denominator) {
+            if (denominator == 0) {
+                return 0;
+            }
+            return (numerator + denominator - 1) / denominator;
+        }
+
+        void apply_runtime_sweep_defaults(PlanSweepSpec& sweep) {
+            if (sweep.engine == PlanSweepEngineKind::MonteCarlo &&
+                !sweep.monte_carlo.draws_explicit) {
+                sweep.monte_carlo.draws = sweep.max_evals;
+            }
+        }
+
+        std::shared_ptr<std::vector<std::size_t>> make_flat_stride_indices(
+            std::size_t candidate_count,
+            std::size_t stride,
+            std::size_t max_indices = 0) {
+            if (candidate_count == 0 || stride <= 1) {
+                return {};
+            }
+            auto indices = std::make_shared<std::vector<std::size_t>>();
+            const std::size_t theoretical_count = ceil_div(candidate_count, stride);
+            indices->reserve(
+                max_indices > 0
+                ? std::min(theoretical_count, max_indices)
+                : theoretical_count);
+            for (std::size_t i = 0; i < candidate_count; i += stride) {
+                if (max_indices > 0 && indices->size() >= max_indices) {
+                    break;
+                }
+                indices->push_back(i);
+            }
+            return indices;
+        }
+
+        std::shared_ptr<std::vector<std::size_t>> make_per_dimension_coarse_indices(
+            const PlanSpecSweepDims& dims,
+            std::size_t multiplier,
+            std::size_t max_indices = 0) {
+            if (dims.values.empty() || multiplier <= 1) {
+                return {};
             }
 
-            const auto& point = points[candidate_index];
+            auto indices = std::make_shared<std::vector<std::size_t>>();
+            std::vector<std::size_t> point(dims.values.size(), 0);
+
+            auto visit = [&](auto&& self, std::size_t dim) -> void {
+                if (max_indices > 0 && indices->size() >= max_indices) {
+                    return;
+                }
+                if (dim == dims.values.size()) {
+                    indices->push_back(pack_candidate_point(dims, point));
+                    return;
+                }
+                const std::size_t count = dims.values[dim].size();
+                for (std::size_t i = 0; i < count; i += multiplier) {
+                    if (max_indices > 0 && indices->size() >= max_indices) {
+                        break;
+                    }
+                    point[dim] = i;
+                    self(self, dim + 1);
+                }
+            };
+            visit(visit, 0);
+            return indices;
+        }
+
+        std::size_t estimate_coarse_fine_refinement_reserve(
+            const PlanSweepSpec& sweep,
+            const PlanSpecSweepDims& dims) {
+            const std::size_t dimensions = dims.values.size();
+            if (dimensions == 0 || sweep.coarse_fine.k_stage1 == 0) {
+                return 0;
+            }
+            const std::size_t per_seed =
+                1 + (2 * dimensions * std::max<std::size_t>(1, sweep.coarse_fine.stage2_hops));
+            return sweep.coarse_fine.k_stage1 * per_seed;
+        }
+
+        double binomial_as_double(std::size_t n, std::size_t k) {
+            if (k > n) {
+                return 0.0;
+            }
+            k = std::min(k, n - k);
+            double out = 1.0;
+            for (std::size_t i = 1; i <= k; ++i) {
+                out *= static_cast<double>(n - k + i);
+                out /= static_cast<double>(i);
+            }
+            return out;
+        }
+
+        std::size_t estimate_l1_ball_count(std::size_t dimensions, std::size_t hops) {
+            if (dimensions == 0) {
+                return 0;
+            }
+
+            double total = 1.0;
+            const std::size_t terms = std::min(dimensions, hops);
+            double pow2 = 1.0;
+            for (std::size_t used_dims = 1; used_dims <= terms; ++used_dims) {
+                pow2 *= 2.0;
+                total +=
+                    binomial_as_double(dimensions, used_dims) *
+                    binomial_as_double(hops, used_dims) *
+                    pow2;
+                if (total >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
+                    return std::numeric_limits<std::size_t>::max();
+                }
+            }
+            return static_cast<std::size_t>(std::ceil(total));
+        }
+
+        std::size_t derive_stage2_hops_for_remaining_budget(
+            const PlanSweepSpec& sweep,
+            const PlanSpecSweepDims& dims,
+            std::size_t stage1_count) {
+            if (sweep.max_evals <= stage1_count ||
+                sweep.coarse_fine.k_stage1 == 0 ||
+                dims.values.empty()) {
+                return sweep.coarse_fine.stage2_hops;
+            }
+
+            const std::size_t remaining_budget = sweep.max_evals - stage1_count;
+            const std::size_t target_per_seed =
+                ceil_div(remaining_budget, sweep.coarse_fine.k_stage1);
+            std::size_t hops = std::max<std::size_t>(1, sweep.coarse_fine.stage2_hops);
+            const std::size_t hop_limit =
+                std::min<std::size_t>(std::max<std::size_t>(target_per_seed, hops), 65536);
+            while (hops < hop_limit &&
+                   estimate_l1_ball_count(dims.values.size(), hops) < target_per_seed) {
+                ++hops;
+            }
+            return hops;
+        }
+
+        std::vector<SweepParameterSetting> make_candidate_parameter_values(
+            const PlanSpecSweepDims& dims,
+            std::size_t candidate_index) {
+            std::vector<SweepParameterSetting> out;
+            const auto point = decode_candidate_point(dims, candidate_index);
             out.reserve(dims.names.size());
             for (std::size_t i = 0; i < dims.names.size() && i < point.size(); ++i) {
                 const auto value_index = point[i];
@@ -328,17 +489,15 @@ namespace sugar {
 
         void populate_candidate_parameter_values(
             const PlanSpecSweepDims& dims,
-            const std::vector<std::vector<std::size_t>>& points,
             std::vector<SweepRankedCandidate>& candidates) {
             for (auto& candidate : candidates) {
-                candidate.parameter_values = make_candidate_parameter_values(dims, points, candidate.candidate_index);
+                candidate.parameter_values = make_candidate_parameter_values(dims, candidate.candidate_index);
             }
         }
 
         std::vector<SweepRankedCandidate> make_sweep_ranked_candidates(
             const std::vector<IndexedCandidate>& best,
-            const PlanSpecSweepDims& dims,
-            const std::vector<std::vector<std::size_t>>& points) {
+            const PlanSpecSweepDims& dims) {
             std::vector<SweepRankedCandidate> out;
             out.reserve(best.size());
             for (const auto& candidate : best) {
@@ -346,10 +505,188 @@ namespace sugar {
                 ranked.candidate_index = candidate.index;
                 ranked.score = candidate.score;
                 ranked.result = candidate.result;
-                ranked.parameter_values = make_candidate_parameter_values(dims, points, candidate.index);
+                ranked.parameter_values = make_candidate_parameter_values(dims, candidate.index);
                 out.push_back(std::move(ranked));
             }
             return out;
+        }
+
+        std::size_t multiply_clamped(std::size_t a, std::size_t b) {
+            if (a == 0 || b == 0) {
+                return 0;
+            }
+            if (a > (std::numeric_limits<std::size_t>::max() / b)) {
+                return std::numeric_limits<std::size_t>::max();
+            }
+            return a * b;
+        }
+
+        std::size_t internal_retained_top_k(
+            const PlanSweepSpec& sweep,
+            std::size_t candidate_space_size) {
+            std::size_t retained = sweep.top_k;
+            if (sweep.result_diversity.enabled) {
+                retained = std::max<std::size_t>(
+                    retained,
+                    multiply_clamped(
+                        sweep.top_k,
+                        std::max<std::size_t>(1, sweep.result_diversity.oversample_multiplier)));
+            }
+            if (candidate_space_size > 0) {
+                retained = std::min(retained, candidate_space_size);
+            }
+            return std::max<std::size_t>(1, retained);
+        }
+
+        std::string basin_key_for_point(
+            const std::vector<std::size_t>& point,
+            std::size_t bucket_size) {
+            const std::size_t bucket = std::max<std::size_t>(1, bucket_size);
+            std::string key;
+            for (std::size_t i = 0; i < point.size(); ++i) {
+                if (i != 0) key.push_back('|');
+                key += std::to_string(point[i] / bucket);
+            }
+            return key;
+        }
+
+        std::size_t manhattan_distance(
+            const std::vector<std::size_t>& left,
+            const std::vector<std::size_t>& right) {
+            const std::size_t n = std::min(left.size(), right.size());
+            std::size_t distance = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                distance += (left[i] > right[i])
+                    ? (left[i] - right[i])
+                    : (right[i] - left[i]);
+            }
+            return distance;
+        }
+
+        void summarize_returned_trade_hashes(
+            const std::vector<IndexedCandidate>& candidates,
+            SweepResultDiversitySummary& summary) {
+            std::unordered_map<std::uint64_t, std::size_t> counts;
+            counts.reserve(candidates.size());
+            for (const auto& candidate : candidates) {
+                ++counts[candidate.result.trade_hash];
+            }
+
+            summary.returned_unique_trade_hashes = counts.size();
+            summary.returned_duplicate_trade_hash_groups = 0;
+            summary.returned_largest_trade_hash_group = 0;
+            for (const auto& kv : counts) {
+                summary.returned_largest_trade_hash_group =
+                    std::max(summary.returned_largest_trade_hash_group, kv.second);
+                if (kv.second > 1) {
+                    ++summary.returned_duplicate_trade_hash_groups;
+                }
+            }
+        }
+
+        std::vector<IndexedCandidate> apply_result_diversity(
+            const std::vector<IndexedCandidate>& sorted_pool,
+            const PlanSpecSweepDims& dims,
+            const PlanSweepSpec& sweep,
+            SweepResultDiversitySummary& summary) {
+            summary = SweepResultDiversitySummary{};
+            summary.requested = sweep.result_diversity.enabled;
+            summary.dedupe_trade_hash =
+                sweep.result_diversity.enabled && sweep.result_diversity.dedupe_trade_hash;
+            summary.basin_aware =
+                sweep.result_diversity.enabled && sweep.result_diversity.basin_aware;
+            summary.oversample_multiplier =
+                sweep.result_diversity.enabled
+                ? std::max<std::size_t>(1, sweep.result_diversity.oversample_multiplier)
+                : 1;
+            summary.max_per_basin =
+                summary.basin_aware
+                ? std::max<std::size_t>(1, sweep.result_diversity.max_per_basin)
+                : 0;
+            summary.param_bucket_size =
+                summary.basin_aware
+                ? std::max<std::size_t>(1, sweep.result_diversity.param_bucket_size)
+                : 0;
+            summary.min_param_distance =
+                summary.basin_aware
+                ? sweep.result_diversity.min_param_distance
+                : 0;
+            summary.min_trades =
+                sweep.result_diversity.enabled
+                ? sweep.result_diversity.min_trades
+                : 0;
+            summary.retained_candidate_pool = sorted_pool.size();
+
+            std::vector<IndexedCandidate> selected;
+            selected.reserve(std::min<std::size_t>(sweep.top_k, sorted_pool.size()));
+
+            if (!sweep.result_diversity.enabled) {
+                for (const auto& candidate : sorted_pool) {
+                    if (selected.size() >= sweep.top_k) break;
+                    selected.push_back(candidate);
+                }
+                summarize_returned_trade_hashes(selected, summary);
+                return selected;
+            }
+
+            std::unordered_set<std::uint64_t> seen_trade_hashes;
+            if (summary.dedupe_trade_hash) {
+                seen_trade_hashes.reserve(sweep.top_k * 4 + 1);
+            }
+            std::unordered_map<std::string, std::size_t> basin_counts;
+            std::unordered_map<std::string, std::vector<std::vector<std::size_t>>> basin_points;
+
+            for (const auto& candidate : sorted_pool) {
+                if (selected.size() >= sweep.top_k) break;
+                if (summary.min_trades > 0 && candidate.result.trades < summary.min_trades) {
+                    ++summary.suppressed_min_trades;
+                    continue;
+                }
+                if (summary.dedupe_trade_hash &&
+                    seen_trade_hashes.find(candidate.result.trade_hash) != seen_trade_hashes.end()) {
+                    ++summary.suppressed_duplicate_trade_hash;
+                    continue;
+                }
+
+                std::vector<std::size_t> point;
+                std::string basin_key;
+                if (summary.basin_aware) {
+                    point = decode_candidate_point(dims, candidate.index);
+                    basin_key = basin_key_for_point(point, summary.param_bucket_size);
+                    if (basin_counts[basin_key] >= summary.max_per_basin) {
+                        ++summary.suppressed_basin;
+                        continue;
+                    }
+                    if (summary.min_param_distance > 0) {
+                        const auto it = basin_points.find(basin_key);
+                        if (it != basin_points.end()) {
+                            const bool too_close = std::any_of(
+                                it->second.begin(),
+                                it->second.end(),
+                                [&](const std::vector<std::size_t>& existing) {
+                                    return manhattan_distance(existing, point) < summary.min_param_distance;
+                                });
+                            if (too_close) {
+                                ++summary.suppressed_basin;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                selected.push_back(candidate);
+                if (summary.dedupe_trade_hash) {
+                    seen_trade_hashes.insert(candidate.result.trade_hash);
+                }
+                if (summary.basin_aware) {
+                    ++basin_counts[basin_key];
+                    basin_points[basin_key].push_back(std::move(point));
+                }
+            }
+
+            summary.returned_basin_count = basin_counts.size();
+            summarize_returned_trade_hashes(selected, summary);
+            return selected;
         }
 
         std::vector<SweepParameterRangeSummary> build_parameter_range_summaries(
@@ -367,6 +704,130 @@ namespace sugar {
                 out.push_back(std::move(summary));
             }
             return out;
+        }
+
+        std::optional<double> param_value_as_double(const ParamValue& value) {
+            return std::visit([](const auto& current) -> std::optional<double> {
+                using Current = std::decay_t<decltype(current)>;
+                if constexpr (std::is_same_v<Current, std::int64_t>) {
+                    return static_cast<double>(current);
+                }
+                else if constexpr (std::is_same_v<Current, double>) {
+                    return current;
+                }
+                else {
+                    return std::nullopt;
+                }
+            }, value);
+        }
+
+        std::optional<double> candidate_param_value(
+            const SweepRankedCandidate& candidate,
+            const std::string& name) {
+            const auto it = std::find_if(
+                candidate.parameter_values.begin(),
+                candidate.parameter_values.end(),
+                [&name](const SweepParameterSetting& setting) {
+                    return setting.name == name;
+                });
+            if (it == candidate.parameter_values.end()) {
+                return std::nullopt;
+            }
+            return param_value_as_double(it->value);
+        }
+
+        bool approximately_equal(double lhs, double rhs) {
+            const double scale = std::max({ 1.0, std::abs(lhs), std::abs(rhs) });
+            return std::abs(lhs - rhs) <= (scale * 1e-9);
+        }
+
+        std::string format_sweep_warning_value(double value, bool is_int) {
+            std::ostringstream out;
+            if (is_int) {
+                out << static_cast<std::int64_t>(std::llround(value));
+            }
+            else {
+                out << std::setprecision(12) << value;
+            }
+            return out.str();
+        }
+
+        std::vector<std::string> build_sweep_report_warnings(const PlanSweepReport& report) {
+            std::vector<std::string> warnings;
+            if (report.top_candidates.empty()) {
+                return warnings;
+            }
+
+            if (report.top_candidates.size() >= 2) {
+                for (const auto& range : report.parameter_ranges) {
+                    double lower = range.requested_range.min;
+                    double upper = range.requested_range.max;
+                    if (!range.requested_range.values.empty()) {
+                        const auto [mn, mx] = std::minmax_element(
+                            range.requested_range.values.begin(),
+                            range.requested_range.values.end());
+                        lower = *mn;
+                        upper = *mx;
+                    }
+
+                    std::size_t lower_count = 0;
+                    std::size_t upper_count = 0;
+                    for (const auto& candidate : report.top_candidates) {
+                        const auto value = candidate_param_value(candidate, range.name);
+                        if (!value.has_value()) {
+                            continue;
+                        }
+                        if (approximately_equal(*value, lower)) {
+                            ++lower_count;
+                        }
+                        if (approximately_equal(*value, upper)) {
+                            ++upper_count;
+                        }
+                    }
+
+                    const auto add_boundary_warning = [&](const char* side, double value) {
+                        warnings.push_back(
+                            "sweep boundary concentration: all " +
+                            std::to_string(report.top_candidates.size()) +
+                            " returned candidates use " + range.name + "=" +
+                            format_sweep_warning_value(value, range.requested_range.is_int) +
+                            " at the " + side +
+                            " sweep bound; consider extending that range if the objective is still improving at the edge");
+                    };
+
+                    if (lower_count == report.top_candidates.size()) {
+                        add_boundary_warning("lower", lower);
+                    }
+                    else if (upper_count == report.top_candidates.size()) {
+                        add_boundary_warning("upper", upper);
+                    }
+                }
+            }
+
+            const std::pair<const char*, const char*> fast_slow_pairs[] = {
+                { "n_fast", "n_slow" },
+                { "fast_n", "slow_n" },
+                { "fast", "slow" },
+            };
+            for (const auto& [fast_name, slow_name] : fast_slow_pairs) {
+                std::size_t inverted = 0;
+                for (const auto& candidate : report.top_candidates) {
+                    const auto fast = candidate_param_value(candidate, fast_name);
+                    const auto slow = candidate_param_value(candidate, slow_name);
+                    if (fast.has_value() && slow.has_value() && *fast > *slow) {
+                        ++inverted;
+                    }
+                }
+                if (inverted > 0) {
+                    warnings.push_back(
+                        "semantic fast/slow warning: " + std::to_string(inverted) +
+                        "/" + std::to_string(report.top_candidates.size()) +
+                        " returned candidates have " + fast_name + " > " + slow_name +
+                        "; if these params represent fast/slow windows, constrain the sweep ranges or swap the naming");
+                }
+            }
+
+            return warnings;
         }
 
         void upsert_stage_summary(
@@ -743,11 +1204,22 @@ namespace sugar {
 
     } // namespace
 
+    std::vector<std::string> derive_plan_sweep_report_warnings(
+        const PlanSweepReport& report) {
+        return build_sweep_report_warnings(report);
+    }
+
     void print_plan_sweep_report(
         const PlanSweepReport& report,
         std::ostream& out)
     {
-        auto print_requested_range = [&out](const SweepParameterRangeSummary& range) {
+        auto format_requested_value = [](double value) {
+            std::ostringstream oss;
+            oss << std::setprecision(12) << value;
+            return oss.str();
+        };
+
+        auto print_requested_range = [&out, &format_requested_value](const SweepParameterRangeSummary& range) {
             out << "  " << range.name << ": ";
             if (!range.requested_range.values.empty()) {
                 out << "[";
@@ -757,15 +1229,24 @@ namespace sugar {
                         out << static_cast<std::int64_t>(std::llround(range.requested_range.values[i]));
                     }
                     else {
-                        out << range.requested_range.values[i];
+                        std::ostringstream value_out;
+                        value_out << std::setprecision(12) << range.requested_range.values[i];
+                        out << value_out.str();
                     }
                 }
                 out << "]";
             }
             else {
-                out << range.requested_range.min
-                    << " .. " << range.requested_range.max
-                    << " step " << range.requested_range.step;
+                if (range.requested_range.is_int) {
+                    out << static_cast<std::int64_t>(std::llround(range.requested_range.min))
+                        << " .. " << static_cast<std::int64_t>(std::llround(range.requested_range.max))
+                        << " step " << static_cast<std::int64_t>(std::llround(range.requested_range.step));
+                }
+                else {
+                    out << format_requested_value(range.requested_range.min)
+                        << " .. " << format_requested_value(range.requested_range.max)
+                        << " step " << format_requested_value(range.requested_range.step);
+                }
             }
             out << " (" << range.expanded_count << " values)\n";
         };
@@ -822,6 +1303,31 @@ namespace sugar {
             << "  non_finite_primary_value: " << report.candidate_rankability.non_finite_primary_value << "\n"
             << "  missing_penalty_value: " << report.candidate_rankability.missing_penalty_value << "\n"
             << "  non_finite_penalty_value: " << report.candidate_rankability.non_finite_penalty_value << "\n";
+        out << "Result diversity:\n"
+            << "  requested: " << (report.result_diversity.requested ? "true" : "false") << "\n"
+            << "  retained candidate pool: " << report.result_diversity.retained_candidate_pool << "\n"
+            << "  returned unique trade hashes: " << report.result_diversity.returned_unique_trade_hashes << "\n"
+            << "  returned duplicate trade-hash groups: " << report.result_diversity.returned_duplicate_trade_hash_groups << "\n"
+            << "  largest returned trade-hash group: " << report.result_diversity.returned_largest_trade_hash_group << "\n";
+        if (report.result_diversity.requested) {
+            out << "  dedupe trade hash: " << (report.result_diversity.dedupe_trade_hash ? "true" : "false") << "\n"
+                << "  basin aware: " << (report.result_diversity.basin_aware ? "true" : "false") << "\n"
+                << "  oversample multiplier: " << report.result_diversity.oversample_multiplier << "\n"
+                << "  max per basin: " << report.result_diversity.max_per_basin << "\n"
+                << "  param bucket size: " << report.result_diversity.param_bucket_size << "\n"
+                << "  min param distance: " << report.result_diversity.min_param_distance << "\n"
+                << "  min trades: " << report.result_diversity.min_trades << "\n"
+                << "  suppressed duplicate trade hashes: " << report.result_diversity.suppressed_duplicate_trade_hash << "\n"
+                << "  suppressed basin candidates: " << report.result_diversity.suppressed_basin << "\n"
+                << "  suppressed low-trade candidates: " << report.result_diversity.suppressed_min_trades << "\n"
+                << "  returned basin count: " << report.result_diversity.returned_basin_count << "\n";
+        }
+        if (!report.warnings.empty()) {
+            out << "Sweep warnings:\n";
+            for (const auto& warning : report.warnings) {
+                out << "  - " << warning << "\n";
+            }
+        }
         if (!report.last_execution_failure.empty()) {
             out << "Last execution failure: " << report.last_execution_failure << "\n";
         }
@@ -849,17 +1355,20 @@ namespace sugar {
             out << "Engine settings:\n"
                 << "  stage 1 K: " << report.requested_sweep.coarse_fine.k_stage1 << "\n"
                 << "  stage 2 K: " << report.requested_sweep.coarse_fine.k_stage2 << "\n"
+                << "  coarse step multiplier: " << report.requested_sweep.coarse_fine.coarse_step_multiplier << "\n"
                 << "  stage 1 stride: " << report.requested_sweep.coarse_fine.stage1_stride << "\n"
                 << "  suppression hops: " << report.requested_sweep.coarse_fine.suppression_hops << "\n"
                 << "  stage 2 hops: " << report.requested_sweep.coarse_fine.stage2_hops << "\n"
                 << "  depollute stage 1: " << (report.requested_sweep.coarse_fine.depollute_stage1 ? "true" : "false") << "\n"
-                << "  dedupe stage 2: " << (report.requested_sweep.coarse_fine.dedupe_stage2 ? "true" : "false") << "\n";
+                << "  dedupe stage 2: " << (report.requested_sweep.coarse_fine.dedupe_stage2 ? "true" : "false")
+                << " (candidate-index dedupe, not trade-hash outcome dedupe)\n";
             break;
         case PlanSweepEngineKind::MonteCarlo:
             out << "Engine settings:\n"
                 << "  draws: " << report.requested_sweep.monte_carlo.draws << "\n"
                 << "  seed: " << report.requested_sweep.monte_carlo.seed << "\n"
-                << "  dedupe: " << (report.requested_sweep.monte_carlo.dedupe ? "true" : "false") << "\n"
+                << "  dedupe: " << (report.requested_sweep.monte_carlo.dedupe ? "true" : "false")
+                << " (parameter-index sample dedupe, not trade-hash outcome dedupe)\n"
                 << "  monte carlo top K: " << report.requested_sweep.monte_carlo.top_k << "\n";
             break;
         case PlanSweepEngineKind::Exhaustive:
@@ -957,7 +1466,8 @@ namespace sugar {
         };
 
         if (normalized_spec.sweep && (normalized_spec.sweep->enabled || !normalized_spec.sweep->params.empty())) {
-            const PlanSweepSpec& sw = *normalized_spec.sweep;
+            PlanSweepSpec sw = *normalized_spec.sweep;
+            apply_runtime_sweep_defaults(sw);
 
             PlanSpecSweepDims dims;
             std::string sweep_err;
@@ -968,7 +1478,28 @@ namespace sugar {
 
             const auto sweep_started = std::chrono::steady_clock::now();
             const std::size_t total_combos = dims.total_combinations();
-            auto points = build_planspec_sweep_points(dims, sw.max_evals);
+            const bool total_combinations_overflow =
+                (total_combos == std::numeric_limits<std::size_t>::max());
+            const std::size_t bounded_candidate_space_size =
+                total_combinations_overflow ? sw.max_evals : std::min(sw.max_evals, total_combos);
+            const bool monte_carlo_engine = (sw.engine == PlanSweepEngineKind::MonteCarlo);
+            const bool coarse_fine_engine = (sw.engine == PlanSweepEngineKind::CoarseFine);
+            if ((monte_carlo_engine || coarse_fine_engine) && total_combinations_overflow) {
+                out << "PlanSpec sweep error: "
+                    << (monte_carlo_engine ? "monte_carlo" : "coarse_fine")
+                    << " requires an indexable full cartesian grid.\n";
+                return false;
+            }
+            std::size_t engine_candidate_space_size = bounded_candidate_space_size;
+            bool candidate_space_truncated =
+                total_combinations_overflow || bounded_candidate_space_size < total_combos;
+            if (monte_carlo_engine) {
+                engine_candidate_space_size = total_combos;
+                candidate_space_truncated = false;
+            }
+            else if (coarse_fine_engine) {
+                engine_candidate_space_size = total_combos;
+            }
 
             PlanSweepReport sweep_report{};
             sweep_report.requested_sweep = sw;
@@ -978,14 +1509,12 @@ namespace sugar {
             }
             sweep_report.parameter_ranges = build_parameter_range_summaries(sw, dims);
             sweep_report.parameter_count = dims.names.size();
-            sweep_report.total_combinations_overflow =
-                (total_combos == std::numeric_limits<std::size_t>::max());
+            sweep_report.total_combinations_overflow = total_combinations_overflow;
             if (!sweep_report.total_combinations_overflow) {
                 sweep_report.total_combinations = total_combos;
             }
-            sweep_report.candidate_space_size = points.size();
-            sweep_report.candidate_space_truncated =
-                sweep_report.total_combinations_overflow || points.size() < total_combos;
+            sweep_report.candidate_space_size = engine_candidate_space_size;
+            sweep_report.candidate_space_truncated = candidate_space_truncated;
 
             std::size_t compile_failures = 0;
             std::string last_compile_error;
@@ -995,14 +1524,14 @@ namespace sugar {
             using IndexVec = std::vector<std::size_t>;
 
             auto eval_index = [&](std::size_t idx) -> BacktestResult {
-                if (idx >= points.size()) {
+                if (idx >= engine_candidate_space_size) {
                     BacktestResult bad{};
                     bad.pnl = -std::numeric_limits<double>::infinity();
                     bad.max_drawdown = std::numeric_limits<double>::infinity();
                     return bad;
                 }
 
-                const IndexVec& p = points[idx];
+                const IndexVec p = decode_candidate_point(dims, idx);
                 ParamMap overrides{};
 
                 for (std::size_t i = 0; i < dims.names.size(); ++i) {
@@ -1063,7 +1592,7 @@ namespace sugar {
                 std::chrono::milliseconds(opt.ostream_progress_throttle_ms));
             auto progress_cb = [&](const SweepProgress& progress) {
                 SweepProgress enriched = progress;
-                populate_candidate_parameter_values(dims, points, enriched.current_best);
+                populate_candidate_parameter_values(dims, enriched.current_best);
                 upsert_stage_summary(
                     sweep_report,
                     enriched.stage,
@@ -1081,6 +1610,8 @@ namespace sugar {
             };
             std::vector<IndexedCandidate> best;
             std::size_t eval_count = 0;
+            const std::size_t retained_top_k =
+                internal_retained_top_k(sw, engine_candidate_space_size);
 
             switch (sw.engine) {
             case PlanSweepEngineKind::Exhaustive: {
@@ -1088,12 +1619,12 @@ namespace sugar {
                     return eval_index(token.id);
                     };
 
-                DenseIndexSweepSpace space(points.size());
+                DenseIndexSweepSpace space(engine_candidate_space_size);
                 FunctionTrialEvaluator evaluator(eval_token);
                 FunctionObjective objective(score_fn);
                 ExhaustiveIndexTopKPolicy policy;
                 SweepSessionConfig session_cfg{};
-                session_cfg.top_k = sw.top_k;
+                session_cfg.top_k = retained_top_k;
                 session_cfg.progress_cb = progress_cb;
                 session_cfg.cancel_cb = opt.cancel_requested;
 
@@ -1118,13 +1649,12 @@ namespace sugar {
             case PlanSweepEngineKind::MonteCarlo: {
                 SweepIndexConfig cfg{};
                 SweepIndexProblem problem{};
-                problem.param_count = points.size();
                 problem.eval = [&](std::size_t idx) -> BacktestResult {
                     return eval_index(idx);
                     };
 
                 if (sw.engine == PlanSweepEngineKind::CoarseFine) {
-                    if (total_combos == std::numeric_limits<std::size_t>::max() || points.size() != total_combos) {
+                    if (engine_candidate_space_size != total_combos) {
                         out << "PlanSpec sweep error: coarse_fine requires full cartesian grid "
                             << "(set max_evals to total combinations).\n";
                         return false;
@@ -1180,29 +1710,76 @@ namespace sugar {
 
                     cfg.kind = SweepIndexKind::CoarseFine;
                     cfg.coarse_fine.k_stage1 = sw.coarse_fine.k_stage1;
-                    cfg.coarse_fine.k_stage2 = sw.coarse_fine.k_stage2;
+                    cfg.coarse_fine.k_stage2 =
+                        sw.result_diversity.enabled
+                        ? std::max(sw.coarse_fine.k_stage2, retained_top_k)
+                        : sw.coarse_fine.k_stage2;
                     cfg.coarse_fine.opt.depollute_stage1 = sw.coarse_fine.depollute_stage1;
                     cfg.coarse_fine.opt.dedupe_stage2 = sw.coarse_fine.dedupe_stage2;
                     cfg.coarse_fine.opt.suppression_hops = sw.coarse_fine.suppression_hops;
                     cfg.coarse_fine.opt.stage2_hops = sw.coarse_fine.stage2_hops;
+                    cfg.coarse_fine.opt.max_evaluations = sw.max_evals;
 
-                    if (sw.coarse_fine.stage1_stride > 1) {
-                        auto stage1_indices = std::make_shared<std::vector<std::size_t>>();
-                        stage1_indices->reserve(points.size() / sw.coarse_fine.stage1_stride + 1);
-                        for (std::size_t i = 0; i < points.size(); i += sw.coarse_fine.stage1_stride) {
-                            stage1_indices->push_back(i);
+                    bool derive_refinement_from_budget = false;
+                    if (sw.coarse_fine.coarse_step_multiplier > 1) {
+                        cfg.coarse_fine.stage1_indices = make_per_dimension_coarse_indices(
+                            dims,
+                            sw.coarse_fine.coarse_step_multiplier,
+                            sw.max_evals);
+                        derive_refinement_from_budget = true;
+                    }
+                    else if (sw.coarse_fine.stage1_stride > 1) {
+                        cfg.coarse_fine.stage1_indices = make_flat_stride_indices(
+                            engine_candidate_space_size,
+                            sw.coarse_fine.stage1_stride,
+                            sw.max_evals);
+                    }
+                    else if (sw.max_evals > 0 && engine_candidate_space_size > sw.max_evals) {
+                        const std::size_t refinement_reserve =
+                            estimate_coarse_fine_refinement_reserve(sw, dims);
+                        const std::size_t stage1_budget =
+                            sw.max_evals > refinement_reserve
+                            ? (sw.max_evals - refinement_reserve)
+                            : sw.max_evals;
+                        const std::size_t auto_stride =
+                            std::max<std::size_t>(
+                                2,
+                                ceil_div(engine_candidate_space_size, std::max<std::size_t>(1, stage1_budget)));
+                        sw.coarse_fine.stage1_stride = auto_stride;
+                        sweep_report.requested_sweep = sw;
+                        cfg.coarse_fine.stage1_indices = make_flat_stride_indices(
+                            engine_candidate_space_size,
+                            auto_stride,
+                            sw.max_evals);
+                        derive_refinement_from_budget = true;
+                    }
+
+                    if (derive_refinement_from_budget && cfg.coarse_fine.stage1_indices) {
+                        const std::size_t derived_stage2_hops =
+                            derive_stage2_hops_for_remaining_budget(
+                                sw,
+                                dims,
+                                cfg.coarse_fine.stage1_indices->size());
+                        if (derived_stage2_hops > sw.coarse_fine.stage2_hops) {
+                            sw.coarse_fine.stage2_hops = derived_stage2_hops;
+                            sweep_report.requested_sweep = sw;
+                            cfg.coarse_fine.opt.stage2_hops = derived_stage2_hops;
                         }
-                        cfg.coarse_fine.stage1_indices = stage1_indices;
                     }
                 }
                 else {
                     cfg.kind = SweepIndexKind::MonteCarlo;
-                    cfg.monte_carlo.draws = sw.monte_carlo.draws;
+                    cfg.monte_carlo.draws = std::min(sw.monte_carlo.draws, sw.max_evals);
                     cfg.monte_carlo.seed = sw.monte_carlo.seed;
                     cfg.monte_carlo.dedupe = sw.monte_carlo.dedupe;
-                    cfg.monte_carlo.top_k = (sw.monte_carlo.top_k > 0) ? sw.monte_carlo.top_k : sw.top_k;
+                    cfg.monte_carlo.top_k =
+                        (sw.monte_carlo.top_k > 0) ? sw.monte_carlo.top_k : sw.top_k;
+                    if (sw.result_diversity.enabled) {
+                        cfg.monte_carlo.top_k = std::max(cfg.monte_carlo.top_k, retained_top_k);
+                    }
                 }
 
+                problem.param_count = engine_candidate_space_size;
                 auto sweep = make_sweep_index(cfg);
                 const auto run = sweep->run(problem, score_fn, progress_cb, opt.cancel_requested);
                 best = run.has_two_stage ? run.two_stage.stage2_best_first : run.best_first;
@@ -1220,11 +1797,15 @@ namespace sugar {
                         run.two_stage.stage2_evaluated);
                 }
                 else if (sw.engine == PlanSweepEngineKind::MonteCarlo) {
+                    const std::size_t monte_carlo_stage_total =
+                        cfg.monte_carlo.dedupe
+                        ? std::min(cfg.monte_carlo.draws, problem.param_count)
+                        : cfg.monte_carlo.draws;
                     upsert_stage_summary(
                         sweep_report,
                         SweepProgressStage::MonteCarloSampling,
                         run.eval_count,
-                        cfg.monte_carlo.draws);
+                        monte_carlo_stage_total);
                 }
                 break;
             }
@@ -1253,17 +1834,19 @@ namespace sugar {
                     return a.index < b.index;
                 });
 
-            if (best.size() > sw.top_k) {
-                best.resize(sw.top_k);
-            }
+            best = apply_result_diversity(
+                best,
+                dims,
+                sw,
+                sweep_report.result_diversity);
 
             const auto after_engine = std::chrono::steady_clock::now();
             const double ranking_elapsed =
                 std::chrono::duration<double>(after_engine - sweep_started).count();
-            const auto ranked_candidates = make_sweep_ranked_candidates(best, dims, points);
+            const auto ranked_candidates = make_sweep_ranked_candidates(best, dims);
             progress_cb(make_sweep_progress(
                 eval_count,
-                points.size(),
+                engine_candidate_space_size,
                 ranking_elapsed,
                 0.0,
                 SweepProgressStage::Ranking,
@@ -1272,9 +1855,10 @@ namespace sugar {
                 ranked_candidates));
 
             sweep_report.top_candidates = ranked_candidates;
+            sweep_report.warnings = derive_plan_sweep_report_warnings(sweep_report);
             progress_cb(make_sweep_progress(
                 eval_count,
-                points.size(),
+                engine_candidate_space_size,
                 ranking_elapsed,
                 0.0,
                 SweepProgressStage::ReportAssembly,

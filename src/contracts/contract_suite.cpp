@@ -379,6 +379,7 @@ namespace sugar {
             { "service_protocol_framing", "service protocol framing and malformed-request handling", &test_service_protocol_framing_contracts },
             { "service_protocol_dispatch", "service protocol request dispatch surface", &test_service_protocol_dispatch_contracts },
             { "service_protocol_network_socket", "service protocol socket transport behavior", &test_service_protocol_network_socket_contracts },
+            { "service_protocol_live_client_run", "service protocol live one-command client run", &test_service_protocol_live_client_run_contracts },
             { "service_protocol_live_multi_client", "service protocol live multi-client TCP concurrency", &test_service_protocol_live_multi_client_contracts },
             { "service_protocol_live_cancel_polling", "service protocol live TCP cancel and status polling", &test_service_protocol_live_cancel_polling_contracts },
             { "service_protocol_remote_bind_policy", "service protocol remote-bind policy enforcement", &test_service_protocol_remote_bind_policy_contracts },
@@ -492,6 +493,7 @@ namespace sugar {
                 "live socket and TCP hosted-service regression surface",
                 {
                     "service_protocol_network_socket",
+                    "service_protocol_live_client_run",
                     "service_protocol_live_multi_client",
                     "service_protocol_live_cancel_polling",
                     "service_protocol_remote_bind_policy",
