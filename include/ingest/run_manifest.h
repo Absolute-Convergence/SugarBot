@@ -75,11 +75,16 @@ namespace sugar {
         bool produced_frameset{ false };
         bool has_entity_axis{ false };
         bool csv_had_header{ false };
+        std::vector<std::string> parsed_columns{};
         std::size_t csv_physical_line_count{ 0 };
         std::size_t csv_blank_line_count{ 0 };
         std::size_t csv_data_row_count{ 0 };
         std::size_t dropped_row_count{ 0 };
+        std::vector<ValueColumnQuality> value_column_quality{};
         std::vector<std::string> input_warnings{};
+        std::string preprocess_error_code{};
+        std::string preprocess_error_message{};
+        std::vector<PreprocessIssueAggregate> preprocess_error_aggregates{};
         bool alignment_applied{ false };
         align::CalendarPolicy alignment_calendar{ align::CalendarPolicy::Intersection };
         align::MissingPolicy alignment_missing{ align::MissingPolicy::NaN };

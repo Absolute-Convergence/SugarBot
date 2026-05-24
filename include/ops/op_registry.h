@@ -31,6 +31,7 @@ namespace sugar {
         CrossSeries = 2,
         SpatialLocal = 3,
         SpatioTemporal = 4,
+        TopologyLocal = 5,
     };
     using ResolvedParam = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string>;
     using ResolvedParamMap = std::unordered_map<std::string, ResolvedParam>;

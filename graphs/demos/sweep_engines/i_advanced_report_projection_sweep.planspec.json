@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "i_advanced_report_projection_sweep",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "params": {
+    "alpha": 1,
+    "beta": 1
+  },
+  "numeric_nodes": [
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } },
+    { "id": "one", "op": "core.const", "params": { "value": 1.0 } },
+    { "id": "return_value", "op": "core.const", "params": { "value": { "ref": "alpha" } } },
+    { "id": "risk_value", "op": "core.const", "params": { "value": { "ref": "beta" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["one", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "exhaustive",
+    "top_k": 3,
+    "max_evals": 16,
+    "objective": {
+      "value": { "source": "numeric_node_output", "name": "return_value" },
+      "direction": "maximize"
+    },
+    "result_diversity": {
+      "dedupe_trade_hash": true,
+      "oversample_multiplier": 8,
+      "min_trades": 1
+    },
+    "pareto": {
+      "retained_candidate_limit": 8,
+      "output_depollution": {
+        "enabled": false,
+        "dedupe_trade_hash": false,
+        "basin_aware": true,
+        "max_per_basin": 2,
+        "param_bucket_size": 2,
+        "min_param_distance": 1,
+        "min_trades": 0
+      },
+      "primary_sort_index": 0,
+      "objectives": [
+        {
+          "value": { "source": "numeric_node_output", "name": "return_value" },
+          "direction": "maximize"
+        },
+        {
+          "value": { "source": "numeric_node_output", "name": "risk_value" },
+          "direction": "minimize"
+        }
+      ]
+    },
+    "params": {
+      "alpha": { "min": 1, "max": 4, "step": 1, "is_int": true },
+      "beta": { "min": 1, "max": 4, "step": 1, "is_int": true }
+    }
+  }
+}

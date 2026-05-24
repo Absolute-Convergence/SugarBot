@@ -30,6 +30,7 @@ namespace sugar {
             case OpAxisScope::CrossSeries: return "cross_series";
             case OpAxisScope::SpatialLocal: return "spatial_local";
             case OpAxisScope::SpatioTemporal: return "spatiotemporal";
+            case OpAxisScope::TopologyLocal: return "topology_local";
             }
             return "unknown";
         }
@@ -91,6 +92,10 @@ namespace sugar {
 
         void register_spatial_ops(OperatorRegistry& r) {
             op_modules::register_spatial_ops(r);
+        }
+
+        void register_topology_ops(OperatorRegistry& r) {
+            op_modules::register_topology_ops(r);
         }
 
         void register_logic_ops(OperatorRegistry& r) {
@@ -208,6 +213,7 @@ namespace sugar {
             if (module == "ms") return "cross-series operations; requires multiple aligned series/entity lanes";
             if (module == "spatial") return "foundational narrow spatial locality over built-in 2D metric topology";
             if (module == "st") return "foundational narrow spatiotemporal locality over built-in composite topology";
+            if (module == "topology") return "generic neighborhood operators over query-bearing topology providers";
             return "registered operator module";
         }
 
@@ -216,10 +222,10 @@ namespace sugar {
                 return "rules: row-wise ops do not require time/spatial axes; `core.close` reads the bound primary series/column; `core.ref`/`core.col` are compiler-adapted refs; `core.select` is data-flow selection, not control flow";
             }
             if (module == "cmp") {
-                return "rules: comparison ops produce bool nodes from numeric args; crossover predicates are temporal/local and should be used after the referenced numeric nodes exist";
+                return "rules: comparison ops produce bool nodes from numeric args; `cmp.gte`/`cmp.lte` aliases map to `cmp.ge`/`cmp.le`; crossover predicates are temporal/local and should be used after the referenced numeric nodes exist";
             }
             if (module == "logic") {
-                return "rules: logic ops consume bool nodes only; use explicit intermediate nodes for unary/binary composition instead of inline expressions";
+                return "rules: logic ops consume bool nodes only; `bool.and`/`bool.or`/`bool.not` aliases map here; use explicit intermediate nodes for unary/binary composition instead of inline expressions";
             }
             if (module == "ts") {
                 return "rules: time-series ops work on one aligned vector lane at a time; rolling/window ops carry warmup; same-series arithmetic belongs here (`ts.sub`, `ts.div`) rather than in `ms.*`";
@@ -232,6 +238,9 @@ namespace sugar {
             }
             if (module == "st") {
                 return "rules: spatiotemporal locality requires both time and spatial axes plus the built-in composite topology; support is intentionally narrow in this build";
+            }
+            if (module == "topology") {
+                return "rules: topology operators require an explicit `topology` binding to a query-bearing provider; they consume `NeighborhoodQuery` results and do not depend on provider internals";
             }
             return "rules: follow each operator signature, params, axis scope, and topology metadata in `--dump-ops ops`";
         }
@@ -285,6 +294,7 @@ namespace sugar {
         register_ts_ops(r);
         register_ms_ops(r);
         register_spatial_ops(r);
+        register_topology_ops(r);
         register_logic_ops(r);
         return r;
     }
@@ -300,7 +310,8 @@ namespace sugar {
     void OperatorRegistry::print_modules_summary(std::ostream& os) const {
         os << "# SugarBot Operator Modules And Rules\n\n";
         os << "Use `--dump-ops ops` for the compact operator catalog, `--dump-ops examples` for working examples, or bare `--dump-ops` for the legacy full dump.\n\n";
-        os << "Spatial/locality support is foundational and intentionally narrow in this build: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n\n";
+        os << "Topology/locality support is still CLI-first: current runnable locality ops include `spatial.radius_mean`, `st.radius_mean`, and generic `topology.*` neighborhood operators over query-bearing topologies.\n\n";
+        os << "Declared dynamic execution is PlanSpec routing metadata, not an operator family: use `--dump-plan` for `execution.mode=\"declared_dynamic\"`, `subgraphs`, `routes`, `outputs`, and `bounds`; checked-in examples live in `graphs/demos/dynamic_execution/`.\n\n";
         print_node_evaluation_rules(os);
 
         const auto ordered = ordered_entries(ops_);
@@ -333,6 +344,12 @@ namespace sugar {
     void OperatorRegistry::print_operations_catalog(std::ostream& os) const {
         os << "# SugarBot Operator Catalog\n\n";
         os << "Operator metadata only. Use `--dump-ops modules` for module rules and node evaluation guidance, or `--dump-ops examples` for working PlanSpec examples.\n\n";
+        os << "## Accepted Operator Aliases\n\n";
+        os << "These names are accepted in PlanSpec JSON and normalized before operator lookup. They are listed here so `--dump-ops ops` remains the capability truth without pretending aliases are separate runtime primitives.\n\n";
+        os << "- `core.col` -> `core.ref`; use `params.ref` with an exact same-series value column from layout `value_cols`.\n";
+        os << "- `ms.col` -> `core.ref`; use `params.ref` with an exact `series:column` key after checking `--align-dump`.\n";
+        os << "- `cmp.gte` -> `cmp.ge`; `cmp.lte` -> `cmp.le`.\n";
+        os << "- `bool.and` -> `logic.and`; `bool.or` -> `logic.or`; `bool.not` -> `logic.not`.\n\n";
         const auto ordered = ordered_entries(ops_);
         std::string current_module;
         for (const auto* e : ordered) {
@@ -376,6 +393,86 @@ namespace sugar {
 }
 )JSON";
         os << "\n";
+        os << "## Named Layout Column (core.ref)\n";
+        os << "`core.ref` accesses a named numeric column from `value_cols` in the layout. `core.col` is accepted as the same-series column accessor. Column names are exact and case-sensitive.\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Named Column Gate",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "roc_val", "op": "core.ref", "params": { "ref": "ROC" } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gt", "args": ["roc_val", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}
+)JSON";
+        os << "\n";
+        os << "## Precomputed Numeric Leaf (advanced)\n";
+        os << "Prefer `core.ref`/`core.col` for ordinary CSV value columns because they say \"read this layout column\" directly. Use `core.precomputed_num` when you intentionally want an exact numeric leaf already present in the compile environment, including exact `series:column` keys in aligned multi-series runs.\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Precomputed Leaf Gate",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "feature_leaf", "op": "core.precomputed_num", "params": { "name": "MA" } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gte", "args": ["feature_leaf", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}
+)JSON";
+        os << "\n";
+        os << "## Sweep Parameter Threshold\n";
+        os << "There is no `core.param` operator. To use a top-level PlanSpec or sweep parameter as a numeric threshold, make a `core.const` node and set its `value` param to `{ \"ref\": \"param_name\" }`.\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Sweep Threshold Gate",
+  "trade_mode": "LongOnly",
+  "params": { "threshold": 0.0 },
+  "numeric_nodes": [
+    { "id": "signal", "op": "core.ref", "params": { "ref": "ROC" } },
+    { "id": "threshold_value", "op": "core.const", "params": { "value": { "ref": "threshold" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gt", "args": ["signal", "threshold_value"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "exhaustive",
+    "params": {
+      "threshold": { "min": -5.0, "max": 5.0, "step": 1.0 }
+    }
+  }
+}
+)JSON";
+        os << "\n";
         os << "## Spatial Radius Mean (Foundational/Narrow)\n";
         os << "Requires a layout with `spatial_x_col` and `spatial_y_col`. For row-wise spatial neighborhoods, omit `entity_col`; use entity grouping only when you intentionally want panel-shaped data.\n";
         os << R"JSON(
@@ -390,6 +487,67 @@ namespace sugar {
   ],
   "bool_nodes": [
     { "id": "entryL", "op": "cmp.gt", "args": ["local_mean", "zero"] }
+  ],
+  "bindings": {
+    "entry_long": "entryL",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}
+)JSON";
+        os << "\n";
+        os << "## Row-Domain Topology Degree Gate\n";
+        os << "This is the smallest topology shape: topology node ids are aligned row indices after ingest/sort. Use `--obs-report` to confirm `row_domain_size`, then `--plan-report` to confirm the topology name and required query kinds before `run`.\n";
+        os << "Larger checked-in topology demos live in `graphs/demos/topology_readiness/` and use their matching CSV fixtures in `data/topology_readiness/`.\n";
+        os << "Minimal CSV:\n";
+        os << R"CSV(
+date,measurement
+20240101,10
+20240102,11
+20240103,9
+)CSV";
+        os << "\n";
+        os << "Layout fragment:\n";
+        os << R"JSON(
+{
+  "ingest": {
+    "time_col": "date",
+    "time_kind": "YYYYMMDD",
+    "value_cols": ["measurement"],
+    "primary_value_col": "measurement"
+  },
+  "topologies": [
+    {
+      "name": "row.chain",
+      "bearing": "query_bearing",
+      "family": "relational_graph",
+      "domain_scope": "row_domain",
+      "query_kinds": ["neighbor_set"],
+      "directed": true,
+      "node_count": 3,
+      "edges": [
+        { "source": 0, "target": 1 },
+        { "source": 1, "target": 2 }
+      ]
+    }
+  ]
+}
+)JSON";
+        os << "\n";
+        os << "PlanSpec:\n";
+        os << R"JSON(
+{
+  "version": 1,
+  "name": "Row Topology Degree Gate",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "degree", "op": "topology.degree", "params": { "topology": "row.chain" } },
+    { "id": "zero", "op": "core.const", "params": { "value": 0.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "entryL", "op": "cmp.gt", "args": ["degree", "zero"] }
   ],
   "bindings": {
     "entry_long": "entryL",
@@ -437,7 +595,7 @@ namespace sugar {
             os << "- PlanSpec operator support in runtime follows this registry dump; unsupported/unknown ops fail compile explicitly.\n";
             os << "- `core.close` reads from DataView primary series/column (default `close`, override via PlanSpec param `primary_value_col`).\n";
             os << "- Series-prefixed column refs (`series:column`) are supported through pre-compile leaf adaptation (`core.precomputed_num`).\n";
-            os << "- Column-ref alias ops (`core.col`, `ms.col`) and shorthand aliases (`diff`, `ratio`, `zscore`, `ts.dc_*`, `ts.stdev*`, `ts.trange*`, `ts.atr_w`) are normalized before compile.\n";
+            os << "- Column-ref alias ops (`core.col`, `ms.col`) and shorthand aliases (`diff`, `ratio`, `zscore`, `cmp.gte`, `cmp.lte`, `bool.*`, `ts.dc_*`, `ts.stdev*`, `ts.trange*`, `ts.atr_w`) are normalized before compile.\n";
             os << "- `ms.*` ops are cross-series operators; if `--align-dump` shows `series_count=1`, use same-series ops such as `ts.sub` or `ts.div` instead.\n\n";
 
             os << "### Alias Ledger (human-readable -> canonical)\n";
@@ -497,7 +655,8 @@ namespace sugar {
             os << "- No user-defined ops in PlanSpec JSON.\n";
             os << "- No include/import/multi-file PlanSpec composition.\n";
             os << "- Param objects are only valid as `{ \"ref\": \"...\" }` (no expression objects).\n";
-            os << "- `core.precomputed_num` / `core.precomputed_bool` may be unavailable in custom plans; prefer standard ops.\n\n";
+            os << "- For CSV columns, prefer `core.ref`/`core.col` with `params.ref`. `core.precomputed_num` is a leaf lookup, requires `params.name`, and names are case-sensitive exact column or `series:column` keys.\n";
+            os << "- `core.precomputed_bool` is only available when a boolean leaf exists in the compile environment.\n\n";
 
             os << "### AI preflight checklist\n";
             os << "- Root is valid JSON object (no comments, no trailing garbage).\n";
@@ -517,7 +676,7 @@ namespace sugar {
             os << "  with `value.source` (`reported_metric` | `numeric_node_output`), `value.name`,\n";
             os << "  `direction`, optional `penalties`, and optional `tie_breaks`\n";
             os << "- `sweep.dd_weight` (float, optional; used by legacy `pnl_dd`)\n";
-            os << "- `sweep.engine` (string: `exhaustive` | `coarse_fine` | `monte_carlo`, optional)\n";
+            os << "- `sweep.engine` (string: `exhaustive` | `coarse_fine` | `monte_carlo` | `successive_halving` | `bayesian_posterior`, optional)\n";
             os << "- `sweep.params` (object): map `paramName -> range`\n";
             os << "- `sweep.engine_config` (object, optional)\n";
             os << "  - `coarse_fine`:\n";
@@ -532,6 +691,11 @@ namespace sugar {
             os << "    - `seed` (int >= 0)\n";
             os << "    - `dedupe` (bool)\n";
             os << "    - `top_k` (int > 0, optional)\n\n";
+            os << "  - `bayesian_posterior`:\n";
+            os << "    - `surrogate` (`gaussian_process`)\n";
+            os << "    - `acquisition` (`expected_improvement` | `probability_of_improvement` | `upper_confidence_bound`)\n";
+            os << "    - `initial_design_size`, `iterations`, `seed`, `top_k` (int >= 0 except `top_k` > 0 when present)\n";
+            os << "    - `exploration_weight` (float >= 0), `normalize_inputs` (bool)\n\n";
 
             os << "Range forms:\n";
             os << "- Discrete: `{ \"values\": [5,10,20], \"is_int\": true }`\n";

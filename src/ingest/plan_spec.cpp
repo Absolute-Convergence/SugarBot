@@ -1,7 +1,11 @@
 #include "sweep/plan_spec.h"
 
+#include <algorithm>
+#include <array>
 #include <fstream>
 #include <sstream>
+#include <string_view>
+#include <utility>
 
 namespace sugar {
 
@@ -35,6 +39,39 @@ namespace sugar {
             if (s == "exhaustive") { out = PlanSweepEngineKind::Exhaustive; return true; }
             if (s == "coarse_fine") { out = PlanSweepEngineKind::CoarseFine; return true; }
             if (s == "monte_carlo") { out = PlanSweepEngineKind::MonteCarlo; return true; }
+            if (s == "successive_halving") { out = PlanSweepEngineKind::SuccessiveHalving; return true; }
+            if (s == "bayesian_posterior" || s == "bayesian" || s == "posterior") {
+                out = PlanSweepEngineKind::BayesianPosterior;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_posterior_surrogate_kind(
+            const std::string& s,
+            PlanSweepPosteriorSurrogateKind& out) {
+            if (s == "gaussian_process") {
+                out = PlanSweepPosteriorSurrogateKind::GaussianProcess;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_posterior_acquisition_kind(
+            const std::string& s,
+            PlanSweepPosteriorAcquisitionKind& out) {
+            if (s == "expected_improvement") {
+                out = PlanSweepPosteriorAcquisitionKind::ExpectedImprovement;
+                return true;
+            }
+            if (s == "probability_of_improvement") {
+                out = PlanSweepPosteriorAcquisitionKind::ProbabilityOfImprovement;
+                return true;
+            }
+            if (s == "upper_confidence_bound") {
+                out = PlanSweepPosteriorAcquisitionKind::UpperConfidenceBound;
+                return true;
+            }
             return false;
         }
 
@@ -48,6 +85,56 @@ namespace sugar {
                 return true;
             }
             return false;
+        }
+
+        bool parse_execution_mode(const std::string& s, PlanExecutionMode& out) {
+            if (s == "static") {
+                out = PlanExecutionMode::Static;
+                return true;
+            }
+            if (s == "declared_dynamic") {
+                out = PlanExecutionMode::DeclaredDynamic;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_string_array_field(
+            const Value& v,
+            std::vector<std::string>& out,
+            const std::string& field_name,
+            std::string& err) {
+            if (!v.is_arr()) {
+                err = field_name + " must be array";
+                return false;
+            }
+            out.clear();
+            for (const auto& item : v.as_arr()) {
+                if (!item.is_str()) {
+                    err = field_name + " entries must be strings";
+                    return false;
+                }
+                out.push_back(item.as_str());
+            }
+            return true;
+        }
+
+        bool parse_positive_size_field(
+            const Value& v,
+            std::size_t& out,
+            const std::string& field_name,
+            std::string& err) {
+            std::int64_t n = 0;
+            if (!as_i64(v, n)) {
+                err = field_name + " must be number";
+                return false;
+            }
+            if (n <= 0) {
+                err = field_name + " must be > 0";
+                return false;
+            }
+            out = static_cast<std::size_t>(n);
+            return true;
         }
 
         bool parse_objective_value_source(const std::string& s, ObjectiveValueSource& out) {
@@ -80,6 +167,63 @@ namespace sugar {
                 return true;
             }
             return false;
+        }
+
+        bool parse_result_diversity_config(
+            const Value& v,
+            const std::string& field_name,
+            PlanSweepResultDiversityConfig& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = field_name + " must be object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+            out.enabled = true;
+
+            if (auto* x = obj_get(o, "enabled")) {
+                if (!x->is_bool()) { err = field_name + ".enabled must be bool"; return false; }
+                out.enabled = x->as_bool();
+            }
+            if (auto* x = obj_get(o, "dedupe_trade_hash")) {
+                if (!x->is_bool()) { err = field_name + ".dedupe_trade_hash must be bool"; return false; }
+                out.dedupe_trade_hash = x->as_bool();
+            }
+            if (auto* x = obj_get(o, "basin_aware")) {
+                if (!x->is_bool()) { err = field_name + ".basin_aware must be bool"; return false; }
+                out.basin_aware = x->as_bool();
+            }
+            if (auto* x = obj_get(o, "oversample_multiplier")) {
+                std::int64_t n = 0;
+                if (!as_i64(*x, n)) { err = field_name + ".oversample_multiplier must be number"; return false; }
+                if (n <= 0) { err = field_name + ".oversample_multiplier must be > 0"; return false; }
+                out.oversample_multiplier = static_cast<std::size_t>(n);
+            }
+            if (auto* x = obj_get(o, "max_per_basin")) {
+                std::int64_t n = 0;
+                if (!as_i64(*x, n)) { err = field_name + ".max_per_basin must be number"; return false; }
+                if (n <= 0) { err = field_name + ".max_per_basin must be > 0"; return false; }
+                out.max_per_basin = static_cast<std::size_t>(n);
+            }
+            if (auto* x = obj_get(o, "param_bucket_size")) {
+                std::int64_t n = 0;
+                if (!as_i64(*x, n)) { err = field_name + ".param_bucket_size must be number"; return false; }
+                if (n <= 0) { err = field_name + ".param_bucket_size must be > 0"; return false; }
+                out.param_bucket_size = static_cast<std::size_t>(n);
+            }
+            if (auto* x = obj_get(o, "min_param_distance")) {
+                std::int64_t n = 0;
+                if (!as_i64(*x, n)) { err = field_name + ".min_param_distance must be number"; return false; }
+                if (n < 0) { err = field_name + ".min_param_distance must be >= 0"; return false; }
+                out.min_param_distance = static_cast<std::size_t>(n);
+            }
+            if (auto* x = obj_get(o, "min_trades")) {
+                std::int64_t n = 0;
+                if (!as_i64(*x, n)) { err = field_name + ".min_trades must be number"; return false; }
+                if (n < 0) { err = field_name + ".min_trades must be >= 0"; return false; }
+                out.min_trades = static_cast<std::size_t>(n);
+            }
+            return true;
         }
 
         bool parse_objective_value_spec(const Value& v, ObjectiveValueSpec& out, std::string& err) {
@@ -230,6 +374,47 @@ namespace sugar {
             return true;
         }
 
+        bool parse_objective_vector_component_spec(
+            const Value& v,
+            ObjectiveVectorComponentSpec& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = "objective vector component must be an object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+            if (auto* label = obj_get(o, "label")) {
+                if (!label->is_str()) {
+                    err = "objective vector component.label must be string";
+                    return false;
+                }
+                out.label = label->as_str();
+                if (out.label.empty()) {
+                    err = "objective vector component.label must not be empty";
+                    return false;
+                }
+            }
+            auto* value = obj_get(o, "value");
+            if (!value) {
+                err = "objective vector component.value is required";
+                return false;
+            }
+            if (!parse_objective_value_spec(*value, out.value, err)) {
+                err = "objective vector component.value: " + err;
+                return false;
+            }
+            auto* direction = obj_get(o, "direction");
+            if (!direction || !direction->is_str()) {
+                err = "objective vector component.direction must be string";
+                return false;
+            }
+            if (!parse_objective_direction(direction->as_str(), out.direction)) {
+                err = "objective vector component.direction must be maximize or minimize";
+                return false;
+            }
+            return true;
+        }
+
         bool parse_ranking_objective_object_spec(
             const Value& v,
             const char* field_name,
@@ -237,6 +422,11 @@ namespace sugar {
             std::string& err) {
             if (!v.is_obj()) {
                 err = std::string(field_name) + " must be object";
+                if (std::string_view(field_name) == "run.objective") {
+                    err += "; for ranked pnl shorthand use compatibility run.ranking_metric=\"pnl\", "
+                        "or write object-form run.objective with value and direction. "
+                        "The string shortcut is only accepted by sweep.objective";
+                }
                 return false;
             }
             const auto& o = v.as_obj();
@@ -419,6 +609,25 @@ namespace sugar {
         bool parse_bindings(const Value& v, PlanBindings& b, std::string& err) {
             if (!v.is_obj()) { err = "bindings must be object"; return false; }
             const auto& o = v.as_obj();
+            const std::array<std::string_view, 5> valid_keys = {
+                "entry_long",
+                "exit_long",
+                "entry_short",
+                "exit_short",
+                "allow_trade",
+            };
+            auto is_valid_key = [&](const std::string& key) {
+                const std::string_view key_view(key.data(), key.size());
+                return std::find(valid_keys.begin(), valid_keys.end(), key_view) != valid_keys.end();
+                };
+            for (const auto& kv : o) {
+                const auto& key = kv.first;
+                if (is_valid_key(key)) continue;
+                err = "bindings." + key + " is not supported; valid binding keys are "
+                    "entry_long, exit_long, entry_short, exit_short, allow_trade";
+                return false;
+            }
+
             auto get_str = [&](const char* key, std::string& dst) -> bool {
                 if (auto* p = obj_get(o, key)) {
                     if (!p->is_str()) { err = std::string("bindings.") + key + " must be string"; return false; }
@@ -530,7 +739,7 @@ namespace sugar {
             if (auto* p = obj_get(o, "engine")) {
                 if (!p->is_str()) { err = "sweep.engine must be string"; return false; }
                 if (!parse_sweep_engine_kind(p->as_str(), out.engine)) {
-                    err = "sweep.engine must be one of: exhaustive, coarse_fine, monte_carlo";
+                    err = "sweep.engine must be one of: exhaustive, coarse_fine, monte_carlo, successive_halving, bayesian_posterior";
                     return false;
                 }
             }
@@ -617,54 +826,189 @@ namespace sugar {
                         out.monte_carlo.top_k = static_cast<std::size_t>(n);
                     }
                 }
+
+                if (auto* sh = obj_get(ec, "successive_halving")) {
+                    if (!sh->is_obj()) { err = "sweep.engine_config.successive_halving must be object"; return false; }
+                    const auto& sho = sh->as_obj();
+
+                    if (auto* x = obj_get(sho, "rounds")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.rounds must be number"; return false; }
+                        if (n <= 0) { err = "sweep.engine_config.successive_halving.rounds must be > 0"; return false; }
+                        out.successive_halving.rounds = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(sho, "reduction_factor")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.reduction_factor must be number"; return false; }
+                        if (n <= 1) { err = "sweep.engine_config.successive_halving.reduction_factor must be > 1"; return false; }
+                        out.successive_halving.reduction_factor = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(sho, "initial_candidates")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.initial_candidates must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.successive_halving.initial_candidates must be >= 0"; return false; }
+                        out.successive_halving.initial_candidates = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(sho, "initial_stride")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.initial_stride must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.successive_halving.initial_stride must be >= 0"; return false; }
+                        out.successive_halving.initial_stride = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(sho, "neighborhood_hops")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.neighborhood_hops must be number"; return false; }
+                        if (n <= 0) { err = "sweep.engine_config.successive_halving.neighborhood_hops must be > 0"; return false; }
+                        out.successive_halving.neighborhood_hops = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(sho, "dedupe_candidates")) {
+                        if (!x->is_bool()) { err = "sweep.engine_config.successive_halving.dedupe_candidates must be bool"; return false; }
+                        out.successive_halving.dedupe_candidates = x->as_bool();
+                    }
+                    if (auto* x = obj_get(sho, "top_k")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.successive_halving.top_k must be number"; return false; }
+                        if (n <= 0) { err = "sweep.engine_config.successive_halving.top_k must be > 0"; return false; }
+                        out.successive_halving.top_k = static_cast<std::size_t>(n);
+                    }
+                }
+
+                if (auto* bp = obj_get(ec, "bayesian_posterior")) {
+                    if (!bp->is_obj()) { err = "sweep.engine_config.bayesian_posterior must be object"; return false; }
+                    const auto& bpo = bp->as_obj();
+
+                    if (auto* x = obj_get(bpo, "surrogate")) {
+                        if (!x->is_str()) { err = "sweep.engine_config.bayesian_posterior.surrogate must be string"; return false; }
+                        if (!parse_posterior_surrogate_kind(x->as_str(), out.bayesian_posterior.surrogate)) {
+                            err = "sweep.engine_config.bayesian_posterior.surrogate must be gaussian_process";
+                            return false;
+                        }
+                    }
+                    if (auto* x = obj_get(bpo, "acquisition")) {
+                        if (!x->is_str()) { err = "sweep.engine_config.bayesian_posterior.acquisition must be string"; return false; }
+                        if (!parse_posterior_acquisition_kind(x->as_str(), out.bayesian_posterior.acquisition)) {
+                            err = "sweep.engine_config.bayesian_posterior.acquisition must be one of: expected_improvement, probability_of_improvement, upper_confidence_bound";
+                            return false;
+                        }
+                    }
+                    if (auto* x = obj_get(bpo, "initial_design_size")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.bayesian_posterior.initial_design_size must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.bayesian_posterior.initial_design_size must be >= 0"; return false; }
+                        out.bayesian_posterior.initial_design_size = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(bpo, "iterations")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.bayesian_posterior.iterations must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.bayesian_posterior.iterations must be >= 0"; return false; }
+                        out.bayesian_posterior.iterations = static_cast<std::size_t>(n);
+                    }
+                    if (auto* x = obj_get(bpo, "seed")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.bayesian_posterior.seed must be number"; return false; }
+                        if (n < 0) { err = "sweep.engine_config.bayesian_posterior.seed must be >= 0"; return false; }
+                        out.bayesian_posterior.seed = static_cast<std::uint64_t>(n);
+                    }
+                    if (auto* x = obj_get(bpo, "exploration_weight")) {
+                        if (!x->is_num()) { err = "sweep.engine_config.bayesian_posterior.exploration_weight must be number"; return false; }
+                        const double value = x->number_as_f64();
+                        if (value < 0.0) {
+                            err = "sweep.engine_config.bayesian_posterior.exploration_weight must be >= 0";
+                            return false;
+                        }
+                        out.bayesian_posterior.exploration_weight = value;
+                    }
+                    if (auto* x = obj_get(bpo, "normalize_inputs")) {
+                        if (!x->is_bool()) { err = "sweep.engine_config.bayesian_posterior.normalize_inputs must be bool"; return false; }
+                        out.bayesian_posterior.normalize_inputs = x->as_bool();
+                    }
+                    if (auto* x = obj_get(bpo, "top_k")) {
+                        std::int64_t n = 0;
+                        if (!as_i64(*x, n)) { err = "sweep.engine_config.bayesian_posterior.top_k must be number"; return false; }
+                        if (n <= 0) { err = "sweep.engine_config.bayesian_posterior.top_k must be > 0"; return false; }
+                        out.bayesian_posterior.top_k = static_cast<std::size_t>(n);
+                    }
+                }
             }
 
             if (auto* p = obj_get(o, "result_diversity")) {
-                if (!p->is_obj()) { err = "sweep.result_diversity must be object"; return false; }
-                const auto& rdo = p->as_obj();
-                out.result_diversity.enabled = true;
+                if (!parse_result_diversity_config(
+                        *p,
+                        "sweep.result_diversity",
+                        out.result_diversity,
+                        err)) {
+                    return false;
+                }
+            }
 
-                if (auto* x = obj_get(rdo, "enabled")) {
-                    if (!x->is_bool()) { err = "sweep.result_diversity.enabled must be bool"; return false; }
-                    out.result_diversity.enabled = x->as_bool();
+            if (auto* p = obj_get(o, "pareto")) {
+                if (!p->is_obj()) { err = "sweep.pareto must be object"; return false; }
+                const auto& po = p->as_obj();
+                out.pareto.enabled = true;
+
+                if (auto* x = obj_get(po, "enabled")) {
+                    if (!x->is_bool()) { err = "sweep.pareto.enabled must be bool"; return false; }
+                    out.pareto.enabled = x->as_bool();
                 }
-                if (auto* x = obj_get(rdo, "dedupe_trade_hash")) {
-                    if (!x->is_bool()) { err = "sweep.result_diversity.dedupe_trade_hash must be bool"; return false; }
-                    out.result_diversity.dedupe_trade_hash = x->as_bool();
+                if (auto* x = obj_get(po, "use_result_diversity")) {
+                    if (!x->is_bool()) { err = "sweep.pareto.use_result_diversity must be bool"; return false; }
+                    out.pareto.use_result_diversity = x->as_bool();
                 }
-                if (auto* x = obj_get(rdo, "basin_aware")) {
-                    if (!x->is_bool()) { err = "sweep.result_diversity.basin_aware must be bool"; return false; }
-                    out.result_diversity.basin_aware = x->as_bool();
+                if (auto* x = obj_get(po, "output_depollution")) {
+                    PlanSweepResultDiversityConfig config{};
+                    if (!parse_result_diversity_config(
+                            *x,
+                            "sweep.pareto.output_depollution",
+                            config,
+                            err)) {
+                        return false;
+                    }
+                    out.pareto.output_depollution = std::move(config);
                 }
-                if (auto* x = obj_get(rdo, "oversample_multiplier")) {
+                if (auto* x = obj_get(po, "retained_candidate_limit")) {
                     std::int64_t n = 0;
-                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.oversample_multiplier must be number"; return false; }
-                    if (n <= 0) { err = "sweep.result_diversity.oversample_multiplier must be > 0"; return false; }
-                    out.result_diversity.oversample_multiplier = static_cast<std::size_t>(n);
+                    if (!as_i64(*x, n)) { err = "sweep.pareto.retained_candidate_limit must be number"; return false; }
+                    if (n <= 0) { err = "sweep.pareto.retained_candidate_limit must be > 0"; return false; }
+                    out.pareto.retained_candidate_limit = static_cast<std::size_t>(n);
+                    out.pareto.front_row_limit = static_cast<std::size_t>(n);
                 }
-                if (auto* x = obj_get(rdo, "max_per_basin")) {
+                if (auto* x = obj_get(po, "front_row_limit")) {
                     std::int64_t n = 0;
-                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.max_per_basin must be number"; return false; }
-                    if (n <= 0) { err = "sweep.result_diversity.max_per_basin must be > 0"; return false; }
-                    out.result_diversity.max_per_basin = static_cast<std::size_t>(n);
+                    if (!as_i64(*x, n)) { err = "sweep.pareto.front_row_limit must be number"; return false; }
+                    if (n < 0) { err = "sweep.pareto.front_row_limit must be >= 0"; return false; }
+                    out.pareto.front_row_limit = static_cast<std::size_t>(n);
+                    out.pareto.retained_candidate_limit =
+                        out.pareto.front_row_limit == 0
+                        ? out.pareto.retained_candidate_limit
+                        : out.pareto.front_row_limit;
                 }
-                if (auto* x = obj_get(rdo, "param_bucket_size")) {
+                if (auto* x = obj_get(po, "primary_sort_index")) {
                     std::int64_t n = 0;
-                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.param_bucket_size must be number"; return false; }
-                    if (n <= 0) { err = "sweep.result_diversity.param_bucket_size must be > 0"; return false; }
-                    out.result_diversity.param_bucket_size = static_cast<std::size_t>(n);
+                    if (!as_i64(*x, n)) { err = "sweep.pareto.primary_sort_index must be number"; return false; }
+                    if (n < 0) { err = "sweep.pareto.primary_sort_index must be >= 0"; return false; }
+                    out.pareto.primary_sort_index = static_cast<std::size_t>(n);
                 }
-                if (auto* x = obj_get(rdo, "min_param_distance")) {
-                    std::int64_t n = 0;
-                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.min_param_distance must be number"; return false; }
-                    if (n < 0) { err = "sweep.result_diversity.min_param_distance must be >= 0"; return false; }
-                    out.result_diversity.min_param_distance = static_cast<std::size_t>(n);
+                if (auto* objectives = obj_get(po, "objectives")) {
+                    if (!objectives->is_arr()) { err = "sweep.pareto.objectives must be array"; return false; }
+                    out.pareto.objectives.clear();
+                    for (const auto& item : objectives->as_arr()) {
+                        ObjectiveVectorComponentSpec objective{};
+                        if (!parse_objective_vector_component_spec(item, objective, err)) {
+                            err = "sweep.pareto.objectives: " + err;
+                            return false;
+                        }
+                        out.pareto.objectives.push_back(std::move(objective));
+                    }
                 }
-                if (auto* x = obj_get(rdo, "min_trades")) {
-                    std::int64_t n = 0;
-                    if (!as_i64(*x, n)) { err = "sweep.result_diversity.min_trades must be number"; return false; }
-                    if (n < 0) { err = "sweep.result_diversity.min_trades must be >= 0"; return false; }
-                    out.result_diversity.min_trades = static_cast<std::size_t>(n);
+                if (out.pareto.enabled) {
+                    if (out.pareto.objectives.empty()) {
+                        err = "sweep.pareto.objectives must contain at least one objective when pareto is enabled";
+                        return false;
+                    }
+                    if (out.pareto.primary_sort_index >= out.pareto.objectives.size()) {
+                        err = "sweep.pareto.primary_sort_index must reference an objective";
+                        return false;
+                    }
                 }
             }
 
@@ -748,6 +1092,234 @@ namespace sugar {
 
             return true;
         }
+
+        bool parse_execution_bounds_spec(
+            const Value& v,
+            PlanExecutionBoundsSpec& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = "execution.bounds must be object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+            if (auto* p = obj_get(o, "max_routes")) {
+                if (!parse_positive_size_field(*p, out.max_routes, "execution.bounds.max_routes", err)) return false;
+            }
+            if (auto* p = obj_get(o, "max_active_subgraphs")) {
+                if (!parse_positive_size_field(*p, out.max_active_subgraphs, "execution.bounds.max_active_subgraphs", err)) return false;
+            }
+            if (auto* p = obj_get(o, "max_selected_outputs")) {
+                if (!parse_positive_size_field(*p, out.max_selected_outputs, "execution.bounds.max_selected_outputs", err)) return false;
+            }
+            if (auto* p = obj_get(o, "decision_sample_limit")) {
+                if (!parse_positive_size_field(*p, out.decision_sample_limit, "execution.bounds.decision_sample_limit", err)) return false;
+            }
+            return true;
+        }
+
+        bool parse_execution_subgraphs(
+            const Value& v,
+            std::vector<PlanExecutionSubgraphSpec>& out,
+            std::string& err) {
+            if (!v.is_arr()) {
+                err = "execution.subgraphs must be array";
+                return false;
+            }
+            out.clear();
+            for (const auto& item : v.as_arr()) {
+                if (!item.is_obj()) {
+                    err = "execution.subgraphs entries must be objects";
+                    return false;
+                }
+                const auto& o = item.as_obj();
+                PlanExecutionSubgraphSpec subgraph{};
+                auto* id = obj_get(o, "id");
+                if (!id || !id->is_str()) {
+                    err = "execution.subgraphs[].id must be string";
+                    return false;
+                }
+                subgraph.id = id->as_str();
+
+                auto* nodes = obj_get(o, "nodes");
+                if (!nodes) {
+                    err = "execution.subgraphs[].nodes is required";
+                    return false;
+                }
+                if (!parse_string_array_field(*nodes, subgraph.nodes, "execution.subgraphs[].nodes", err)) {
+                    return false;
+                }
+
+                if (auto* depends = obj_get(o, "depends_on")) {
+                    if (!parse_string_array_field(*depends, subgraph.depends_on, "execution.subgraphs[].depends_on", err)) {
+                        return false;
+                    }
+                }
+
+                out.push_back(std::move(subgraph));
+            }
+            return true;
+        }
+
+        bool parse_execution_route_cases(
+            const Value& v,
+            std::vector<PlanExecutionRouteCaseSpec>& out,
+            std::string& err) {
+            if (!v.is_arr()) {
+                err = "execution.routes[].cases must be array";
+                return false;
+            }
+            out.clear();
+            for (const auto& item : v.as_arr()) {
+                if (!item.is_obj()) {
+                    err = "execution.routes[].cases entries must be objects";
+                    return false;
+                }
+                const auto& o = item.as_obj();
+                PlanExecutionRouteCaseSpec route_case{};
+                auto* id = obj_get(o, "id");
+                if (!id || !id->is_str()) {
+                    err = "execution.routes[].cases[].id must be string";
+                    return false;
+                }
+                route_case.id = id->as_str();
+
+                auto* when = obj_get(o, "when");
+                if (!when || !when->is_bool()) {
+                    err = "execution.routes[].cases[].when must be bool";
+                    return false;
+                }
+                route_case.when = when->as_bool();
+
+                auto* activate = obj_get(o, "activate");
+                if (!activate) {
+                    err = "execution.routes[].cases[].activate is required";
+                    return false;
+                }
+                if (!parse_string_array_field(*activate, route_case.activate_subgraphs, "execution.routes[].cases[].activate", err)) {
+                    return false;
+                }
+
+                out.push_back(std::move(route_case));
+            }
+            return true;
+        }
+
+        bool parse_execution_routes(
+            const Value& v,
+            std::vector<PlanExecutionRouteSpec>& out,
+            std::string& err) {
+            if (!v.is_arr()) {
+                err = "execution.routes must be array";
+                return false;
+            }
+            out.clear();
+            for (const auto& item : v.as_arr()) {
+                if (!item.is_obj()) {
+                    err = "execution.routes entries must be objects";
+                    return false;
+                }
+                const auto& o = item.as_obj();
+                PlanExecutionRouteSpec route{};
+                auto* id = obj_get(o, "id");
+                if (!id || !id->is_str()) {
+                    err = "execution.routes[].id must be string";
+                    return false;
+                }
+                route.id = id->as_str();
+
+                auto* condition = obj_get(o, "condition");
+                if (!condition || !condition->is_str()) {
+                    err = "execution.routes[].condition must be string";
+                    return false;
+                }
+                route.condition = condition->as_str();
+
+                auto* cases = obj_get(o, "cases");
+                if (!cases) {
+                    err = "execution.routes[].cases is required";
+                    return false;
+                }
+                if (!parse_execution_route_cases(*cases, route.cases, err)) {
+                    return false;
+                }
+
+                auto* fallback = obj_get(o, "fallback");
+                if (!fallback) {
+                    err = "execution.routes[].fallback is required";
+                    return false;
+                }
+                if (!parse_string_array_field(*fallback, route.fallback_subgraphs, "execution.routes[].fallback", err)) {
+                    return false;
+                }
+
+                out.push_back(std::move(route));
+            }
+            return true;
+        }
+
+        bool parse_execution_outputs(
+            const Value& v,
+            std::vector<PlanExecutionOutputSpec>& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = "execution.outputs must be object";
+                return false;
+            }
+            out.clear();
+            for (const auto& kv : v.as_obj()) {
+                if (!kv.second.is_str()) {
+                    err = "execution.outputs." + kv.first + " must be string";
+                    return false;
+                }
+                out.push_back(PlanExecutionOutputSpec{ kv.first, kv.second.as_str() });
+            }
+            return true;
+        }
+
+        bool parse_execution_spec(
+            const Value& v,
+            PlanExecutionSpec& out,
+            std::string& err) {
+            if (!v.is_obj()) {
+                err = "execution must be object";
+                return false;
+            }
+            const auto& o = v.as_obj();
+
+            if (auto* mode = obj_get(o, "mode")) {
+                if (!mode->is_str()) {
+                    err = "execution.mode must be string";
+                    return false;
+                }
+                if (!parse_execution_mode(mode->as_str(), out.mode)) {
+                    err = "execution.mode must be static or declared_dynamic";
+                    return false;
+                }
+            }
+
+            if (auto* subgraphs = obj_get(o, "subgraphs")) {
+                if (!parse_execution_subgraphs(*subgraphs, out.subgraphs, err)) {
+                    return false;
+                }
+            }
+            if (auto* routes = obj_get(o, "routes")) {
+                if (!parse_execution_routes(*routes, out.routes, err)) {
+                    return false;
+                }
+            }
+            if (auto* outputs = obj_get(o, "outputs")) {
+                if (!parse_execution_outputs(*outputs, out.outputs, err)) {
+                    return false;
+                }
+            }
+            if (auto* bounds = obj_get(o, "bounds")) {
+                if (!parse_execution_bounds_spec(*bounds, out.bounds, err)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
     }
 
     std::string_view plan_run_scope_name(PlanRunScope scope) {
@@ -756,6 +1328,54 @@ namespace sugar {
             return "primary_series";
         case PlanRunScope::PerEntityRanked:
             return "per_entity_ranked";
+        }
+        return "unknown";
+    }
+
+    std::string_view plan_execution_mode_name(PlanExecutionMode mode) {
+        switch (mode) {
+        case PlanExecutionMode::Static:
+            return "static";
+        case PlanExecutionMode::DeclaredDynamic:
+            return "declared_dynamic";
+        }
+        return "unknown";
+    }
+
+    std::string_view plan_sweep_engine_kind_name(PlanSweepEngineKind kind) {
+        switch (kind) {
+        case PlanSweepEngineKind::Exhaustive:
+            return "exhaustive";
+        case PlanSweepEngineKind::CoarseFine:
+            return "coarse_fine";
+        case PlanSweepEngineKind::MonteCarlo:
+            return "monte_carlo";
+        case PlanSweepEngineKind::SuccessiveHalving:
+            return "successive_halving";
+        case PlanSweepEngineKind::BayesianPosterior:
+            return "bayesian_posterior";
+        }
+        return "unknown";
+    }
+
+    std::string_view plan_sweep_posterior_surrogate_kind_name(
+        PlanSweepPosteriorSurrogateKind kind) {
+        switch (kind) {
+        case PlanSweepPosteriorSurrogateKind::GaussianProcess:
+            return "gaussian_process";
+        }
+        return "unknown";
+    }
+
+    std::string_view plan_sweep_posterior_acquisition_kind_name(
+        PlanSweepPosteriorAcquisitionKind kind) {
+        switch (kind) {
+        case PlanSweepPosteriorAcquisitionKind::ExpectedImprovement:
+            return "expected_improvement";
+        case PlanSweepPosteriorAcquisitionKind::ProbabilityOfImprovement:
+            return "probability_of_improvement";
+        case PlanSweepPosteriorAcquisitionKind::UpperConfidenceBound:
+            return "upper_confidence_bound";
         }
         return "unknown";
     }
@@ -837,6 +1457,13 @@ namespace sugar {
             std::string e;
             if (!parse_run_spec(*run, s, e)) { err = e; return false; }
             out.run = std::move(s);
+        }
+
+        if (auto* execution = obj_get(o, "execution")) {
+            PlanExecutionSpec s{};
+            std::string e;
+            if (!parse_execution_spec(*execution, s, e)) { err = e; return false; }
+            out.execution = std::move(s);
         }
 
         return true;

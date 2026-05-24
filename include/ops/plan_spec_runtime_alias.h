@@ -11,10 +11,15 @@ namespace sugar {
         std::string_view canonical;
     };
 
-    inline constexpr std::array<PlanSpecRuntimeOpAlias, 12> kPlanSpecRuntimeOpAliases{ {
+    inline constexpr std::array<PlanSpecRuntimeOpAlias, 17> kPlanSpecRuntimeOpAliases{ {
         { "diff", "ms.diff" },
         { "ratio", "ms.ratio" },
         { "zscore", "ms.zscore" },
+        { "cmp.gte", "cmp.ge" },
+        { "cmp.lte", "cmp.le" },
+        { "bool.and", "logic.and" },
+        { "bool.or", "logic.or" },
+        { "bool.not", "logic.not" },
         { "ts.stdev", "ts.stddev" },
         { "ts.stdev_ema", "ts.stddev_ema" },
         { "ts.trange", "ts.true_range" },

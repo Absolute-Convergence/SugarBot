@@ -399,6 +399,7 @@ namespace sugar {
         }
         auto prep = preprocess_csv(spec, csv_path, schema);
         if (!prep.err.empty()) {
+            out_report = make_preprocess_report(spec, prep, align_cfg);
             err = "preprocess failed: " + prep.err;
             return false;
         }
@@ -560,6 +561,11 @@ namespace sugar {
         FrameSet fs{};
         PreprocessReport preprocess_report{};
         if (!preprocess_to_frameset(spec, out.primary_input_path, fs, preprocess_report, err, cfg)) {
+            out.run_manifest = make_run_manifest(
+                preprocess_report,
+                {},
+                {},
+                RuntimePrimarySelectionMode::Unknown);
             return false;
         }
 
@@ -567,6 +573,11 @@ namespace sugar {
         for (const auto& [series_key, _] : out.frameset->by_entity) {
             out.series_key_to_entity.emplace(series_key, series_key);
         }
+        out.run_manifest = make_run_manifest(
+            preprocess_report,
+            {},
+            {},
+            RuntimePrimarySelectionMode::Unknown);
 
         if (!align_frameset(*out.frameset, cfg, out.aligned_bundle, err)) {
             return false;

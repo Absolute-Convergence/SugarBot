@@ -1,0 +1,58 @@
+{
+  "ingest": {
+    "header_policy": "RequiredHeaders",
+    "time_col": "date",
+    "time_kind": "YyyyMmDd",
+    "value_cols": ["close"],
+    "primary_value_col": "close",
+    "sort_by_time": true,
+    "dedupe": "Error"
+  },
+  "topologies": [
+    {
+      "name": "f8.row.account.hierarchy",
+      "bearing": "query_bearing",
+      "family": "hierarchy",
+      "domain_scope": "row_domain",
+      "query_kinds": ["neighbor_set"],
+      "node_count": 6,
+      "artifact_ref": {
+        "stable_id": "f8.row.account.hierarchy.v1",
+        "locator": "inline://graphs/demos/topology_readiness/f8_hierarchy_semantic.layout.json#/topologies/0",
+        "format": "inline_hierarchy",
+        "digest": "sha256:f8-row-account-hierarchy-v1",
+        "producer": "f8_readiness_demo"
+      },
+      "edges": [
+        { "source": 0, "target": 1 },
+        { "source": 0, "target": 2 },
+        { "source": 1, "target": 3 },
+        { "source": 1, "target": 4 },
+        { "source": 2, "target": 5 }
+      ]
+    },
+    {
+      "name": "f8.row.embedding.semantic",
+      "bearing": "query_bearing",
+      "family": "semantic_graph",
+      "domain_scope": "row_domain",
+      "query_kinds": ["neighbor_set", "weighted_neighbor_set", "metric_k_nearest", "metric_radius"],
+      "node_count": 6,
+      "artifact_ref": {
+        "stable_id": "f8.row.embedding.semantic.v1",
+        "locator": "inline://graphs/demos/topology_readiness/f8_hierarchy_semantic.layout.json#/topologies/1",
+        "format": "inline_semantic_embeddings",
+        "digest": "sha256:f8-row-embedding-semantic-v1",
+        "producer": "f8_readiness_demo"
+      },
+      "embeddings": [
+        { "node": 0, "vector": [0.0, 0.0] },
+        { "node": 1, "vector": [1.0, 0.0] },
+        { "node": 2, "vector": [0.0, 2.0] },
+        { "node": 3, "vector": [2.0, 0.0] },
+        { "node": 4, "vector": [2.0, 1.0] },
+        { "node": 5, "vector": [0.0, 3.0] }
+      ]
+    }
+  ]
+}

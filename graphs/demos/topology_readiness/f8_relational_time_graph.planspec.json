@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "f8_relational_time_graph",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "z", "op": "core.const", "params": { "value": 0.0 } },
+    {
+      "id": "base_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.market.graph" }
+    },
+    {
+      "id": "incoming_degree",
+      "op": "topology.degree",
+      "params": { "topology": "f8.row.market.graph", "direction": "incoming" }
+    },
+    {
+      "id": "stress_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.market.graph", "version": "stress" }
+    },
+    {
+      "id": "stress_weighted",
+      "op": "topology.weighted_sum",
+      "args": ["c"],
+      "params": { "topology": "f8.row.market.graph", "version": "stress" }
+    },
+    {
+      "id": "capped_degree",
+      "op": "topology.degree",
+      "params": { "topology": "f8.row.market.graph", "max_neighbors": 1 }
+    }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["c", "z"] },
+    { "id": "exit", "op": "cmp.lt", "args": ["c", "z"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

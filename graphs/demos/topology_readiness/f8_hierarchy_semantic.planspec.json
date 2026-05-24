@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "name": "f8_hierarchy_semantic",
+  "trade_mode": "LongOnly",
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "z", "op": "core.const", "params": { "value": 0.0 } },
+    {
+      "id": "hier_child_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.account.hierarchy" }
+    },
+    {
+      "id": "hier_parent_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.account.hierarchy", "traversal": "parent" }
+    },
+    {
+      "id": "hier_sibling_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.account.hierarchy", "traversal": "siblings" }
+    },
+    {
+      "id": "hier_family_degree",
+      "op": "topology.degree",
+      "params": { "topology": "f8.row.account.hierarchy", "traversal": "parent_and_children" }
+    },
+    {
+      "id": "semantic_mean",
+      "op": "topology.neighbor_mean",
+      "args": ["c"],
+      "params": { "topology": "f8.row.embedding.semantic", "max_neighbors": 2 }
+    },
+    {
+      "id": "semantic_weighted",
+      "op": "topology.weighted_sum",
+      "args": ["c"],
+      "params": { "topology": "f8.row.embedding.semantic", "max_neighbors": 2 }
+    },
+    {
+      "id": "semantic_degree",
+      "op": "topology.degree",
+      "params": { "topology": "f8.row.embedding.semantic", "max_neighbors": 3 }
+    }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.gt", "args": ["c", "z"] },
+    { "id": "exit", "op": "cmp.lt", "args": ["c", "z"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

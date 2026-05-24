@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -67,6 +68,18 @@ namespace sugar {
         Exhaustive = 0,
         CoarseFine = 1,
         MonteCarlo = 2,
+        SuccessiveHalving = 3,
+        BayesianPosterior = 4,
+    };
+
+    enum class PlanSweepPosteriorSurrogateKind : std::uint8_t {
+        GaussianProcess = 0,
+    };
+
+    enum class PlanSweepPosteriorAcquisitionKind : std::uint8_t {
+        ExpectedImprovement = 0,
+        ProbabilityOfImprovement = 1,
+        UpperConfidenceBound = 2,
     };
 
     struct PlanSweepCoarseFineConfig {
@@ -88,6 +101,38 @@ namespace sugar {
         std::size_t top_k{ 0 };      // 0 => use PlanSweepSpec::top_k
     };
 
+    struct PlanSweepSuccessiveHalvingConfig {
+        // Number of adaptive rounds, including the initial proposal round.
+        std::size_t rounds{ 3 };
+        // Keep approximately 1 / reduction_factor of each round for promotion.
+        std::size_t reduction_factor{ 2 };
+        // 0 means derive a deterministic spread from top_k, rounds, and max_evals.
+        std::size_t initial_candidates{ 0 };
+        // 0/1 means no explicit flat stride; ignored when initial_candidates > 0.
+        std::size_t initial_stride{ 0 };
+        // Neighborhood expansion hops around promoted seeds for later rounds.
+        std::size_t neighborhood_hops{ 1 };
+        bool dedupe_candidates{ true };
+        std::size_t top_k{ 0 };      // 0 => use PlanSweepSpec::top_k
+    };
+
+    struct PlanSweepBayesianPosteriorConfig {
+        PlanSweepPosteriorSurrogateKind surrogate{
+            PlanSweepPosteriorSurrogateKind::GaussianProcess
+        };
+        PlanSweepPosteriorAcquisitionKind acquisition{
+            PlanSweepPosteriorAcquisitionKind::ExpectedImprovement
+        };
+        // 0 means derive the initial design from top_k and max_evals.
+        std::size_t initial_design_size{ 0 };
+        // 0 means derive the posterior proposal budget from max_evals.
+        std::size_t iterations{ 0 };
+        std::uint64_t seed{ 0 };     // 0 => deterministic default seed for E4
+        double exploration_weight{ 2.0 };
+        bool normalize_inputs{ true };
+        std::size_t top_k{ 0 };      // 0 => use PlanSweepSpec::top_k
+    };
+
     struct PlanSweepResultDiversityConfig {
         bool enabled{ false };
         bool dedupe_trade_hash{ true };
@@ -97,6 +142,20 @@ namespace sugar {
         std::size_t param_bucket_size{ 4 };
         std::size_t min_param_distance{ 0 };
         std::size_t min_trades{ 0 };
+    };
+
+    struct PlanSweepParetoConfig {
+        bool enabled{ false };
+        bool use_result_diversity{ true };
+        // Optional emitted-front-row depollution override. When absent, Pareto
+        // may inherit PlanSweepSpec::result_diversity via use_result_diversity.
+        std::optional<PlanSweepResultDiversityConfig> output_depollution{};
+        std::vector<ObjectiveVectorComponentSpec> objectives{};
+        std::size_t primary_sort_index{ 0 };
+        // Caps emitted Pareto front rows only; 0 means uncapped.
+        std::size_t front_row_limit{ 100 };
+        // Compatibility alias for older PlanSpec text; parsed into front_row_limit.
+        std::size_t retained_candidate_limit{ 100 };
     };
 
     struct PlanSweepSpec {
@@ -115,7 +174,10 @@ namespace sugar {
         PlanSweepEngineKind engine{ PlanSweepEngineKind::Exhaustive };
         PlanSweepCoarseFineConfig coarse_fine{};
         PlanSweepMonteCarloConfig monte_carlo{};
+        PlanSweepSuccessiveHalvingConfig successive_halving{};
+        PlanSweepBayesianPosteriorConfig bayesian_posterior{};
         PlanSweepResultDiversityConfig result_diversity{};
+        PlanSweepParetoConfig pareto{};
 
         // Sweep ranges by param name.
         std::unordered_map<std::string, SweepParamRange> params;
@@ -131,6 +193,50 @@ namespace sugar {
         std::string target_entity{};
         std::optional<std::size_t> top_k{};
         std::optional<RankingObjectiveSpec> objective_spec{};
+    };
+
+    enum class PlanExecutionMode : std::uint8_t {
+        Static = 0,
+        DeclaredDynamic = 1,
+    };
+
+    struct PlanExecutionBoundsSpec {
+        std::size_t max_routes{ 32 };
+        std::size_t max_active_subgraphs{ 8 };
+        std::size_t max_selected_outputs{ 16 };
+        std::size_t decision_sample_limit{ 64 };
+    };
+
+    struct PlanExecutionSubgraphSpec {
+        std::string id{};
+        std::vector<std::string> nodes{};
+        std::vector<std::string> depends_on{};
+    };
+
+    struct PlanExecutionRouteCaseSpec {
+        std::string id{};
+        bool when{ true };
+        std::vector<std::string> activate_subgraphs{};
+    };
+
+    struct PlanExecutionRouteSpec {
+        std::string id{};
+        std::string condition{};
+        std::vector<PlanExecutionRouteCaseSpec> cases{};
+        std::vector<std::string> fallback_subgraphs{};
+    };
+
+    struct PlanExecutionOutputSpec {
+        std::string id{};
+        std::string node{};
+    };
+
+    struct PlanExecutionSpec {
+        PlanExecutionMode mode{ PlanExecutionMode::Static };
+        std::vector<PlanExecutionSubgraphSpec> subgraphs{};
+        std::vector<PlanExecutionRouteSpec> routes{};
+        std::vector<PlanExecutionOutputSpec> outputs{};
+        PlanExecutionBoundsSpec bounds{};
     };
 
     struct PlanSpec {
@@ -161,9 +267,19 @@ namespace sugar {
 
         // Optional noninteractive runtime dispatch hints.
         std::optional<PlanRunSpec> run;
+
+        // Optional Milestone G declared dynamic execution scaffold. Absent or
+        // static execution preserves the existing static PlanSpec behavior.
+        std::optional<PlanExecutionSpec> execution;
     };
 
     std::string_view plan_run_scope_name(PlanRunScope scope);
+    std::string_view plan_execution_mode_name(PlanExecutionMode mode);
+    std::string_view plan_sweep_engine_kind_name(PlanSweepEngineKind kind);
+    std::string_view plan_sweep_posterior_surrogate_kind_name(
+        PlanSweepPosteriorSurrogateKind kind);
+    std::string_view plan_sweep_posterior_acquisition_kind_name(
+        PlanSweepPosteriorAcquisitionKind kind);
 
     bool parse_plan_spec_json(std::string_view json,
         PlanSpec& out,

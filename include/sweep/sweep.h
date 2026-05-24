@@ -85,6 +85,7 @@ namespace sugar {
         MonteCarloSampling = 3,
         Ranking = 4,
         ReportAssembly = 5,
+        AdaptiveSelection = 6,
     };
 
     struct SweepParameterSetting {
@@ -139,6 +140,35 @@ namespace sugar {
 
     using SweepProgressCallback = std::function<void(const SweepProgress&)>;
     using SweepCancellationCallback = std::function<bool()>;
+
+    enum class SweepTraceEventKind : std::uint8_t {
+        Proposal = 0,
+        Observation = 1,
+        Promotion = 2,
+        Rejection = 3,
+    };
+
+    struct SweepTraceEvent {
+        SweepTraceEventKind kind{ SweepTraceEventKind::Proposal };
+        SweepProgressStage stage{ SweepProgressStage::CandidateEvaluation };
+        std::size_t candidate_index{ 0 };
+        std::size_t proposal_order{ 0 };
+        std::size_t batch_index{ 0 };
+        bool has_parent_candidate{ false };
+        std::size_t parent_candidate_index{ 0 };
+        bool score_present{ false };
+        bool score_finite{ false };
+        double score{ 0.0 };
+        bool run_outcome_present{ false };
+        RunOutcomeState run_outcome{ RunOutcomeState::Completed };
+        bool run_rankability_present{ false };
+        RunRankabilityState run_rankability{ RunRankabilityState::NotEvaluated };
+        std::string reason{};
+    };
+
+    using SweepTraceCallback = std::function<void(const SweepTraceEvent&)>;
+
+    std::string_view sweep_trace_event_kind_name(SweepTraceEventKind kind);
 
     // -------------------------
     // Generic Top-K container
@@ -320,7 +350,7 @@ namespace sugar {
     }
 
     // -------------------------
-    // Basin-aware Top-K 
+    // Basin-aware Top-K
     //   - Key defines a "basin" (bucketed params or coarse cell)
     //   - Keeps up to policy.max_per_basin candidates per basin
     //   - Optional min distance inside basin to avoid near-identical knob spam
@@ -606,7 +636,7 @@ namespace sugar {
         const PlanSpecSweepDims& dims,
         std::size_t max_evals);
 
-    // ============================================================================    
+    // ============================================================================
     // Index-based helpers (for coarse→fine + gated strategies)
     // ============================================================================
 
@@ -660,7 +690,8 @@ namespace sugar {
         std::size_t k_stage2,
         TwoStageSweepOptions opt = {},
         SweepProgressCallback progress_cb = nullptr,
-        SweepCancellationCallback cancel_cb = nullptr
+        SweepCancellationCallback cancel_cb = nullptr,
+        SweepTraceCallback trace_cb = nullptr
     );
 
     // -------------------------
@@ -792,6 +823,7 @@ namespace sugar {
         std::size_t report_every = 50;
         SweepProgressCallback progress_cb = nullptr;
         SweepCancellationCallback cancel_cb = nullptr;
+        SweepTraceCallback trace_cb = nullptr;
     };
 
     struct SweepSessionResult {
@@ -799,6 +831,10 @@ namespace sugar {
         std::size_t eval_count = 0;
         std::size_t total_candidates = 0;
         std::string policy_name{};
+        bool effective_seed_available = false;
+        bool requested_seed_explicit = false;
+        std::uint64_t requested_seed = 0;
+        std::uint64_t effective_seed = 0;
     };
 
     SweepSessionResult run_sweep_session(
@@ -828,6 +864,10 @@ namespace sugar {
         // Required: evaluate an index candidate.
         std::function<BacktestResult(std::size_t)> eval;
 
+        // Optional: feature vector for surrogate policies.
+        // If empty, posterior policies fall back to a normalized 1-D index.
+        std::function<std::vector<double>(std::size_t)> features;
+
         // Optional: neighborhood topology for local refinement.
         // If empty, sweep types that require neighbors should fail fast.
         std::function<std::vector<std::size_t>(std::size_t)> neighbors;
@@ -836,6 +876,51 @@ namespace sugar {
     // Scalar objective (v1). Future versions can extend this to vector objectives
     // (Pareto), likelihood/posterior, expected utility, etc.
     using ScalarObjective = std::function<double(const BacktestResult&)>;
+
+    enum class SweepPosteriorDiagnosticsStatus {
+        NotRequested = 0,
+        Unsupported = 1,
+        Ready = 2,
+        Computed = 3,
+    };
+
+    struct SweepPosteriorProposalReason {
+        std::size_t proposal_order{ 0 };
+        std::size_t candidate_index{ 0 };
+        bool acquisition_score_present{ false };
+        bool acquisition_score_finite{ false };
+        double acquisition_score{ 0.0 };
+        std::string reason{};
+    };
+
+    struct SweepPosteriorDiagnosticsSummary {
+        bool requested{ false };
+        bool computed{ false };
+        SweepPosteriorDiagnosticsStatus status{
+            SweepPosteriorDiagnosticsStatus::NotRequested
+        };
+        std::string unsupported_reason{};
+        PlanSweepPosteriorSurrogateKind surrogate{
+            PlanSweepPosteriorSurrogateKind::GaussianProcess
+        };
+        PlanSweepPosteriorAcquisitionKind acquisition{
+            PlanSweepPosteriorAcquisitionKind::ExpectedImprovement
+        };
+        std::size_t initial_design_size{ 0 };
+        std::size_t iterations{ 0 };
+        std::uint64_t seed{ 0 };
+        double exploration_weight{ 0.0 };
+        bool normalize_inputs{ false };
+        std::size_t top_k{ 0 };
+        bool surrogate_trained{ false };
+        std::size_t training_observation_count{ 0 };
+        std::size_t finite_observation_count{ 0 };
+        std::size_t surrogate_training_observation_count{ 0 };
+        std::size_t invalid_training_observation_count{ 0 };
+        bool acquisition_ready{ false };
+        std::vector<std::string> diagnostics{};
+        std::vector<SweepPosteriorProposalReason> proposal_reasons{};
+    };
 
     // Unified sweep output for index-based sweep types.
     struct SweepIndexRunResult {
@@ -848,6 +933,14 @@ namespace sugar {
 
         // Number of evaluations actually executed by the engine.
         std::size_t eval_count = 0;
+
+        bool effective_seed_available = false;
+        bool requested_seed_explicit = false;
+        std::uint64_t requested_seed = 0;
+        std::uint64_t effective_seed = 0;
+
+        bool has_posterior = false;
+        SweepPosteriorDiagnosticsSummary posterior{};
     };
 
     // Base interface for index-based sweep types.
@@ -860,7 +953,8 @@ namespace sugar {
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr,
-            SweepCancellationCallback cancel_cb = nullptr) const = 0;
+            SweepCancellationCallback cancel_cb = nullptr,
+            SweepTraceCallback trace_cb = nullptr) const = 0;
     };
 
     // -------------------------
@@ -885,7 +979,8 @@ namespace sugar {
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr,
-            SweepCancellationCallback cancel_cb = nullptr) const override;
+            SweepCancellationCallback cancel_cb = nullptr,
+            SweepTraceCallback trace_cb = nullptr) const override;
 
     private:
         CoarseFineIndexConfig cfg_{};
@@ -910,22 +1005,81 @@ namespace sugar {
             const SweepIndexProblem& problem,
             const ScalarObjective& objective,
             SweepProgressCallback progress_cb = nullptr,
-            SweepCancellationCallback cancel_cb = nullptr) const override;
+            SweepCancellationCallback cancel_cb = nullptr,
+            SweepTraceCallback trace_cb = nullptr) const override;
 
     private:
         MonteCarloIndexConfig cfg_{};
+    };
+
+    // -------------------------
+    // Sweep type: successive halving (deterministic adaptive index policy)
+    // -------------------------
+    struct SuccessiveHalvingIndexConfig {
+        std::size_t rounds = 3;
+        std::size_t reduction_factor = 2;
+        std::size_t initial_candidates = 0;
+        std::size_t initial_stride = 0;
+        std::size_t neighborhood_hops = 1;
+        std::size_t max_evaluations = 0;
+        std::size_t top_k = 25;
+        bool dedupe_candidates = true;
+    };
+
+    class SuccessiveHalvingIndexSweep final : public ISweepIndex {
+    public:
+        explicit SuccessiveHalvingIndexSweep(SuccessiveHalvingIndexConfig cfg);
+        const char* name() const override { return "successive_halving"; }
+
+        SweepIndexRunResult run(
+            const SweepIndexProblem& problem,
+            const ScalarObjective& objective,
+            SweepProgressCallback progress_cb = nullptr,
+            SweepCancellationCallback cancel_cb = nullptr,
+            SweepTraceCallback trace_cb = nullptr) const override;
+
+    private:
+        SuccessiveHalvingIndexConfig cfg_{};
+    };
+
+    // -------------------------
+    // Sweep type: Bayesian/posterior policy
+    // -------------------------
+    struct BayesianPosteriorIndexConfig {
+        PlanSweepBayesianPosteriorConfig posterior{};
+        std::size_t max_evaluations = 0;
+    };
+
+    class BayesianPosteriorIndexSweep final : public ISweepIndex {
+    public:
+        explicit BayesianPosteriorIndexSweep(BayesianPosteriorIndexConfig cfg);
+        const char* name() const override { return "bayesian_posterior"; }
+
+        SweepIndexRunResult run(
+            const SweepIndexProblem& problem,
+            const ScalarObjective& objective,
+            SweepProgressCallback progress_cb = nullptr,
+            SweepCancellationCallback cancel_cb = nullptr,
+            SweepTraceCallback trace_cb = nullptr) const override;
+
+    private:
+        BayesianPosteriorIndexConfig cfg_{};
     };
 
     // Convenience factory for executor/menu.
     enum class SweepIndexKind {
         CoarseFine = 1,
         MonteCarlo = 2,
+        SuccessiveHalving = 3,
+        BayesianPosterior = 4,
     };
 
     struct SweepIndexConfig {
         SweepIndexKind kind = SweepIndexKind::CoarseFine;
         CoarseFineIndexConfig coarse_fine{};
         MonteCarloIndexConfig monte_carlo{};
+        SuccessiveHalvingIndexConfig successive_halving{};
+        BayesianPosteriorIndexConfig bayesian_posterior{};
     };
 
     std::unique_ptr<ISweepIndex> make_sweep_index(const SweepIndexConfig& cfg);

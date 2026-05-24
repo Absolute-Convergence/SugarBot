@@ -13,7 +13,12 @@ namespace sugar::app::tests {
         AppTestRegistry tests{};
         register_cli_tests(tests);
         register_runtime_tests(tests);
-        register_command_tests(tests);
+        register_reference_command_tests(tests);
+        register_observation_plan_report_tests(tests);
+        register_ux_diagnostic_tests(tests);
+        register_run_projection_tests(tests);
+        register_sweep_report_tests(tests);
+        register_preflight_diagnostic_tests(tests);
         register_interactive_tests(tests);
         register_run_tests(tests);
 

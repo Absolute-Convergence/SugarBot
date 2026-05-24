@@ -86,6 +86,30 @@ namespace sugar {
             anchor.entity = subject.entity_key;
             return anchor;
         }
+
+        bool is_static_graph_family(TopologyFamily family) {
+            return family == TopologyFamily::RelationalGraph;
+        }
+
+        bool is_hierarchy_family(TopologyFamily family) {
+            return family == TopologyFamily::Hierarchy;
+        }
+
+        bool is_semantic_graph_family(TopologyFamily family) {
+            return family == TopologyFamily::SemanticGraph;
+        }
+
+        std::size_t static_graph_node_count(
+            const align::AlignedBundle& bundle,
+            const TopologySpec& spec) {
+            if (spec.node_count > 0) {
+                return spec.node_count;
+            }
+            if (spec.domain_scope == TopologyDomainScope::EntityPanel) {
+                return bundle.series_keys.size();
+            }
+            return bundle.row_count();
+        }
     } // namespace
 
     std::span<const TimeKey> DataView::time() const {
@@ -307,7 +331,7 @@ namespace sugar {
             throw std::runtime_error(
                 "DataView::resolve_topology(): topology '" + chosen_name + "' is not available on this runtime.");
         }
-        if (!spec->is_runtime_bearing()) {
+        if (!spec->is_query_bearing()) {
             throw std::runtime_error(
                 "DataView::resolve_topology(): topology '" + chosen_name +
                 "' is metadata-only on this runtime.");
@@ -357,6 +381,82 @@ namespace sugar {
             return bind_neighborhood_query_subject(
                 std::make_unique<SpatioTemporalNeighborhoodQuery2D>(time, spatial->x, spatial->y),
                 make_subject_anchor(subject));
+        }
+
+        if (is_hierarchy_family(spec->family)) {
+            try {
+                return bind_neighborhood_query_subject(
+                    std::make_unique<HierarchyNeighborhoodQuery>(
+                        spec->name,
+                        static_graph_node_count(*bundle_, *spec),
+                        spec->static_edges),
+                    make_subject_anchor(subject));
+            }
+            catch (const std::exception& ex) {
+                throw std::runtime_error(
+                    "DataView::resolve_topology(): hierarchy topology '" + chosen_name +
+                    "' could not be materialized: " + ex.what());
+            }
+        }
+
+        if (is_semantic_graph_family(spec->family)) {
+            if (!spec->semantic_embeddings.empty()) {
+                try {
+                    return bind_neighborhood_query_subject(
+                        std::make_unique<SemanticEmbeddingNeighborhoodQuery>(
+                            spec->name,
+                            static_graph_node_count(*bundle_, *spec),
+                            spec->semantic_embeddings),
+                        make_subject_anchor(subject));
+                }
+                catch (const std::exception& ex) {
+                    throw std::runtime_error(
+                        "DataView::resolve_topology(): semantic graph topology '" + chosen_name +
+                        "' could not be materialized: " + ex.what());
+                }
+            }
+
+            if (spec->static_edges.empty()) {
+                throw std::runtime_error(
+                    "DataView::resolve_topology(): semantic graph topology '" + chosen_name +
+                    "' has no semantic embeddings or static edges to materialize.");
+            }
+
+            try {
+                return bind_neighborhood_query_subject(
+                    std::make_unique<StaticGraphNeighborhoodQuery>(
+                        spec->name,
+                        static_graph_node_count(*bundle_, *spec),
+                        spec->static_edges,
+                        spec->directed,
+                        spec->weighted,
+                        time_axis()),
+                    make_subject_anchor(subject));
+            }
+            catch (const std::exception& ex) {
+                throw std::runtime_error(
+                    "DataView::resolve_topology(): semantic graph static-edge topology '" + chosen_name +
+                    "' could not be materialized: " + ex.what());
+            }
+        }
+
+        if (is_static_graph_family(spec->family)) {
+            try {
+                return bind_neighborhood_query_subject(
+                    std::make_unique<StaticGraphNeighborhoodQuery>(
+                        spec->name,
+                        static_graph_node_count(*bundle_, *spec),
+                        spec->static_edges,
+                        spec->directed,
+                        spec->weighted,
+                        time_axis()),
+                    make_subject_anchor(subject));
+            }
+            catch (const std::exception& ex) {
+                throw std::runtime_error(
+                    "DataView::resolve_topology(): static graph topology '" + chosen_name +
+                    "' could not be materialized: " + ex.what());
+            }
         }
 
         throw std::runtime_error(

@@ -178,6 +178,12 @@ namespace sugar::service {
             out_state = it->second.status.state;
             err.clear();
             return true;
+        case JobState::Rejected:
+        case JobState::Completed:
+        case JobState::Failed:
+            out_state = it->second.status.state;
+            err.clear();
+            return true;
         default:
             err = "job is not cancelable in its current state";
             return false;

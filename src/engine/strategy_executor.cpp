@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 #include "engine/program_evaluator.h"
+#include "program_evaluator_internal.h"
 
 namespace sugar {
 
@@ -133,13 +135,15 @@ namespace sugar {
             return true;
         }
 
-        ProgramSignalOutputs signals{};
-        if (!evaluate_strategy_plan_program(dv, primary, plan, signals, err)) {
+        ProgramEvaluationBuffers buffers{};
+        if (!evaluate_strategy_plan_program_buffers(dv, primary, plan, buffers, err)) {
             if (err.empty()) {
                 err = "plan program evaluation failed";
             }
             return false;
         }
+        ProgramSignalOutputs signals = std::move(buffers.signals);
+        out.dynamic_execution = std::move(buffers.dynamic_execution);
         if (cancel_requested && cancel_requested()) {
             err = "execution canceled";
             return false;

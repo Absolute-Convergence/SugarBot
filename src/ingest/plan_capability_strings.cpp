@@ -66,6 +66,7 @@ namespace sugar {
         case OpAxisScope::CrossSeries: return "cross_series";
         case OpAxisScope::SpatialLocal: return "spatial_local";
         case OpAxisScope::SpatioTemporal: return "spatiotemporal";
+        case OpAxisScope::TopologyLocal: return "topology_local";
         }
         return "unknown";
     }

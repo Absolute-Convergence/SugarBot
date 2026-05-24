@@ -35,6 +35,23 @@ namespace sugar {
             const PanelRankingSpec& ranking) {
             return evaluate_ranking_objective(build_panel_ranking_objective(ranking), result);
         }
+
+        void print_panel_dynamic_execution_line(
+            const RunDynamicExecutionSummary& dynamic,
+            std::ostream& out) {
+            if (!dynamic.enabled) {
+                return;
+            }
+            out << "    dynamic_execution mode="
+                << (dynamic.mode.empty() ? "<unknown>" : dynamic.mode)
+                << " total_decisions=" << dynamic.total_decisions
+                << " decision_samples=" << dynamic.emitted_decision_samples
+                << "/" << dynamic.decision_sample_limit
+                << " suppressed=" << dynamic.suppressed_decisions
+                << " inactive_output_rows=" << dynamic.inactive_output_rows
+                << " route_decision_digest=" << dynamic.route_decision_digest
+                << "\n";
+        }
     } // namespace
 
     std::string_view panel_failure_kind_name(PanelFailureKind kind) {
@@ -128,6 +145,7 @@ namespace sugar {
             }
             out << " objective_rankability=" << run_rankability_state_name(row.run.objective.rankability);
             out << "\n";
+            print_panel_dynamic_execution_line(row.run.execution.dynamic_execution, out);
         }
 
         if (!report.failures.empty()) {

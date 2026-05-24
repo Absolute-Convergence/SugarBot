@@ -120,12 +120,35 @@ namespace sugar::contract_suite_internal {
         }
 
         {
+            PlanSpec parsed{};
+            std::string err;
+            const bool ok = parse_plan_spec_json(
+                "{\n"
+                "  \"version\": 1,\n"
+                "  \"numeric_nodes\": [],\n"
+                "  \"bool_nodes\": [],\n"
+                "  \"bindings\": { \"entry\": \"entry\" }\n"
+                "}\n",
+                parsed,
+                err);
+            t.expect(!ok &&
+                    err.find("bindings.entry is not supported") != std::string::npos &&
+                    err.find("entry_long") != std::string::npos,
+                "PlanSpec parser rejects unknown strategy binding keys with valid-key guidance");
+        }
+
+        {
             PlanSpec spec{};
             spec.numeric_nodes = {
                 NodeSpec{ "left", "core.close", {}, {} },
                 NodeSpec{ "right", "core.close", {}, {} },
                 NodeSpec{ "spread", "diff", { "left", "right" }, {} },
             };
+            spec.bool_nodes = {
+                NodeSpec{ "above", "cmp.gte", { "left", "right" }, {} },
+                NodeSpec{ "entry", "bool.and", { "above", "above" }, {} },
+            };
+            spec.bind.entry_long = "entry";
 
             ObservationWorldFacts facts{};
             facts.series_count = 1;
@@ -136,11 +159,16 @@ namespace sugar::contract_suite_internal {
 
             const auto report = diagnose_plan_capabilities(spec, facts);
             const auto* spread_node = find_plan_node(report, "spread");
+            const auto* above_node = find_plan_node(report, "above");
+            const auto* entry_node = find_plan_node(report, "entry");
 
             t.expect(report.status == PlanCapabilityStatus::Invalid,
                 "single-series facts make cross-series plan invalid");
             t.expect(spread_node && spread_node->op_name == "ms.diff",
                 "plan capability diagnosis normalizes runtime op aliases");
+            t.expect(above_node && above_node->op_name == "cmp.ge" &&
+                    entry_node && entry_node->op_name == "logic.and",
+                "plan capability diagnosis normalizes comparison and boolean aliases");
             t.expect(spread_node && spread_node->status == PlanCapabilityStatus::Invalid,
                 "cross-series node is invalid on single-series facts");
             t.expect(has_plan_reason(spread_node, PlanCapabilityReasonCode::InsufficientSeriesCount),

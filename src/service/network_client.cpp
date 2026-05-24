@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <limits>
 #include <sstream>
@@ -265,14 +266,16 @@ namespace sugar::service {
                 << "  --host <ipv4>              Server host, default 127.0.0.1\n"
                 << "  --port <port>              Server port, default 4123\n"
                 << "  --socket-timeout-ms <ms>   Bounded socket read/write timeout\n"
-                << "  --compact                  Print one-line JSON for scripts\n\n"
+                << "  --compact                  Print concise hosted reports/status summaries\n"
+                << "  --raw-json                 Print one-line protocol JSON for scripts\n\n"
                 << "Run options:\n"
                 << "  --wait                     Accepted for clarity; run waits by default\n"
                 << "  --poll-ms <ms>             Status poll interval, default 250\n"
                 << "  --wait-timeout-ms <ms>     Wait timeout, default 300000\n\n"
                 << "Notes:\n"
-                << "  Run prints the retained hosted summary by default. Use --compact for the full JSON payload.\n"
-                << "  Lower-level commands print pretty JSON by default. Use --compact for one-line JSON.\n"
+                << "  Run prints the retained hosted summary by default. Use --compact for a low-repetition report.\n"
+                << "  Status/result print pretty JSON by default. Use --compact for concise hosted status/report views.\n"
+                << "  Use --raw-json for one-line protocol JSON.\n"
                 << "  Run connects, uploads layout/logic/data, submits, waits, and prints the final result.\n"
                 << "  Upload --name is optional when --file is provided; the file name is used.\n"
                 << "  Layout and logic uploads are JSON; data uploads are CSV.\n";
@@ -638,11 +641,498 @@ namespace sugar::service {
             return parse_client_response_summary(response_json, summary, err);
         }
 
+        bool suppress_progress_output(const ClientCliOptions& options) {
+            return options.compact_output || options.raw_json_output;
+        }
+
+        std::string compact_scalar_text(const json_min::Value& value) {
+            if (value.is_null()) {
+                return "null";
+            }
+            if (value.is_bool()) {
+                return value.as_bool() ? "true" : "false";
+            }
+            if (value.is_i64()) {
+                return std::to_string(value.as_i64());
+            }
+            if (value.is_f64()) {
+                std::ostringstream text;
+                text << std::setprecision(12) << value.as_f64();
+                return text.str();
+            }
+            if (value.is_str()) {
+                return value.as_str();
+            }
+            if (value.is_arr()) {
+                return "<array>";
+            }
+            return "<object>";
+        }
+
+        const json_min::Object* as_json_object(const json_min::Value* value) {
+            if (!value || !value->is_obj()) {
+                return nullptr;
+            }
+            return &value->as_obj();
+        }
+
+        const json_min::Array* as_json_array(const json_min::Value* value) {
+            if (!value || !value->is_arr()) {
+                return nullptr;
+            }
+            return &value->as_arr();
+        }
+
+        void append_compact_field(
+            std::ostream& out,
+            const json_min::Object& object,
+            const char* key,
+            const char* label = nullptr) {
+            const json_min::Value* value = json_min::obj_get(object, key);
+            if (!value) {
+                return;
+            }
+            if (value->is_str() && value->as_str().empty()) {
+                return;
+            }
+            out << " " << (label ? label : key) << "=" << compact_scalar_text(*value);
+        }
+
+        std::string compact_param_value_text(const json_min::Value& value) {
+            if (const json_min::Object* object = as_json_object(&value)) {
+                const json_min::Value* ref = json_min::obj_get(*object, "ref");
+                if (ref && ref->is_str()) {
+                    return std::string("ref:") + ref->as_str();
+                }
+            }
+            return compact_scalar_text(value);
+        }
+
+        std::string compact_params_text(const json_min::Value* params_value) {
+            const json_min::Object* params = as_json_object(params_value);
+            if (!params || params->empty()) {
+                return "<none>";
+            }
+
+            std::vector<std::string> names;
+            names.reserve(params->size());
+            for (const auto& [name, value] : *params) {
+                (void)value;
+                names.push_back(name);
+            }
+            std::sort(names.begin(), names.end());
+
+            std::ostringstream text;
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (i != 0) {
+                    text << ", ";
+                }
+                const json_min::Value* value = json_min::obj_get(*params, names[i]);
+                text << names[i] << "=";
+                if (value) {
+                    text << compact_param_value_text(*value);
+                }
+                else {
+                    text << "<missing>";
+                }
+            }
+            return text.str();
+        }
+
+        void print_compact_counts_line(
+            std::ostream& out,
+            std::string_view label,
+            const json_min::Object& object) {
+            out << "  " << label << ":";
+            std::vector<std::string> keys;
+            keys.reserve(object.size());
+            for (const auto& [key, value] : object) {
+                (void)value;
+                keys.push_back(key);
+            }
+            std::sort(keys.begin(), keys.end());
+            for (const auto& key : keys) {
+                if (const json_min::Value* value = json_min::obj_get(object, key)) {
+                    out << " " << key << "=" << compact_scalar_text(*value);
+                }
+            }
+            out << "\n";
+        }
+
+        void print_compact_dynamic_line(
+            std::ostream& out,
+            std::string_view label,
+            const json_min::Object& dynamic) {
+            const json_min::Value* enabled = json_min::obj_get(dynamic, "enabled");
+            if (enabled && enabled->is_bool() && !enabled->as_bool()) {
+                return;
+            }
+            out << "  " << label << ":";
+            append_compact_field(out, dynamic, "mode");
+            append_compact_field(out, dynamic, "total_decisions");
+            append_compact_field(out, dynamic, "fallback_decisions");
+            append_compact_field(out, dynamic, "suppressed_decisions");
+            append_compact_field(out, dynamic, "inactive_output_rows");
+            append_compact_field(out, dynamic, "inactive_node_rows");
+            append_compact_field(out, dynamic, "max_active_subgraphs_per_row");
+            append_compact_field(out, dynamic, "max_active_subgraph_cap");
+            append_compact_field(out, dynamic, "bounded_by_declared_caps");
+            append_compact_field(out, dynamic, "route_decision_digest");
+            out << "\n";
+        }
+
+        void print_compact_run_block(
+            std::ostream& out,
+            std::string_view label,
+            const json_min::Object& run) {
+            out << "  " << label << ":";
+            append_compact_field(out, run, "outcome");
+            const json_min::Object* execution =
+                as_json_object(json_min::obj_get(run, "execution"));
+            if (execution) {
+                append_compact_field(out, *execution, "pnl");
+                append_compact_field(out, *execution, "trades");
+                append_compact_field(out, *execution, "max_drawdown");
+                append_compact_field(out, *execution, "trade_hash");
+                append_compact_field(out, *execution, "rows_evaluated");
+                append_compact_field(out, *execution, "warmup_rows");
+            }
+            const json_min::Object* objective =
+                as_json_object(json_min::obj_get(run, "objective"));
+            if (objective) {
+                append_compact_field(out, *objective, "rankability", "objective_rankability");
+                append_compact_field(out, *objective, "score", "objective_score");
+            }
+            out << "\n";
+
+            if (execution) {
+                const json_min::Object* dynamic =
+                    as_json_object(json_min::obj_get(*execution, "dynamic_execution"));
+                if (dynamic) {
+                    print_compact_dynamic_line(out, "dynamic_execution", *dynamic);
+                }
+            }
+
+            const json_min::Object* provenance =
+                as_json_object(json_min::obj_get(run, "provenance"));
+            if (provenance) {
+                out << "  provenance:";
+                append_compact_field(out, *provenance, "primary_series_key");
+                append_compact_field(out, *provenance, "series_count");
+                append_compact_field(out, *provenance, "input_warning_count");
+                append_compact_field(out, *provenance, "dropped_row_count");
+                append_compact_field(out, *provenance, "topology_usage_count");
+                append_compact_field(out, *provenance, "topology_usages_suppressed_count");
+                out << "\n";
+            }
+        }
+
+        void print_compact_sweep_report(
+            std::ostream& out,
+            const json_min::Object& report) {
+            out << "  report:";
+            append_compact_field(out, report, "schema_version");
+            append_compact_field(out, report, "kind");
+            append_compact_field(out, report, "engine");
+            append_compact_field(out, report, "objective");
+            out << "\n";
+
+            out << "  sweep_outcome:";
+            append_compact_field(out, report, "canceled");
+            append_compact_field(out, report, "evaluations_run");
+            append_compact_field(out, report, "compile_failures");
+            append_compact_field(out, report, "execution_failures");
+            append_compact_field(out, report, "candidate_space_size");
+            append_compact_field(out, report, "candidate_space_truncated");
+            append_compact_field(out, report, "top_k");
+            if (const json_min::Array* warnings =
+                    as_json_array(json_min::obj_get(report, "warnings"))) {
+                out << " warnings=" << warnings->size();
+            }
+            out << "\n";
+
+            if (const json_min::Object* outcomes =
+                    as_json_object(json_min::obj_get(report, "candidate_outcomes"))) {
+                print_compact_counts_line(out, "candidate_outcomes", *outcomes);
+            }
+            if (const json_min::Object* rankability =
+                    as_json_object(json_min::obj_get(report, "candidate_rankability"))) {
+                print_compact_counts_line(out, "candidate_rankability", *rankability);
+            }
+
+            const json_min::Array* candidates =
+                as_json_array(json_min::obj_get(report, "candidates"));
+            if (candidates && !candidates->empty()) {
+                const json_min::Object* best = as_json_object(&candidates->front());
+                if (best) {
+                    out << "  best:";
+                    append_compact_field(out, *best, "rank");
+                    append_compact_field(out, *best, "candidate_index");
+                    append_compact_field(out, *best, "score");
+                    out << "\n";
+                    out << "  best_params: "
+                        << compact_params_text(json_min::obj_get(*best, "params"))
+                        << "\n";
+                    if (const json_min::Object* run =
+                            as_json_object(json_min::obj_get(*best, "run"))) {
+                        print_compact_run_block(out, "best_run", *run);
+                    }
+                }
+            }
+
+            if (const json_min::Object* trace =
+                    as_json_object(json_min::obj_get(report, "proposal_trace"))) {
+                out << "  replay:";
+                append_compact_field(out, *trace, "captured");
+                append_compact_field(out, *trace, "policy_name", "policy");
+                append_compact_field(out, *trace, "proposal_count");
+                append_compact_field(out, *trace, "observation_count");
+                append_compact_field(out, *trace, "events_capped");
+                append_compact_field(out, *trace, "trace_digest");
+                append_compact_field(out, *trace, "exact_replay_from_report");
+                out << "\n";
+            }
+
+            if (const json_min::Object* posterior =
+                    as_json_object(json_min::obj_get(report, "posterior"))) {
+                out << "  posterior:";
+                append_compact_field(out, *posterior, "requested");
+                append_compact_field(out, *posterior, "computed");
+                append_compact_field(out, *posterior, "status");
+                append_compact_field(out, *posterior, "training_observation_count");
+                append_compact_field(out, *posterior, "finite_observation_count");
+                append_compact_field(out, *posterior, "acquisition_ready");
+                out << "\n";
+            }
+
+            if (const json_min::Object* diversity =
+                    as_json_object(json_min::obj_get(report, "result_diversity"))) {
+                out << "  diversity:";
+                append_compact_field(out, *diversity, "requested");
+                append_compact_field(out, *diversity, "retained_candidate_pool");
+                append_compact_field(out, *diversity, "returned_unique_trade_hashes");
+                append_compact_field(out, *diversity, "suppressed_duplicate_trade_hash");
+                append_compact_field(out, *diversity, "suppressed_basin");
+                append_compact_field(out, *diversity, "suppressed_min_trades");
+                out << "\n";
+            }
+        }
+
+        void print_compact_panel_report(
+            std::ostream& out,
+            const json_min::Object& report) {
+            out << "  report:";
+            append_compact_field(out, report, "schema_version");
+            append_compact_field(out, report, "kind");
+            append_compact_field(out, report, "ranking_objective");
+            out << "\n";
+            out << "  panel_outcome:";
+            append_compact_field(out, report, "entities_total");
+            append_compact_field(out, report, "entities_ok");
+            append_compact_field(out, report, "entities_failed");
+            if (const json_min::Array* rows =
+                    as_json_array(json_min::obj_get(report, "top_rows"))) {
+                out << " top_rows=" << rows->size() << "\n";
+                if (!rows->empty()) {
+                    const json_min::Object* top = as_json_object(&rows->front());
+                    if (top) {
+                        out << "  top_panel_row:";
+                        append_compact_field(out, *top, "rank");
+                        append_compact_field(out, *top, "entity_key");
+                        append_compact_field(out, *top, "series_key");
+                        append_compact_field(out, *top, "ranking_score");
+                        out << "\n";
+                        if (const json_min::Object* run =
+                                as_json_object(json_min::obj_get(*top, "run"))) {
+                            print_compact_run_block(out, "top_panel_run", *run);
+                        }
+                    }
+                }
+            }
+            else {
+                out << "\n";
+            }
+        }
+
+        bool print_hosted_compact_report(
+            std::string_view response_json,
+            std::ostream& out,
+            std::string& err) {
+            json_min::Value root{};
+            json_min::ParseError parse_err{};
+            if (!json_min::parse(response_json, root, parse_err)) {
+                std::ostringstream detail;
+                detail << parse_err.message << " at line " << parse_err.line
+                    << ", col " << parse_err.col;
+                err = detail.str();
+                return false;
+            }
+            const json_min::Object* root_object = as_json_object(&root);
+            if (!root_object) {
+                err = "response root must be an object";
+                return false;
+            }
+
+            out << "Hosted compact report:\n";
+            out << "  protocol:";
+            append_compact_field(out, *root_object, "schema_version");
+            append_compact_field(out, *root_object, "op");
+            append_compact_field(out, *root_object, "ok");
+            append_compact_field(out, *root_object, "message");
+            out << "\n";
+
+            const json_min::Object* result =
+                as_json_object(json_min::obj_get(*root_object, "job_result"));
+            if (!result) {
+                out << "  report_available=false reason=no_job_result\n";
+                err.clear();
+                return true;
+            }
+
+            out << "  ids:";
+            append_compact_field(out, *root_object, "job_id");
+            append_compact_field(out, *result, "result_id");
+            append_compact_field(out, *result, "owner_session_id");
+            out << "\n";
+
+            const json_min::Value* summary = json_min::obj_get(*result, "summary_text");
+            if (summary && summary->is_str() && !summary->as_str().empty()) {
+                std::string first_line = summary->as_str();
+                const std::size_t newline = first_line.find('\n');
+                if (newline != std::string::npos) {
+                    first_line.resize(newline);
+                }
+                out << "  server_summary=" << first_line << "\n";
+            }
+
+            const json_min::Object* metadata =
+                as_json_object(json_min::obj_get(*result, "metadata"));
+            const json_min::Object* report = metadata
+                ? as_json_object(json_min::obj_get(*metadata, "report"))
+                : nullptr;
+            if (!report) {
+                out << "  report_available=false reason=no_metadata_report\n";
+                err.clear();
+                return true;
+            }
+
+            const json_min::Value* kind_value = json_min::obj_get(*report, "kind");
+            const std::string kind = (kind_value && kind_value->is_str())
+                ? kind_value->as_str()
+                : std::string{};
+            if (kind == "sweep") {
+                print_compact_sweep_report(out, *report);
+            }
+            else if (kind == "run") {
+                out << "  report:";
+                append_compact_field(out, *report, "schema_version");
+                append_compact_field(out, *report, "kind");
+                out << "\n";
+                if (const json_min::Object* run =
+                        as_json_object(json_min::obj_get(*report, "run"))) {
+                    print_compact_run_block(out, "run", *run);
+                }
+            }
+            else if (kind == "panel") {
+                print_compact_panel_report(out, *report);
+            }
+            else {
+                out << "  report:";
+                append_compact_field(out, *report, "schema_version");
+                append_compact_field(out, *report, "kind");
+                out << "\n";
+            }
+
+            err.clear();
+            return true;
+        }
+
+        bool print_hosted_compact_status(
+            std::string_view response_json,
+            std::ostream& out,
+            std::string& err) {
+            json_min::Value root{};
+            json_min::ParseError parse_err{};
+            if (!json_min::parse(response_json, root, parse_err)) {
+                std::ostringstream detail;
+                detail << parse_err.message << " at line " << parse_err.line
+                    << ", col " << parse_err.col;
+                err = detail.str();
+                return false;
+            }
+            const json_min::Object* root_object = as_json_object(&root);
+            if (!root_object) {
+                err = "response root must be an object";
+                return false;
+            }
+
+            out << "Hosted compact status:\n";
+            out << "  protocol:";
+            append_compact_field(out, *root_object, "schema_version");
+            append_compact_field(out, *root_object, "op");
+            append_compact_field(out, *root_object, "ok");
+            append_compact_field(out, *root_object, "message");
+            out << "\n";
+
+            const json_min::Object* status =
+                as_json_object(json_min::obj_get(*root_object, "job_status"));
+            if (!status) {
+                out << "  status_available=false reason=no_job_status\n";
+                err.clear();
+                return true;
+            }
+
+            out << "  ids:";
+            append_compact_field(out, *root_object, "session_id");
+            append_compact_field(out, *root_object, "job_id");
+            append_compact_field(out, *status, "owner_session_id");
+            out << "\n";
+
+            out << "  status:";
+            append_compact_field(out, *status, "state");
+            append_compact_field(out, *status, "result_id");
+            append_compact_field(out, *status, "failure_message");
+            out << "\n";
+
+            if (const json_min::Object* summary =
+                    as_json_object(json_min::obj_get(*status, "progress_summary"))) {
+                out << "  progress:";
+                append_compact_field(out, *summary, "event_count", "events");
+                append_compact_field(out, *summary, "latest_state");
+                append_compact_field(out, *summary, "latest_message");
+                append_compact_field(out, *summary, "latest_completed");
+                append_compact_field(out, *summary, "latest_total");
+                append_compact_field(out, *summary, "work_event_count", "work_events");
+                append_compact_field(out, *summary, "latest_work_completed");
+                append_compact_field(out, *summary, "latest_work_total");
+                append_compact_field(out, *summary, "cancel_requested");
+                append_compact_field(out, *summary, "terminal");
+                out << "\n";
+            }
+            else if (const json_min::Array* progress =
+                    as_json_array(json_min::obj_get(*status, "progress"))) {
+                out << "  progress: events=" << progress->size() << "\n";
+            }
+
+            if (const json_min::Object* retention =
+                    as_json_object(json_min::obj_get(*status, "retention"))) {
+                out << "  retention:";
+                append_compact_field(out, *retention, "result_retained");
+                append_compact_field(out, *retention, "report_status");
+                append_compact_field(out, *retention, "cleanup_eligible");
+                append_compact_field(out, *retention, "no_result_reason");
+                out << "\n";
+            }
+
+            err.clear();
+            return true;
+        }
+
         void print_json_response(
             const ClientCliOptions& options,
             std::string_view response_json,
             std::ostream& out) {
-            out << (options.compact_output ? std::string(response_json) : format_json_pretty(response_json)) << "\n";
+            out << (options.raw_json_output ? std::string(response_json) : format_json_pretty(response_json)) << "\n";
         }
 
         void print_run_result_response(
@@ -650,7 +1140,21 @@ namespace sugar::service {
             const ClientResponseSummary& summary,
             std::string_view response_json,
             std::ostream& out) {
-            if (options.compact_output || summary.summary_text.empty()) {
+            if (options.raw_json_output) {
+                print_json_response(options, response_json, out);
+                return;
+            }
+            if (options.compact_output) {
+                std::string compact_err;
+                if (print_hosted_compact_report(response_json, out, compact_err)) {
+                    return;
+                }
+                out << "Hosted compact report:\n"
+                    << "  report_available=false reason=compact_parse_failed\n"
+                    << "  detail=" << compact_err << "\n";
+                return;
+            }
+            if (summary.summary_text.empty()) {
                 print_json_response(options, response_json, out);
                 return;
             }
@@ -659,6 +1163,39 @@ namespace sugar::service {
             if (summary.summary_text.back() != '\n') {
                 out << "\n";
             }
+        }
+
+        void print_command_response(
+            const ClientCliOptions& options,
+            std::string_view command,
+            std::string_view response_json,
+            std::ostream& out) {
+            if (options.raw_json_output) {
+                print_json_response(options, response_json, out);
+                return;
+            }
+            if (options.compact_output) {
+                std::string compact_err;
+                if (command == "status") {
+                    if (print_hosted_compact_status(response_json, out, compact_err)) {
+                        return;
+                    }
+                    out << "Hosted compact status:\n"
+                        << "  status_available=false reason=compact_parse_failed\n"
+                        << "  detail=" << compact_err << "\n";
+                    return;
+                }
+                if (command == "result") {
+                    if (print_hosted_compact_report(response_json, out, compact_err)) {
+                        return;
+                    }
+                    out << "Hosted compact report:\n"
+                        << "  report_available=false reason=compact_parse_failed\n"
+                        << "  detail=" << compact_err << "\n";
+                    return;
+                }
+            }
+            print_json_response(options, response_json, out);
         }
 
         bool require_success(
@@ -786,7 +1323,7 @@ namespace sugar::service {
                 return 1;
             }
             const std::string session_id = connect_summary.session_id;
-            if (!options.compact_output) {
+            if (!suppress_progress_output(options)) {
                 err << "Connected session " << session_id << "\n";
             }
 
@@ -820,7 +1357,7 @@ namespace sugar::service {
                 disconnect_session_best_effort(options, session_id);
                 return 1;
             }
-            if (!options.compact_output) {
+            if (!suppress_progress_output(options)) {
                 err << "Uploaded artifacts " << layout_upload_id << ", " << logic_upload_id << ", "
                     << data_upload_id << "\n";
             }
@@ -849,7 +1386,7 @@ namespace sugar::service {
                 return 1;
             }
             const std::string job_id = submit_summary.job_id;
-            if (!options.compact_output) {
+            if (!suppress_progress_output(options)) {
                 err << "Submitted job " << job_id << "\n";
             }
 
@@ -880,7 +1417,7 @@ namespace sugar::service {
                     disconnect_session_best_effort(options, session_id);
                     return 1;
                 }
-                if (!options.compact_output && status_summary.job_state != last_reported_state) {
+                if (!suppress_progress_output(options) && status_summary.job_state != last_reported_state) {
                     err << "Status: " << status_summary.job_state << "\n";
                     last_reported_state = status_summary.job_state;
                 }
@@ -889,7 +1426,7 @@ namespace sugar::service {
                     break;
                 }
                 if (std::chrono::steady_clock::now() >= deadline) {
-                    print_json_response(options, latest_status_json, out);
+                    print_command_response(options, "status", latest_status_json, out);
                     err << "Error: run timed out after " << run_options.wait_timeout_ms
                         << " ms; the job may still be running on the server. "
                         << "To check it later, reuse the same session id with "
@@ -991,6 +1528,9 @@ namespace sugar::service {
             else if (arg == "--compact") {
                 options.compact_output = true;
             }
+            else if (arg == "--raw-json" || arg == "--json-raw") {
+                options.raw_json_output = true;
+            }
             else if (arg == "--wait" && command == "run") {
                 // The run command waits by default; accept --wait for command discoverability.
             }
@@ -1057,6 +1597,11 @@ namespace sugar::service {
             }
         }
 
+        if (options.compact_output && options.raw_json_output) {
+            err << "Error: --compact and --raw-json are mutually exclusive\n";
+            return 1;
+        }
+
         if (command == "run") {
             return run_hosted_pipeline(options, run_options, out, err);
         }
@@ -1107,7 +1652,7 @@ namespace sugar::service {
             return 1;
         }
 
-        out << (options.compact_output ? response_json : format_json_pretty(response_json)) << "\n";
+        print_command_response(options, command, response_json, out);
 
         bool ok = false;
         std::string parse_err;

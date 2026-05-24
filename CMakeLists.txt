@@ -175,6 +175,8 @@ add_library(sugar_ops
   src/ops/op_kernels_ms.cpp
   src/ops/op_kernels_spatial.cpp
   src/ops/op_module_spatial.cpp
+  src/ops/op_kernels_topology.cpp
+  src/ops/op_module_topology.cpp
   src/ops/op_module_logic.cpp
 )
 target_include_directories(sugar_ops PUBLIC "${CMAKE_SOURCE_DIR}/include")
@@ -187,6 +189,7 @@ add_library(sugar_engine
   src/engine/strategy_executor.cpp
   src/engine/plan_compiler.cpp
   src/engine/program_evaluator.cpp
+  src/sweep/dynamic_execution.cpp
 )
 target_include_directories(sugar_engine PUBLIC "${CMAKE_SOURCE_DIR}/include")
 sugar_add_private_impl_includes(sugar_engine)
@@ -195,8 +198,32 @@ sugar_apply_defaults(sugar_engine)
 
 # --- Library: sugar_sweep -----------------------------------------------
 add_library(sugar_sweep
+  src/sweep/evaluation_report.cpp
+  src/sweep/evaluation_report_helpers.cpp
+  src/sweep/evaluation_report_geometry_json.cpp
+  src/sweep/evaluation_report_geometry_text.cpp
+  src/sweep/evaluation_report_json.cpp
+  src/sweep/evaluation_report_text.cpp
   src/sweep/metrics.cpp
   src/sweep/sweep.cpp
+  src/sweep/sweep_progress.cpp
+  src/sweep/plan_sweep_dims.cpp
+  src/sweep/two_stage_sweep.cpp
+  src/sweep/train_validate.cpp
+  src/sweep/coarse_fine_index_sweep.cpp
+  src/sweep/monte_carlo_index_sweep.cpp
+  src/sweep/successive_halving_index_sweep.cpp
+  src/sweep/bayesian_posterior_index_sweep.cpp
+  src/sweep/sweep_index_factory.cpp
+  src/sweep/plan_sweep_candidate_index.cpp
+  src/sweep/plan_sweep_objective.cpp
+  src/sweep/plan_sweep_runtime_adapter.cpp
+  src/sweep/plan_sweep_runtime_validation.cpp
+  src/sweep/plan_sweep_pareto.cpp
+  src/sweep/plan_sweep_result_diversity.cpp
+  src/sweep/plan_sweep_geometry.cpp
+  src/sweep/plan_sweep_trace.cpp
+  src/sweep/plan_sweep_reporting.cpp
   src/sweep/sweep_session.cpp
   src/sweep/plan_capability.cpp
   src/sweep/plan_sweep.cpp
@@ -248,13 +275,36 @@ add_library(sugar_contract_support
   src/contracts/contract_suite_data.cpp
   src/contracts/contract_suite_data_observation.cpp
   src/contracts/contract_suite_data_topology.cpp
-  src/contracts/contract_suite_service.cpp
-  src/contracts/contract_suite_service_concurrency.cpp
-  src/contracts/contract_suite_service_protocol.cpp
-  src/contracts/contract_suite_runtime_shared.cpp
+    src/contracts/contract_suite_service.cpp
+    src/contracts/contract_suite_service_concurrency.cpp
+    src/contracts/contract_suite_service_security.cpp
+    src/contracts/contract_suite_service_protocol.cpp
+    src/contracts/contract_suite_service_protocol_support.cpp
+    src/contracts/contract_suite_service_protocol_transport.cpp
+    src/contracts/contract_suite_runtime_shared.cpp
   src/contracts/contract_suite_runtime_plan.cpp
+  src/contracts/contract_suite_runtime_locality.cpp
   src/contracts/contract_suite_runtime_topology.cpp
+  src/contracts/contract_suite_runtime_axis_contracts.cpp
+  src/contracts/contract_suite_runtime_neighborhood_baseline.cpp
+  src/contracts/contract_suite_runtime_static_graph.cpp
+  src/contracts/contract_suite_runtime_topology_operator.cpp
+  src/contracts/contract_suite_runtime_hierarchy.cpp
+  src/contracts/contract_suite_runtime_semantic.cpp
+  src/contracts/contract_suite_runtime_time_valid_graph.cpp
+  src/contracts/contract_suite_runtime_topology_readiness.cpp
+  src/contracts/contract_suite_runtime_dynamic_execution.cpp
+  src/contracts/contract_suite_runtime_axis_queries.cpp
+  src/contracts/contract_suite_runtime_operator_axes.cpp
+  src/contracts/contract_suite_runtime_bridge_loads.cpp
   src/contracts/contract_suite_runtime_bridge.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_adaptive.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_grid.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_report.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_pareto.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_posterior.cpp
+  src/contracts/contract_suite_runtime_bridge_sweep_stage_metric.cpp
   src/contracts/contract_suite_runtime_ops.cpp
   src/contracts/contract_suite_runtime_hygiene.cpp
 )
@@ -272,6 +322,8 @@ add_library(sugar_app_support
   app/reporting/app_reporters.cpp
   app/runtime/app_runtime.cpp
   "app/commands/app_commands.cpp"
+  app/commands/app_reference_commands.cpp
+  app/commands/app_scaffold_commands.cpp
   app/interactive/app_interactive.cpp
 )
 target_include_directories(sugar_app_support PUBLIC "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/app")
@@ -312,7 +364,12 @@ add_executable(sugar_app_tests
   app/tests/app_test_support.cpp
   app/tests/app_cli_tests.cpp
   app/tests/app_runtime_tests.cpp
-  app/tests/app_command_tests.cpp
+  app/tests/app_reference_command_tests.cpp
+  app/tests/app_observation_plan_report_tests.cpp
+  app/tests/app_ux_diagnostics_tests.cpp
+  app/tests/app_run_projection_tests.cpp
+  app/tests/app_sweep_report_tests.cpp
+  app/tests/app_preflight_diagnostic_tests.cpp
   app/tests/app_interactive_tests.cpp
   app/tests/app_run_tests.cpp
   app/tests/app_tests.cpp

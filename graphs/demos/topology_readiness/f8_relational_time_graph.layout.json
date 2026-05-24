@@ -1,0 +1,39 @@
+{
+  "ingest": {
+    "header_policy": "RequiredHeaders",
+    "time_col": "date",
+    "time_kind": "YyyyMmDd",
+    "value_cols": ["close"],
+    "primary_value_col": "close",
+    "sort_by_time": true,
+    "dedupe": "Error"
+  },
+  "topologies": [
+    {
+      "name": "f8.row.market.graph",
+      "bearing": "query_bearing",
+      "family": "relational_graph",
+      "domain_scope": "row_domain",
+      "query_kinds": ["neighbor_set", "weighted_neighbor_set"],
+      "directed": true,
+      "weighted": true,
+      "node_count": 6,
+      "artifact_ref": {
+        "stable_id": "f8.row.market.graph.v1",
+        "locator": "inline://graphs/demos/topology_readiness/f8_relational_time_graph.layout.json#/topologies/0",
+        "format": "layout_static_edges",
+        "digest": "sha256:f8-row-market-graph-v1",
+        "producer": "f8_readiness_demo"
+      },
+      "edges": [
+        { "source": 0, "target": 1, "weight": 1.0, "valid_from": 20240101, "valid_to": 20240104 },
+        { "source": 1, "target": 2, "weight": 1.5 },
+        { "source": 1, "target": 4, "weight": 0.5, "version": "stress" },
+        { "source": 2, "target": 3, "weight": 2.0, "valid_from": 20240103 },
+        { "source": 3, "target": 5, "weight": 1.0, "valid_to": 20240105 },
+        { "source": 4, "target": 5, "weight": 1.2, "version": "stress" },
+        { "source": 5, "target": 0, "weight": 0.8 }
+      ]
+    }
+  ]
+}

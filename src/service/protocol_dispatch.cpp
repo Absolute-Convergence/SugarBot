@@ -82,6 +82,22 @@ namespace sugar::service {
             return ".txt";
         }
 
+        std::string cancel_success_message(const JobStatus& status) {
+            switch (status.state) {
+            case JobState::Rejected:
+            case JobState::Completed:
+            case JobState::Failed:
+                return "job already terminal; cancellation is a no-op";
+            case JobState::Queued:
+            case JobState::Validating:
+            case JobState::Running:
+            case JobState::CancelRequested:
+            case JobState::Canceled:
+                return "job cancellation accepted";
+            }
+            return "job cancellation accepted";
+        }
+
         bool normalize_upload_client_name(
             ArtifactKind kind,
             std::string_view requested_name,
@@ -640,11 +656,12 @@ namespace sugar::service {
 
         response.ok = true;
         response.error_code = ProtocolErrorCode::None;
-        response.message = "job cancellation requested";
+        response.message = "job cancellation accepted";
         response.job_id = request.job_id;
         JobStatus status{};
         if (runtime_.get_job_status(request.session_id, request.job_id, status, err)) {
             response.job_status = status;
+            response.message = cancel_success_message(status);
         }
         emit_security_log(
             "event=cancel result=ok session=" + request.session_id +

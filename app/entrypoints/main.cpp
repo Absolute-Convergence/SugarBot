@@ -18,6 +18,14 @@ int main(int argc, char** argv) {
         switch (cmd.kind) {
         case sugar::app::CommandKind::Help:
             return sugar::app::run_help_command(std::cout);
+        case sugar::app::CommandKind::Onramp:
+            return sugar::app::run_onramp_command(std::cout);
+        case sugar::app::CommandKind::HelpDiagnostics:
+            return sugar::app::run_help_diagnostics_command(std::cout);
+        case sugar::app::CommandKind::HelpReports:
+            return sugar::app::run_help_reports_command(std::cout);
+        case sugar::app::CommandKind::ScaffoldLayout:
+            return sugar::app::run_scaffold_layout_command(cmd, std::cout, std::cerr);
         case sugar::app::CommandKind::Run:
             return sugar::app::run_unified_cli_command(cmd, std::cout, std::cerr);
         case sugar::app::CommandKind::ObsReport:
@@ -43,6 +51,7 @@ int main(int argc, char** argv) {
         case sugar::app::CommandKind::Interactive:
         default:
             return sugar::app::run_interactive_command(cmd, std::cin, std::cout, std::cerr);
+            std::cin.get();
         }
     }
     catch (const std::exception& ex) {

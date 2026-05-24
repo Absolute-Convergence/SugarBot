@@ -62,6 +62,59 @@ namespace sugar {
         std::size_t index{ 0 };
     };
 
+    enum class CompiledDynamicExecutionMode : std::uint8_t {
+        Static = 0,
+        DeclaredDynamic = 1,
+    };
+
+    struct CompiledDynamicNodeRef {
+        std::string node_id{};
+        ValueType type{ ValueType::Num };
+        std::size_t slot{ kInvalidProgramSlot };
+    };
+
+    struct CompiledDynamicSubgraph {
+        std::string id{};
+        std::vector<CompiledDynamicNodeRef> nodes{};
+        std::vector<std::size_t> depends_on_subgraphs{};
+        std::vector<std::size_t> dependency_closure_subgraphs{};
+    };
+
+    struct CompiledDynamicRouteCase {
+        std::string id{};
+        bool when{ true };
+        std::vector<std::size_t> activate_subgraphs{};
+    };
+
+    struct CompiledDynamicRoute {
+        std::string id{};
+        std::string condition_node_id{};
+        std::size_t condition_slot{ kInvalidProgramSlot };
+        bool condition_is_constant{ false };
+        bool constant_condition_value{ false };
+        std::vector<CompiledDynamicRouteCase> cases{};
+        std::vector<std::size_t> fallback_subgraphs{};
+        std::vector<std::size_t> selected_subgraphs{};
+    };
+
+    struct CompiledDynamicOutput {
+        std::string id{};
+        std::string node_id{};
+        ProgramInputRef ref{};
+        std::size_t owning_subgraph{ kInvalidProgramSlot };
+    };
+
+    struct CompiledDynamicExecutionMetadata {
+        CompiledDynamicExecutionMode mode{ CompiledDynamicExecutionMode::Static };
+        bool enabled{ false };
+        bool constant_route_only{ false };
+        std::size_t max_active_subgraphs{ 0 };
+        std::size_t decision_sample_limit{ 0 };
+        std::vector<CompiledDynamicSubgraph> subgraphs{};
+        std::vector<CompiledDynamicRoute> routes{};
+        std::vector<CompiledDynamicOutput> outputs{};
+    };
+
     struct CompiledProgram {
         ProgramOutputShape output_shape{ ProgramOutputShape::RowWiseBuffer };
         ProgramKernelAccess kernel_access{ ProgramKernelAccess::RandomAccessAlignedRows };
@@ -76,6 +129,7 @@ namespace sugar {
         std::size_t entry_short_slot{ kInvalidProgramSlot };
         std::size_t exit_short_slot{ kInvalidProgramSlot };
         std::size_t allow_trade_slot{ kInvalidProgramSlot };
+        CompiledDynamicExecutionMetadata dynamic_execution{};
     };
 
 } // namespace sugar

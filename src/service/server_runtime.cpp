@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "sweep/metrics.h"
+#include "sweep/evaluation_report.h"
 #include "sweep/panel_runner.h"
 #include "sweep/plan_sweep.h"
 
@@ -89,6 +90,13 @@ namespace sugar::service {
             out << make_validation_summary(metadata, "Execution completed");
             print_run_report_summary(build_run_report(result, nullptr, provenance), out);
             return out.str();
+        }
+
+        EvaluationReport make_primary_run_evaluation_report(
+            const BacktestResult& result,
+            const RunProvenanceSummary* provenance) {
+            return make_run_evaluation_report(
+                build_run_report(result, nullptr, provenance));
         }
 
         std::string make_primary_sweep_summary(
@@ -437,11 +445,15 @@ namespace sugar::service {
             result.metadata.run_provenance = run_provenance;
             if (wants_sweep_report) {
                 result.metadata.sweep_report = sweep_report;
+                result.metadata.report = make_sweep_evaluation_report(sweep_report);
                 result.summary_text = make_primary_sweep_summary(
                     result.metadata.validation,
                     sweep_report);
             }
             else {
+                result.metadata.report = make_primary_run_evaluation_report(
+                    backtest,
+                    &run_provenance);
                 result.summary_text = make_primary_run_summary(
                     validated.metadata,
                     backtest,
@@ -516,6 +528,8 @@ namespace sugar::service {
         result.metadata.validation = validated.metadata;
         result.metadata.panel = panel;
         result.metadata.run_provenance = panel_provenance;
+        result.metadata.report = make_panel_evaluation_report(
+            build_panel_report(panel, &panel_provenance));
         result.summary_text = make_panel_summary(validated.metadata, panel, &panel_provenance);
 
         ArtifactRecord summary_artifact{};

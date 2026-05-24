@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ingest/json_min.h"
+#include "sweep/evaluation_report.h"
 
 namespace sugar::service {
 
@@ -227,6 +228,10 @@ namespace sugar::service {
                 return "coarse_fine";
             case PlanSweepEngineKind::MonteCarlo:
                 return "monte_carlo";
+            case PlanSweepEngineKind::SuccessiveHalving:
+                return "successive_halving";
+            case PlanSweepEngineKind::BayesianPosterior:
+                return "bayesian_posterior";
             case PlanSweepEngineKind::Exhaustive:
             default:
                 return "exhaustive";
@@ -748,6 +753,9 @@ namespace sugar::service {
             if (result.metadata.run_provenance.has_value()) {
                 append_source("engine.run_provenance");
             }
+            if (result.metadata.report.has_value()) {
+                append_source("engine.evaluation_report");
+            }
             if (result.metadata.primary_backtest.has_value()) {
                 append_source("engine.run_report");
             }
@@ -761,6 +769,108 @@ namespace sugar::service {
                 append_source("service.output_artifacts");
             }
             out << "]";
+            if (result.metadata.report.has_value()) {
+                std::vector<std::string> deprecated_fields;
+                if (result.metadata.primary_backtest.has_value()) {
+                    deprecated_fields.emplace_back("job_result.metadata.primary_backtest");
+                }
+                if (result.metadata.sweep_report.has_value()) {
+                    deprecated_fields.emplace_back("job_result.metadata.sweep");
+                }
+                if (result.metadata.panel.has_value()) {
+                    deprecated_fields.emplace_back("job_result.metadata.panel");
+                }
+                if (!deprecated_fields.empty()) {
+                    append_json_string_field(out, "canonical_report_field", "job_result.metadata.report", first);
+                    append_json_string_field(out, "legacy_alias_policy", "deprecated_compatibility_aliases", first);
+                    append_json_string_array_field(out, "deprecated_report_fields", deprecated_fields, first);
+                }
+            }
+            out << "}";
+        }
+
+        bool is_terminal_job_state(JobState state) {
+            return state == JobState::Completed ||
+                state == JobState::Failed ||
+                state == JobState::Rejected ||
+                state == JobState::Canceled;
+        }
+
+        std::string status_no_result_reason(const JobStatus& status) {
+            if (status.result_id.has_value()) {
+                return "none";
+            }
+            switch (status.state) {
+            case JobState::Completed:
+                return "completed_without_result";
+            case JobState::Failed:
+                return "failed";
+            case JobState::Rejected:
+                return "rejected";
+            case JobState::Canceled:
+                return "canceled";
+            case JobState::Queued:
+            case JobState::Validating:
+            case JobState::Running:
+            case JobState::CancelRequested:
+                return "not_terminal";
+            }
+            return "unknown";
+        }
+
+        void append_job_status_progress_summary_json(std::ostringstream& out, const JobStatus& status) {
+            const ProgressEvent* latest = status.progress.empty() ? nullptr : &status.progress.back();
+            const ProgressEvent* latest_work = nullptr;
+            std::uint64_t work_event_count = 0;
+            bool cancel_requested = status.state == JobState::CancelRequested || status.state == JobState::Canceled;
+            for (const auto& event : status.progress) {
+                if (event.state == JobState::CancelRequested) {
+                    cancel_requested = true;
+                }
+                if (event.total > 0) {
+                    latest_work = &event;
+                    ++work_event_count;
+                }
+            }
+
+            bool first = true;
+            const std::string_view latest_message = latest ? std::string_view(latest->message) : std::string_view{};
+            const std::string_view latest_work_message = latest_work
+                ? std::string_view(latest_work->message)
+                : std::string_view{};
+            out << "{";
+            append_json_u64_field(out, "event_count", static_cast<std::uint64_t>(status.progress.size()), first);
+            append_json_string_field(out, "latest_state", latest ? job_state_name(latest->state) : job_state_name(status.state), first);
+            append_json_string_field(out, "latest_message", latest_message, first);
+            append_json_u64_field(out, "latest_completed", latest ? latest->completed : 0, first);
+            append_json_u64_field(out, "latest_total", latest ? latest->total : 0, first);
+            append_json_bool_field(out, "latest_has_work_total", latest != nullptr && latest->total > 0, first);
+            append_json_u64_field(out, "work_event_count", work_event_count, first);
+            append_json_string_field(
+                out,
+                "latest_work_state",
+                latest_work ? job_state_name(latest_work->state) : std::string_view{},
+                first);
+            append_json_string_field(out, "latest_work_message", latest_work_message, first);
+            append_json_u64_field(out, "latest_work_completed", latest_work ? latest_work->completed : 0, first);
+            append_json_u64_field(out, "latest_work_total", latest_work ? latest_work->total : 0, first);
+            append_json_bool_field(out, "latest_work_has_total", latest_work != nullptr, first);
+            append_json_bool_field(out, "cancel_requested", cancel_requested, first);
+            append_json_bool_field(out, "terminal", is_terminal_job_state(status.state), first);
+            out << "}";
+        }
+
+        void append_job_status_retention_json(std::ostringstream& out, const JobStatus& status) {
+            bool first = true;
+            out << "{";
+            append_json_bool_field(out, "result_retained", status.result_id.has_value(), first);
+            append_json_string_field(
+                out,
+                "report_status",
+                status.result_id.has_value() ? "result_fetch_required" : "not_retained",
+                first);
+            append_json_bool_field(out, "cleanup_eligible", is_terminal_job_state(status.state), first);
+            append_json_string_field(out, "no_result_reason", status_no_result_reason(status), first);
             out << "}";
         }
 
@@ -775,6 +885,12 @@ namespace sugar::service {
                 append_json_string_field(out, "result_id", *status.result_id, first);
             }
             if (!first) out << ",";
+            first = false;
+            out << "\"progress_summary\":";
+            append_job_status_progress_summary_json(out, status);
+            out << ",\"retention\":";
+            append_job_status_retention_json(out, status);
+            out << ",";
             out << "\"staged_artifacts\":[";
             for (std::size_t i = 0; i < status.staged_artifacts.size(); ++i) {
                 if (i != 0) out << ",";
@@ -805,6 +921,13 @@ namespace sugar::service {
             if (provenance && run_provenance_has_data(*provenance)) {
                 out << ",\"run_provenance\":";
                 append_run_provenance_json(out, *provenance);
+            }
+            if (result.metadata.report.has_value()) {
+                out << ",\"report\":";
+                print_evaluation_report(
+                    *result.metadata.report,
+                    EvaluationReportProjection::Json,
+                    out);
             }
             if (result.metadata.primary_backtest.has_value()) {
                 out << ",\"primary_backtest\":";

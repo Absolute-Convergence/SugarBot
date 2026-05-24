@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "engine/program_evaluator.h"
+#include "sweep/metrics.h"
 
 namespace sugar {
 
@@ -11,6 +12,7 @@ namespace sugar {
         std::vector<NumericBuffer> numeric_slots{};
         std::vector<BoolBuffer> bool_slots{};
         ProgramSignalOutputs signals{};
+        RunDynamicExecutionSummary dynamic_execution{};
     };
 
     bool evaluate_strategy_plan_program_buffers(

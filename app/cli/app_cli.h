@@ -6,11 +6,16 @@
 #include "ingest/align.h"
 #include "contracts/contract_suite.h"
 #include "ingest/data_spec.h"
+#include "sweep/evaluation_report.h"
 
 namespace sugar::app {
 
     enum class CommandKind {
         Help,
+        Onramp,
+        HelpDiagnostics,
+        HelpReports,
+        ScaffoldLayout,
         Run,
         ObsReport,
         PlanReport,
@@ -48,11 +53,13 @@ namespace sugar::app {
         std::string layout_path{};
         std::string logic_path{};
         std::string csv_path{};
+        EvaluationReportProjection report_projection{ default_evaluation_report_projection() };
     };
 
     struct ObsReportCommand {
         std::string layout_path{};
         std::string csv_path{};
+        bool json_output{ false };
     };
 
     struct PlanReportCommand {
@@ -64,6 +71,10 @@ namespace sugar::app {
     struct FeatureDumpCommand {
         std::string layout_path{};
         std::string logic_path{};
+        std::string csv_path{};
+    };
+
+    struct ScaffoldLayoutCommand {
         std::string csv_path{};
     };
 
@@ -89,6 +100,7 @@ namespace sugar::app {
         CommandKind kind{ CommandKind::Interactive };
         ContractSuiteOptions contract_suite{};
         RunCommand run{};
+        ScaffoldLayoutCommand scaffold_layout{};
         ObsReportCommand obs_report{};
         PlanReportCommand plan_report{};
         FeatureDumpCommand feature_dump{};

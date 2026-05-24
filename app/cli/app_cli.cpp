@@ -17,6 +17,8 @@ namespace {
             flag == "--obs-report" ||
             flag == "--plan-report" ||
             flag == "--feature-dump" ||
+            flag == "--scaffold" ||
+            flag == "--report" ||
             flag == "--data-spec" ||
             flag == "--format" ||
             flag == "--prep-dump" ||
@@ -159,6 +161,28 @@ namespace sugar::app {
         out = AppCommand{};
 
         if (argc >= 2 &&
+            ((std::string_view(argv[1]) == "help" &&
+                    argc >= 3 &&
+                    std::string_view(argv[2]) == "diagnostics") ||
+                std::string_view(argv[1]) == "help-diagnostics" ||
+                has_flag(argc, argv, "--help-diagnostics")))
+        {
+            out.kind = CommandKind::HelpDiagnostics;
+            return true;
+        }
+
+        if (argc >= 2 &&
+            ((std::string_view(argv[1]) == "help" &&
+                    argc >= 3 &&
+                    std::string_view(argv[2]) == "reports") ||
+                std::string_view(argv[1]) == "help-reports" ||
+                has_flag(argc, argv, "--help-reports")))
+        {
+            out.kind = CommandKind::HelpReports;
+            return true;
+        }
+
+        if (argc >= 2 &&
             (std::string_view(argv[1]) == "help" ||
                 has_flag(argc, argv, "--help") ||
                 has_flag(argc, argv, "-h")))
@@ -167,8 +191,39 @@ namespace sugar::app {
             return true;
         }
 
+        if (argc >= 2 &&
+            (std::string_view(argv[1]) == "onramp" ||
+                has_flag(argc, argv, "--onramp")))
+        {
+            out.kind = CommandKind::Onramp;
+            return true;
+        }
+
+        if (argc >= 2 && std::string_view(argv[1]) == "scaffold") {
+            if (argc < 3) {
+                err = "scaffold requires <data.csv>";
+                return false;
+            }
+            out.kind = CommandKind::ScaffoldLayout;
+            out.scaffold_layout.csv_path =
+                sugar::normalize_path_for_runtime(std::string(argv[2]));
+            return true;
+        }
+
+        const int scaffold_i = find_flag_index(argc, argv, "--scaffold");
+        if (scaffold_i >= 0) {
+            if (scaffold_i + 1 >= argc) {
+                err = "--scaffold requires <data.csv>";
+                return false;
+            }
+            out.kind = CommandKind::ScaffoldLayout;
+            out.scaffold_layout.csv_path =
+                sugar::normalize_path_for_runtime(std::string(argv[scaffold_i + 1]));
+            return true;
+        }
+
         if (argc >= 2 && std::string_view(argv[1]) == "run") {
-            if (argc != 5) {
+            if (argc < 5) {
                 err = "run requires <layout.json> <logic.json> <csv_path>";
                 return false;
             }
@@ -176,6 +231,23 @@ namespace sugar::app {
             out.run.layout_path = sugar::normalize_path_for_runtime(std::string(argv[2]));
             out.run.logic_path = sugar::normalize_path_for_runtime(std::string(argv[3]));
             out.run.csv_path = sugar::normalize_path_for_runtime(std::string(argv[4]));
+            for (int i = 5; i < argc; ++i) {
+                const std::string_view arg(argv[i]);
+                if (arg != "--report") {
+                    err = "unknown run argument '" + std::string(arg) + "'";
+                    return false;
+                }
+                if (i + 1 >= argc) {
+                    err = "--report requires <" +
+                        std::string(sugar::evaluation_report_projection_usage()) + ">";
+                    return false;
+                }
+                if (!sugar::parse_evaluation_report_projection(argv[++i], out.run.report_projection)) {
+                    err = "--report must be one of " +
+                        std::string(sugar::evaluation_report_projection_error_list());
+                    return false;
+                }
+            }
             return true;
         }
 
@@ -188,6 +260,28 @@ namespace sugar::app {
             out.kind = CommandKind::ObsReport;
             out.obs_report.layout_path = sugar::normalize_path_for_runtime(std::string(argv[obs_report_i + 1]));
             out.obs_report.csv_path = sugar::normalize_path_for_runtime(std::string(argv[obs_report_i + 2]));
+            for (int i = obs_report_i + 3; i < argc; ++i) {
+                const std::string_view arg(argv[i]);
+                if (arg == "--json") {
+                    out.obs_report.json_output = true;
+                    continue;
+                }
+                if (arg == "--report") {
+                    if (i + 1 >= argc) {
+                        err = "--report requires <json> for --obs-report";
+                        return false;
+                    }
+                    const std::string report_value = lower_copy(argv[++i]);
+                    if (report_value != "json") {
+                        err = "--obs-report --report supports only json";
+                        return false;
+                    }
+                    out.obs_report.json_output = true;
+                    continue;
+                }
+                err = "unknown --obs-report argument '" + std::string(arg) + "'";
+                return false;
+            }
             return true;
         }
 

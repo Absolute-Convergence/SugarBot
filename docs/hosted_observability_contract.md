@@ -1,6 +1,6 @@
 # SugarBot Hosted Observability Contract
 
-Status: v1 contract  
+Status: v1 contract
 Schema version: `sugarbot.hosted.v1`
 
 This document freezes the hosted-service status/result/logging vocabulary that
@@ -25,6 +25,9 @@ The service layer must not invent parallel report meanings for these concepts.
   spelling requires a new schema version.
 - `summary_text` is human-facing convenience text only. Tooling should prefer
   structured fields under `job_status` and `job_result.metadata`.
+- `job_result.metadata.report` is the canonical hosted report field. Legacy
+  hosted report fields such as `metadata.primary_backtest`, `metadata.sweep`,
+  and `metadata.panel` are compatibility aliases when present.
 - Ownership fields are audit data. They must remain present on status/result
   payloads even while the service uses session tokens rather than user accounts.
 
@@ -58,6 +61,8 @@ Optional fields depend on `op` and request state:
   `cancel_requested`, `canceled`, `completed`, or `failed`.
 - `failure_message`: empty unless the job was rejected or failed.
 - `result_id`: present after a retained result exists.
+- `progress_summary`: compact progress facts for operators and compact clients.
+- `retention`: result/report retention and cleanup facts.
 - `staged_artifacts`: array of artifact records.
 - `progress`: ordered progress-event array.
 
@@ -67,6 +72,42 @@ Each progress event contains:
 - `message`: stable enough for operators, not a parser contract.
 - `completed`: completed work count for the event scope.
 - `total`: total work count for the event scope, or zero when unknown.
+
+`progress_summary` includes:
+
+- `event_count`
+- `latest_state`
+- `latest_message`
+- `latest_completed`
+- `latest_total`
+- `latest_has_work_total`
+- `work_event_count`
+- `latest_work_state`
+- `latest_work_message`
+- `latest_work_completed`
+- `latest_work_total`
+- `latest_work_has_total`
+- `cancel_requested`
+- `terminal`
+
+`retention` includes:
+
+- `result_retained`: whether a result id is retained for later fetch.
+- `report_status`: `result_fetch_required` when a result may be fetched, or
+  `not_retained` when no result/report exists.
+- `cleanup_eligible`: true for terminal jobs.
+- `no_result_reason`: `none`, `not_terminal`, `canceled`, `rejected`,
+  `failed`, or `completed_without_result`.
+
+Canceled jobs do not fabricate final result payloads. Their terminal status
+remains inspectable until explicit cleanup, and cleanup removes both retained
+job state and the per-job artifact workspace.
+
+`cancel_job` is idempotent for owned jobs. A cancel request against an already
+terminal job returns `ok: true` with the current `job_status` and does not
+mutate progress, result retention, or cleanup eligibility. Unknown jobs and
+cross-session job ids remain rejected with the same probe-resistant error
+behavior as status/result requests.
 
 ## Job Result Payload
 
@@ -107,11 +148,20 @@ engine evaluation count from the retained sweep report, not the requested
 - `input_artifact_count`
 - `output_artifact_count`
 - `report_sources`
+- optional `canonical_report_field`
+- optional `legacy_alias_policy`
+- optional `deprecated_report_fields`
 
 `report_sources` labels whether each visible result section came from service
 metadata (`service.validation_metadata`, `service.output_artifacts`) or engine
-report truth (`engine.run_provenance`, `engine.run_report`,
-`engine.sweep_report`, `engine.panel_report`).
+report truth (`engine.evaluation_report`, `engine.run_provenance`,
+`engine.run_report`, `engine.sweep_report`, `engine.panel_report`).
+
+`metadata.report` is present for completed primary run, primary sweep, and
+ranked panel jobs. It is the nested `sugarbot.evaluation_report.v1` report
+envelope used by local CLI JSON reports and carries the promoted run, sweep,
+panel, replay, topology, dynamic-execution, Pareto, posterior, geometry, and
+result-diversity report facts when the underlying run produced them.
 
 `metadata.run_provenance` is present when the runtime produced report-layer
 provenance. It carries primary-series, axis, alignment, warning, and topology
@@ -126,8 +176,9 @@ operators do not have to recover parser state from summary text:
 - `input_warning_count`
 - `input_warnings`
 
-`metadata.primary_backtest` is present for single-run jobs and selected run
-views. It includes raw executor facts plus report-layer projection:
+`metadata.primary_backtest` is a deprecated compatibility alias for single-run
+jobs and selected run views. It includes raw executor facts plus report-layer
+projection:
 
 - core PnL/trade/drawdown fields
 - `rows_evaluated`
@@ -138,7 +189,8 @@ views. It includes raw executor facts plus report-layer projection:
 - optional `non_finite_metric_names`
 - optional nested `provenance`
 
-`metadata.sweep` is present for hosted sweep jobs. It includes:
+`metadata.sweep` is a deprecated compatibility alias for hosted sweep jobs. It
+includes:
 
 - engine and resolved objective
 - requested/returned top-k
@@ -158,9 +210,18 @@ views. It includes raw executor facts plus report-layer projection:
 Each sweep candidate includes rank, candidate index, score, run outcome,
 objective rankability, parameter values, and a nested backtest payload.
 
-`metadata.panel` is present for ranked multi-entity jobs. It includes entity
-counts, cancellation state, resolved ranking objective, optional shared run
-provenance, top rows, and structured failure rows.
+`metadata.panel` is a deprecated compatibility alias for ranked multi-entity
+jobs. It includes entity counts, cancellation state, resolved ranking
+objective, optional shared run provenance, top rows, and structured failure
+rows.
+
+When `metadata.report` and one or more compatibility aliases are both present,
+`metadata.audit` reports:
+
+- `canonical_report_field: "job_result.metadata.report"`
+- `legacy_alias_policy: "deprecated_compatibility_aliases"`
+- `deprecated_report_fields`: protocol paths for the aliases emitted in that
+  result.
 
 ## Artifact Records
 

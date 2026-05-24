@@ -244,30 +244,85 @@ namespace sugar {
             summary.objective = objective;
             summary.score = -std::numeric_limits<double>::infinity();
 
-            double primary_value = std::numeric_limits<double>::quiet_NaN();
-            if (!try_lookup_reported_value(result, objective.primary, primary_value)) {
+            auto make_component = [&](RunObjectiveComponentRole role,
+                                      const ObjectiveValueSpec& value,
+                                      ObjectiveDirection direction,
+                                      double weight) {
+                RunObjectiveComponent component{};
+                component.role = role;
+                component.value = value;
+                component.direction = direction;
+                component.weight = weight;
+                component.present = try_lookup_reported_value(result, value, component.raw_value);
+                component.finite = component.present && std::isfinite(component.raw_value);
+                if (!component.finite) {
+                    return component;
+                }
+                switch (role) {
+                case RunObjectiveComponentRole::Primary:
+                    component.score_contribution =
+                        (direction == ObjectiveDirection::Minimize)
+                        ? -component.raw_value
+                        : component.raw_value;
+                    break;
+                case RunObjectiveComponentRole::Penalty:
+                    component.score_contribution = -weight * component.raw_value;
+                    break;
+                case RunObjectiveComponentRole::TieBreak:
+                    component.score_contribution = 0.0;
+                    break;
+                }
+                return component;
+            };
+
+            summary.components.push_back(make_component(
+                RunObjectiveComponentRole::Primary,
+                objective.primary,
+                objective.direction,
+                0.0));
+            const RunObjectiveComponent& primary_component = summary.components.back();
+            if (!primary_component.present) {
                 summary.rankability = RunRankabilityState::MissingPrimaryValue;
                 return summary;
             }
-            if (!std::isfinite(primary_value)) {
+            if (!primary_component.finite) {
                 summary.rankability = RunRankabilityState::NonFinitePrimaryValue;
                 return summary;
             }
 
             for (const auto& penalty : objective.penalties) {
-                double penalty_value = std::numeric_limits<double>::quiet_NaN();
-                if (!try_lookup_reported_value(result, penalty.value, penalty_value)) {
+                summary.components.push_back(make_component(
+                    RunObjectiveComponentRole::Penalty,
+                    penalty.value,
+                    ObjectiveDirection::Minimize,
+                    penalty.weight));
+                const RunObjectiveComponent& penalty_component = summary.components.back();
+                if (!penalty_component.present) {
                     summary.rankability = RunRankabilityState::MissingPenaltyValue;
                     return summary;
                 }
-                if (!std::isfinite(penalty_value)) {
+                if (!penalty_component.finite) {
                     summary.rankability = RunRankabilityState::NonFinitePenaltyValue;
                     return summary;
                 }
             }
 
+            for (const auto& tie_break : objective.tie_breaks) {
+                summary.components.push_back(make_component(
+                    RunObjectiveComponentRole::TieBreak,
+                    tie_break.value,
+                    tie_break.direction,
+                    0.0));
+            }
+
             summary.rankability = RunRankabilityState::Rankable;
-            summary.score = evaluate_ranking_objective(objective, result);
+            summary.score = 0.0;
+            for (const auto& component : summary.components) {
+                if (component.role == RunObjectiveComponentRole::TieBreak) {
+                    continue;
+                }
+                summary.score += component.score_contribution;
+            }
             return summary;
         }
 
@@ -306,6 +361,14 @@ namespace sugar {
             return "minimize";
         }
         return "unknown";
+    }
+
+    std::string objective_vector_component_label(
+        const ObjectiveVectorComponentSpec& objective) {
+        if (!objective.label.empty()) {
+            return objective.label;
+        }
+        return objective.value.name;
     }
 
     std::string_view numeric_node_summary_mode_name(NumericNodeSummaryMode mode) {
@@ -360,7 +423,39 @@ namespace sugar {
         return "unknown";
     }
 
+    std::string_view run_objective_component_role_name(RunObjectiveComponentRole role) {
+        switch (role) {
+        case RunObjectiveComponentRole::Primary:
+            return "primary";
+        case RunObjectiveComponentRole::Penalty:
+            return "penalty";
+        case RunObjectiveComponentRole::TieBreak:
+            return "tie_break";
+        }
+        return "unknown";
+    }
+
     RunProvenanceSummary build_run_provenance_summary(const RunManifest& manifest) {
+        const auto artifact_summary = [](const TopologyArtifactRef& ref) {
+            RunTopologyArtifactSummary out{};
+            out.present = !ref.empty();
+            out.stable_id = ref.stable_id;
+            out.locator = ref.locator;
+            out.format = ref.format;
+            out.digest = ref.digest;
+            out.producer = ref.producer;
+            return out;
+        };
+
+        const auto query_kind_names = [](const std::vector<TopologyQueryKind>& kinds) {
+            std::vector<std::string> out;
+            out.reserve(kinds.size());
+            for (const auto kind : kinds) {
+                out.push_back(std::string(topology_query_kind_name(kind)));
+            }
+            return out;
+        };
+
         RunProvenanceSummary summary{};
         summary.primary_series_key = manifest.primary_series_key;
         summary.primary_selection_mode = std::string(
@@ -396,6 +491,57 @@ namespace sugar {
             if (!topology.name.empty()) {
                 summary.topology_names.push_back(topology.name);
             }
+            RunTopologySummary topology_summary{};
+            topology_summary.name = topology.name;
+            topology_summary.origin = std::string(topology_origin_name(topology.origin));
+            topology_summary.bearing = std::string(topology_bearing_name(topology.bearing));
+            topology_summary.family = std::string(topology_family_name(topology.family));
+            topology_summary.domain_scope =
+                std::string(topology_domain_scope_name(topology.domain_scope));
+            topology_summary.query_kinds = query_kind_names(topology.query_kinds);
+            topology_summary.directed = topology.directed;
+            topology_summary.weighted = topology.weighted;
+            topology_summary.node_count = topology.node_count;
+            topology_summary.edge_count = topology.static_edges.size();
+            topology_summary.semantic_embedding_count =
+                topology.semantic_embeddings.size();
+            for (const auto& edge : topology.static_edges) {
+                if (edge.valid_from.has_value() || edge.valid_to.has_value()) {
+                    ++topology_summary.time_valid_edge_count;
+                }
+                if (!edge.version.empty()) {
+                    ++topology_summary.versioned_edge_count;
+                }
+            }
+            if (topology.artifact_ref.has_value()) {
+                topology_summary.artifact =
+                    artifact_summary(*topology.artifact_ref);
+            }
+            summary.topologies.push_back(std::move(topology_summary));
+        }
+        summary.topology_usages.reserve(manifest.topology_usages.size());
+        for (const auto& usage : manifest.topology_usages) {
+            RunTopologyUsageSummary usage_summary{};
+            usage_summary.subject_kind = usage.subject_kind;
+            usage_summary.subject_id = usage.subject_id;
+            usage_summary.op_name = usage.op_name;
+            usage_summary.topology_name = usage.topology_name;
+            usage_summary.topology_origin = usage.topology_origin;
+            usage_summary.topology_bearing = usage.topology_bearing;
+            usage_summary.locality_subject_kind = usage.locality_subject_kind;
+            usage_summary.locality_subject_value = usage.locality_subject_value;
+            usage_summary.locality_subject_explicit =
+                usage.locality_subject_explicit;
+            usage_summary.resolved_series_key = usage.resolved_series_key;
+            usage_summary.resolved_entity_key = usage.resolved_entity_key;
+            usage_summary.required_topology_families =
+                usage.required_topology_families;
+            usage_summary.required_topology_query_kinds =
+                usage.required_topology_query_kinds;
+            usage_summary.catalog_present = usage.catalog_present;
+            usage_summary.runtime_resolved = usage.runtime_resolved;
+            usage_summary.artifact = artifact_summary(usage.artifact_ref);
+            summary.topology_usages.push_back(std::move(usage_summary));
         }
         return summary;
     }
@@ -654,6 +800,103 @@ namespace sugar {
         os << "\n";
     }
 
+    void print_dynamic_execution_summary(
+        const RunDynamicExecutionSummary& dynamic,
+        std::ostream& os,
+        std::string_view indent) {
+        if (!dynamic.enabled) {
+            return;
+        }
+
+        os << indent << "Dynamic execution:\n"
+            << indent << "  mode: "
+            << (dynamic.mode.empty() ? "<unknown>" : dynamic.mode) << "\n"
+            << indent << "  subgraphs: ";
+        if (dynamic.subgraph_ids.empty()) {
+            os << "<none>";
+        }
+        for (std::size_t i = 0; i < dynamic.subgraph_ids.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            os << dynamic.subgraph_ids[i];
+        }
+        os << "\n"
+            << indent << "  total_decisions: " << dynamic.total_decisions << "\n"
+            << indent << "  decision_samples: "
+            << dynamic.emitted_decision_samples << "/"
+            << dynamic.decision_sample_limit
+            << " suppressed=" << dynamic.suppressed_decisions << "\n"
+            << indent << "  fallback_decisions: "
+            << dynamic.fallback_decisions << "\n"
+            << indent << "  inactive_output_rows: "
+            << dynamic.inactive_output_rows << "\n"
+            << indent << "  inactive_node_rows: "
+            << dynamic.inactive_node_rows << "\n"
+            << indent << "  max_active_subgraphs_per_row: "
+            << dynamic.max_active_subgraphs_per_row
+            << " cap=" << dynamic.max_active_subgraph_cap
+            << " bounded="
+            << (dynamic.bounded_by_declared_caps ? "true" : "false") << "\n"
+            << indent << "  route_decision_digest: "
+            << dynamic.route_decision_digest << "\n";
+
+        for (const auto& route : dynamic.routes) {
+            os << indent << "  route " << route.id
+                << " condition=" << route.condition_node_id
+                << " true=" << route.true_decisions
+                << " false=" << route.false_decisions
+                << " fallback=" << route.fallback_decisions << "\n";
+            for (const auto& route_case : route.cases) {
+                os << indent << "    case " << route_case.id
+                    << " when=" << (route_case.when ? "true" : "false")
+                    << " decisions=" << route_case.decisions
+                    << " activate=";
+                if (route_case.activate_subgraphs.empty()) {
+                    os << "<none>";
+                }
+                for (std::size_t i = 0;
+                     i < route_case.activate_subgraphs.size();
+                     ++i) {
+                    if (i != 0) {
+                        os << ",";
+                    }
+                    os << route_case.activate_subgraphs[i];
+                }
+                os << "\n";
+            }
+        }
+
+        for (const auto& output : dynamic.outputs) {
+            os << indent << "  output " << output.id
+                << " node=" << output.node_id
+                << " owning_subgraph=" << output.owning_subgraph
+                << " active_rows=" << output.active_rows
+                << " inactive_rows=" << output.inactive_rows << "\n";
+        }
+
+        for (const auto& sample : dynamic.decision_samples) {
+            os << indent << "  sample row=" << sample.row
+                << " route=" << sample.route_id
+                << " case=" << sample.selected_case_id
+                << " fallback="
+                << (sample.fallback_used ? "true" : "false")
+                << " condition="
+                << (sample.condition_value ? "true" : "false")
+                << " active=";
+            if (sample.active_subgraphs.empty()) {
+                os << "<none>";
+            }
+            for (std::size_t i = 0; i < sample.active_subgraphs.size(); ++i) {
+                if (i != 0) {
+                    os << ",";
+                }
+                os << sample.active_subgraphs[i];
+            }
+            os << "\n";
+        }
+    }
+
     void print_run_report_summary(
         const RunReport& report,
         std::ostream& os,
@@ -684,6 +927,7 @@ namespace sugar {
             << " entry_short=" << r.signal_counts.entry_short
             << " exit_short=" << r.signal_counts.exit_short << "\n";
 
+        print_dynamic_execution_summary(r.dynamic_execution, os, indent);
         print_run_provenance_summary(report.provenance, os, indent);
 
         if (report.objective.requested) {

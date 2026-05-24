@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "ingest/time_key.h"
+
 namespace sugar {
 
     enum class TopologyOrigin : std::uint8_t {
@@ -32,6 +34,7 @@ namespace sugar {
         SemanticGraph = 5,
         ProbabilisticGraph = 6,
         Composite = 7,
+        Hierarchy = 8,
     };
 
     enum class TopologyDomainScope : std::uint8_t {
@@ -74,6 +77,20 @@ namespace sugar {
         return ref.locator;
     }
 
+    struct StaticGraphEdge {
+        std::size_t source{ 0 };
+        std::size_t target{ 0 };
+        double weight{ 1.0 };
+        std::optional<TimeKey> valid_from{};
+        std::optional<TimeKey> valid_to{};
+        std::string version{};
+    };
+
+    struct SemanticEmbeddingVector {
+        std::size_t node{ 0 };
+        std::vector<double> values{};
+    };
+
     struct TopologySpec {
         std::string name{};
         TopologyOrigin origin{ TopologyOrigin::LayoutDeclared };
@@ -83,6 +100,9 @@ namespace sugar {
         std::vector<TopologyQueryKind> query_kinds{};
         bool directed{ false };
         bool weighted{ false };
+        std::size_t node_count{ 0 };
+        std::vector<StaticGraphEdge> static_edges{};
+        std::vector<SemanticEmbeddingVector> semantic_embeddings{};
         std::optional<TopologyArtifactRef> artifact_ref{};
         std::vector<std::pair<std::string, std::string>> metadata{};
 
@@ -92,6 +112,11 @@ namespace sugar {
 
         bool is_runtime_bearing() const {
             return bearing == TopologyBearing::RuntimeBearing;
+        }
+
+        bool is_query_bearing() const {
+            return bearing == TopologyBearing::QueryBearing ||
+                bearing == TopologyBearing::RuntimeBearing;
         }
 
         bool supports_query_kind(TopologyQueryKind kind) const {
@@ -298,6 +323,7 @@ namespace sugar {
         case TopologyFamily::SemanticGraph: return "semantic_graph";
         case TopologyFamily::ProbabilisticGraph: return "probabilistic_graph";
         case TopologyFamily::Composite: return "composite";
+        case TopologyFamily::Hierarchy: return "hierarchy";
         }
         return "unknown";
     }

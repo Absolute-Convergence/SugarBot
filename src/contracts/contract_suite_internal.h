@@ -23,8 +23,10 @@ namespace sugar::contract_suite_internal {
         explicit ContractAsserts(std::ostream& o) : out(o) {}
 
         bool expect(bool ok, const std::string& label);
+        void warn(const std::string& label);
 
         int passed{ 0 };
+        int warnings{ 0 };
         int failed{ 0 };
         std::ostream& out;
     };
@@ -85,6 +87,7 @@ namespace sugar::contract_suite_internal {
     bool test_service_session_upload_quota_abuse_contracts(ContractAsserts& t);
     bool test_service_expensive_sweep_policy_abuse_contracts(ContractAsserts& t);
     bool test_service_result_ownership_contracts(ContractAsserts& t);
+    bool test_service_hosted_unified_report_contracts(ContractAsserts& t);
     bool test_service_cancellation_contracts(ContractAsserts& t);
     bool test_service_running_cancellation_contracts(ContractAsserts& t);
     bool test_service_artifact_sandbox_cleanup_contracts(ContractAsserts& t);
@@ -130,6 +133,19 @@ namespace sugar::contract_suite_internal {
     bool test_candle_adapter_contracts(ContractAsserts& t);
     bool test_kernel_warmup_contracts(ContractAsserts& t);
     bool test_axis_domain_runtime_contracts(ContractAsserts& t);
+    bool test_neighborhood_query_baseline_contracts(ContractAsserts& t);
+    bool test_static_graph_neighborhood_query_contracts(ContractAsserts& t);
+    bool test_static_graph_runtime_binding_contracts(ContractAsserts& t);
+    bool test_topology_operator_runtime_contracts(ContractAsserts& t);
+    bool test_hierarchy_query_runtime_contracts(ContractAsserts& t);
+    bool test_semantic_neighbor_query_runtime_contracts(ContractAsserts& t);
+    bool test_time_valid_graph_query_runtime_contracts(ContractAsserts& t);
+    bool test_topology_readiness_runtime_contracts(ContractAsserts& t);
+    bool test_dynamic_execution_static_validation_contracts(ContractAsserts& t);
+    bool test_dynamic_execution_compile_metadata_contracts(ContractAsserts& t);
+    bool test_dynamic_execution_runtime_hardening_contracts(ContractAsserts& t);
+    bool test_dynamic_execution_topology_routing_contracts(ContractAsserts& t);
+    bool test_dynamic_execution_replay_compatibility_contracts(ContractAsserts& t);
     bool test_axis_query_temporal_contracts(ContractAsserts& t);
     bool test_axis_query_spatial_contracts(ContractAsserts& t);
     bool test_axis_query_spatiotemporal_contracts(ContractAsserts& t);
@@ -162,6 +178,7 @@ namespace sugar::contract_suite_internal {
     bool test_ts_alias_runtime_parity_contracts(ContractAsserts& t);
     bool test_ts_runtime_equivalence_smoke_contracts(ContractAsserts& t);
     bool test_assertion_hygiene_contracts(ContractAsserts& t);
+    bool test_contract_source_hygiene_contracts(ContractAsserts& t);
     bool test_runtime_no_legacy_composite_include(ContractAsserts& t);
 
 } // namespace sugar::contract_suite_internal

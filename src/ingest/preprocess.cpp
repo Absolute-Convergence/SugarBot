@@ -6,8 +6,10 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -61,6 +63,121 @@ namespace sugar {
             catch (...) {
                 return false;
             }
+        }
+
+        const char* time_kind_code(TimeKind kind) {
+            switch (kind) {
+            case TimeKind::YyyyMmDd: return "yyyymmdd";
+            case TimeKind::Iso8601: return "iso8601";
+            case TimeKind::YearQuarter: return "year_quarter";
+            case TimeKind::YearMonth: return "year_month";
+            case TimeKind::Index: return "index";
+            }
+            return "unknown";
+        }
+
+        std::string numeric_token_category(const std::string& raw) {
+            const std::string tok = trim_copy(raw);
+            if (tok.empty()) return "empty";
+            if (tok.size() >= 2 && tok.front() == '(' && tok.back() == ')') {
+                return "parenthesized_negative";
+            }
+            for (const char c : tok) {
+                switch (c) {
+                case '$':
+                    return "currency_symbol";
+                case '%':
+                    return "percent";
+                case ',':
+                    return "grouping_comma";
+                default:
+                    break;
+                }
+            }
+            for (const unsigned char c : tok) {
+                if (std::isalpha(c)) return "suffix";
+            }
+            return "invalid_format";
+        }
+
+        PreprocessIssueAggregate& ensure_issue_aggregate(
+            std::vector<PreprocessIssueAggregate>& aggregates,
+            const std::string& code,
+            const std::string& column,
+            const std::string& category,
+            const std::string& entity,
+            const std::string& key) {
+            auto it = std::find_if(
+                aggregates.begin(),
+                aggregates.end(),
+                [&](const PreprocessIssueAggregate& existing) {
+                    return existing.code == code &&
+                        existing.column == column &&
+                        existing.category == category &&
+                        existing.entity == entity &&
+                        existing.key == key;
+                });
+            if (it != aggregates.end()) {
+                return *it;
+            }
+
+            PreprocessIssueAggregate aggregate{};
+            aggregate.code = code;
+            aggregate.column = column;
+            aggregate.category = category;
+            aggregate.entity = entity;
+            aggregate.key = key;
+            aggregates.push_back(std::move(aggregate));
+            return aggregates.back();
+        }
+
+        void add_preprocess_issue(
+            PreprocessResult& result,
+            const std::string& code,
+            std::size_t csv_data_row,
+            const std::string& column,
+            const std::string& token,
+            const std::string& category,
+            const std::string& entity = {},
+            const std::string& key = {}) {
+            if (result.error_code.empty()) {
+                result.error_code = code;
+            }
+
+            auto& aggregate = ensure_issue_aggregate(
+                result.error_aggregates,
+                code,
+                column,
+                category,
+                entity,
+                key);
+            ++aggregate.count;
+            constexpr std::size_t kSampleLimit = 5;
+            if (aggregate.samples.size() >= kSampleLimit) {
+                return;
+            }
+
+            PreprocessIssueSample sample{};
+            sample.csv_data_row = csv_data_row;
+            sample.column = column;
+            sample.token = token;
+            sample.category = category;
+            sample.entity = entity;
+            sample.key = key;
+            aggregate.samples.push_back(std::move(sample));
+        }
+
+        std::string sample_rows_text(const std::vector<std::size_t>& ordinals) {
+            std::ostringstream out;
+            const std::size_t limit = std::min<std::size_t>(5, ordinals.size());
+            for (std::size_t i = 0; i < limit; ++i) {
+                if (i) out << ",";
+                out << (ordinals[i] + 1);
+            }
+            if (ordinals.size() > limit) {
+                out << ",...";
+            }
+            return out.str();
         }
 
         bool parse_year_quarter(std::string s, TimeKey& out) {
@@ -192,12 +309,12 @@ namespace sugar {
         std::string time_parse_hint(const std::string& tok, TimeKind kind) {
             switch (kind) {
             case TimeKind::YyyyMmDd:
-                return "hint: use time_kind \"YyyyMmDd\" for date-only values such as 20211014, 2021-10-14, or 2021/10/14";
+                return "hint: use time_kind \"YyyyMmDd\" or \"YYYY-MM-DD\" for date-only values such as 20211014, 2021-10-14, or 2021/10/14";
             case TimeKind::Iso8601:
                 if (parse_yyyymmdd(tok).has_value()) {
-                    return "hint: token looks date-only; use time_kind \"YyyyMmDd\" for YYYY-MM-DD or YYYYMMDD dates";
+                    return "hint: token looks date-only; use time_kind \"YyyyMmDd\" or \"YYYY-MM-DD\" for YYYY-MM-DD or YYYYMMDD dates";
                 }
-                return "hint: use time_kind \"Iso8601\" for full timestamps such as 2024-10-09T07:00:00Z";
+                return "hint: use time_kind \"Iso8601\" or \"ISO-8601\" for full timestamps such as 2024-10-09T07:00:00Z";
             case TimeKind::YearQuarter:
                 return "hint: use time_kind \"YearQuarter\" for values such as 2024Q1 or 2024-Q1";
             case TimeKind::YearMonth:
@@ -232,6 +349,11 @@ namespace sugar {
             return out;
         }
 
+        std::string available_columns_suffix(const std::vector<std::string>& columns) {
+            if (columns.empty()) return {};
+            return " (available columns: " + join_csv(columns) + ")";
+        }
+
         std::shared_ptr<IndexSchema> make_index_schema_for_spec(const DataSpec& spec, bool has_entity) {
             auto is = std::make_shared<IndexSchema>();
             if (data_spec_has_time_axis(spec)) {
@@ -263,6 +385,7 @@ namespace sugar {
             std::vector<ParsedRow> rows,
             NumericFrame& out,
             std::size_t& out_dropped_rows,
+            PreprocessResult& diagnostics,
             std::string& err)
         {
             out_dropped_rows = 0;
@@ -274,6 +397,37 @@ namespace sugar {
                         if (a.t != b.t) return a.t < b.t;
                         return a.ordinal < b.ordinal;
                     });
+            }
+
+            if (has_time_axis && spec.dedupe == DataSpec::DedupePolicy::Error) {
+                std::map<TimeKey, std::vector<std::size_t>> rows_by_key;
+                for (const auto& r : rows) {
+                    rows_by_key[r.t].push_back(r.ordinal);
+                }
+
+                for (const auto& [key, ordinals] : rows_by_key) {
+                    if (ordinals.size() <= 1) {
+                        continue;
+                    }
+
+                    const std::string key_text = std::to_string(key);
+                    for (const auto ordinal : ordinals) {
+                        add_preprocess_issue(
+                            diagnostics,
+                            "preprocess.duplicate_time_key",
+                            ordinal + 1,
+                            spec.time_col,
+                            key_text,
+                            "duplicate_time_key",
+                            entity,
+                            key_text);
+                    }
+                    err = "duplicate time key for entity '" + entity +
+                        "': key " + key_text +
+                        " appears " + std::to_string(ordinals.size()) +
+                        " times; sample rows=" + sample_rows_text(ordinals);
+                    return false;
+                }
             }
 
             std::vector<ParsedRow> deduped;
@@ -376,20 +530,23 @@ namespace sugar {
             return true;
         }
 
-        struct ColumnDegeneracyStats {
-            std::size_t total_values{ 0 };
-            std::size_t finite_values{ 0 };
-            bool has_nonzero_finite{ false };
-        };
+        int rounded_missing_percent(const ValueColumnQuality& stats) {
+            if (stats.total_values == 0) return 0;
+            return static_cast<int>(
+                std::round(
+                    (100.0 * static_cast<double>(stats.missing_values)) /
+                    static_cast<double>(stats.total_values)));
+        }
 
-        void accumulate_column_degeneracy(
+        void accumulate_column_quality(
             const NumericFrame& frame,
             ColumnId column,
-            ColumnDegeneracyStats& stats) {
+            ValueColumnQuality& stats) {
             const auto values = frame.col(column);
             stats.total_values += values.size();
             for (const double value : values) {
                 if (!std::isfinite(value)) {
+                    ++stats.missing_values;
                     continue;
                 }
                 ++stats.finite_values;
@@ -399,25 +556,31 @@ namespace sugar {
             }
         }
 
-        void append_degenerate_value_column_warnings(
+        void append_value_column_quality(
             const std::vector<std::string>& ingest_cols,
             const std::vector<ColumnId>& value_ids,
             std::size_t value_col_count,
             const PreprocessResult& result,
+            std::vector<ValueColumnQuality>& quality,
             std::vector<std::string>& warnings) {
             const std::size_t ncols = std::min(
                 value_col_count,
                 std::min(ingest_cols.size(), value_ids.size()));
+            quality.clear();
+            quality.reserve(ncols);
             for (std::size_t i = 0; i < ncols; ++i) {
-                ColumnDegeneracyStats stats{};
+                ValueColumnQuality stats{};
+                stats.name = ingest_cols[i];
                 if (result.frame.has_value()) {
-                    accumulate_column_degeneracy(*result.frame, value_ids[i], stats);
+                    accumulate_column_quality(*result.frame, value_ids[i], stats);
                 }
                 if (result.frameset.has_value()) {
                     for (const auto& kv : result.frameset->by_entity) {
-                        accumulate_column_degeneracy(kv.second, value_ids[i], stats);
+                        accumulate_column_quality(kv.second, value_ids[i], stats);
                     }
                 }
+
+                quality.push_back(stats);
 
                 if (stats.total_values == 0) {
                     continue;
@@ -430,6 +593,14 @@ namespace sugar {
                     warnings.push_back(
                         "value column '" + ingest_cols[i] + "' is uniformly zero after preprocessing");
                 }
+                else if (stats.missing_values * 2 > stats.total_values) {
+                    warnings.push_back(
+                        "value column '" + ingest_cols[i] + "' has " +
+                        std::to_string(rounded_missing_percent(stats)) +
+                        "% missing values after preprocessing (" +
+                        std::to_string(stats.missing_values) + "/" +
+                        std::to_string(stats.total_values) + " rows)");
+                }
             }
         }
 
@@ -440,10 +611,14 @@ namespace sugar {
         std::shared_ptr<FrameSchema> schema)
     {
         PreprocessResult r{};
+        auto fail = [&](std::string code, std::string message) {
+            r.error_code = std::move(code);
+            r.err = std::move(message);
+            return r;
+        };
 
         if (!schema) {
-            r.err = "schema must not be null";
-            return r;
+            return fail("preprocess.schema_missing", "schema must not be null");
         }
 
         bool had_header = false;
@@ -464,14 +639,14 @@ namespace sugar {
         CsvLoadDiagnostics csv_load{};
         RawTable tbl = load_csv_table(csv_path, raw_policy, had_header, load_err, &csv_load);
         if (!load_err.empty()) {
-            r.err = load_err;
-            return r;
+            return fail("csv.load_failed", load_err);
         }
         r.csv_load = csv_load;
         r.csv_had_header = had_header;
         if (spec.header_policy == HeaderPolicy::RequiredHeaders && !had_header) {
-            r.err = "header_policy=RequiredHeaders requires a CSV header row";
-            return r;
+            return fail(
+                "preprocess.header_required",
+                "header_policy=RequiredHeaders requires a CSV header row");
         }
 
         const bool using_positional_columns = !had_header;
@@ -484,15 +659,19 @@ namespace sugar {
         }
         if (using_positional_columns && spec.columns_by_index.empty()) {
             if (spec.header_policy == HeaderPolicy::HeaderlessPositional) {
-                r.err = "header_policy=HeaderlessPositional requires non-empty columns_by_index mapping";
+                return fail(
+                    "dataspec.columns_by_index_required",
+                    "header_policy=HeaderlessPositional requires non-empty columns_by_index mapping");
             }
             else {
-                r.err = "CSV appears headerless; provide columns_by_index or set header_policy=RequiredHeaders";
+                return fail(
+                    "dataspec.columns_by_index_required",
+                    "CSV appears headerless; provide columns_by_index or set header_policy=RequiredHeaders");
             }
-            return r;
         }
 
         std::unordered_map<std::string, std::size_t> idx_by_name;
+        std::vector<std::string> available_columns;
         if (had_header) {
             std::vector<std::string> canonical_headers;
             canonical_headers.reserve(tbl.headers.size());
@@ -505,18 +684,29 @@ namespace sugar {
                 const auto key = trim_copy(canonical_headers[i]);
                 if (key.empty()) continue;
                 if (!idx_by_name.emplace(key, i).second) {
-                    r.err = "duplicate canonical column name: " + key;
-                    return r;
+                    return fail(
+                        "dataspec.duplicate_canonical_column",
+                        "duplicate canonical column name: " + key);
                 }
+                available_columns.push_back(key);
             }
         }
         else {
+            std::vector<std::pair<std::size_t, std::string>> columns_by_position;
+            columns_by_position.reserve(spec.columns_by_index.size());
             for (const auto& kv : spec.columns_by_index) {
-                const auto key = trim_copy(kv.first);
+                columns_by_position.emplace_back(kv.second, kv.first);
+            }
+            std::sort(columns_by_position.begin(), columns_by_position.end());
+            for (const auto& kv : columns_by_position) {
+                const auto key = trim_copy(kv.second);
                 if (key.empty()) continue;
-                idx_by_name[key] = kv.second;
+                idx_by_name[key] = kv.first;
+                available_columns.push_back(key);
             }
         }
+
+        r.parsed_columns = available_columns;
 
         auto find_idx = [&](const std::string& name, std::size_t& out_idx) -> bool {
             auto it = idx_by_name.find(name);
@@ -529,26 +719,30 @@ namespace sugar {
         std::size_t time_idx = 0;
         if (has_time_axis) {
             if (!find_idx(spec.time_col, time_idx)) {
-                r.err = "time_col not found after rename: " + spec.time_col;
-                return r;
+                return fail(
+                    "preprocess.missing_time_col",
+                    "time_col not found after rename: " + spec.time_col +
+                        available_columns_suffix(available_columns));
             }
         }
 
         std::size_t entity_idx = 0;
         const bool has_entity = spec.entity_col.has_value();
         if (has_entity && !find_idx(*spec.entity_col, entity_idx)) {
-            r.err = "entity_col not found after rename: " + *spec.entity_col;
-            return r;
+            return fail(
+                "preprocess.missing_entity_col",
+                "entity_col not found after rename: " + *spec.entity_col +
+                    available_columns_suffix(available_columns));
         }
 
         if (spec.value_cols.empty()) {
-            r.err = "value_cols must not be empty";
-            return r;
+            return fail("dataspec.value_cols_empty", "value_cols must not be empty");
         }
 
         if (std::find(spec.value_cols.begin(), spec.value_cols.end(), spec.primary_value_col) == spec.value_cols.end()) {
-            r.err = "primary_value_col must be included in value_cols";
-            return r;
+            return fail(
+                "dataspec.primary_value_not_in_value_cols",
+                "primary_value_col must be included in value_cols");
         }
 
         std::vector<std::string> ingest_cols = spec.value_cols;
@@ -573,8 +767,9 @@ namespace sugar {
                 }
             }
             if (!missing.empty()) {
-                r.err = "incomplete columns_by_index mapping; missing: " + join_csv(missing);
-                return r;
+                return fail(
+                    "dataspec.columns_by_index_incomplete",
+                    "incomplete columns_by_index mapping; missing: " + join_csv(missing));
             }
         }
 
@@ -585,8 +780,10 @@ namespace sugar {
         for (const auto& name : ingest_cols) {
             std::size_t idx = 0;
             if (!find_idx(name, idx)) {
-                r.err = "value_col not found after rename: " + name;
-                return r;
+                return fail(
+                    "preprocess.missing_value_col",
+                    "value_col not found after rename: " + name +
+                        available_columns_suffix(available_columns));
             }
             value_idx.push_back(idx);
             value_ids.push_back(schema->columns().get_or_add(name));
@@ -600,8 +797,9 @@ namespace sugar {
                 if (ingest_cols[i] == *spec.spatial_y_col) spatial_y_ingest_idx = i;
             }
             if (!spatial_x_ingest_idx || !spatial_y_ingest_idx) {
-                r.err = "spatial_x_col/spatial_y_col resolution failed";
-                return r;
+                return fail(
+                    "preprocess.spatial_axis_resolution_failed",
+                    "spatial_x_col/spatial_y_col resolution failed");
             }
         }
 
@@ -620,9 +818,17 @@ namespace sugar {
             if (has_time_axis) {
                 const std::string tcell = get_cell(time_idx);
                 if (!parse_time_key(tcell, spec.time_kind, ri, tk)) {
-                    r.err = "time parse failed at row " + std::to_string(ri + 1) + ": '" + tcell + "'; " +
-                        time_parse_hint(tcell, spec.time_kind);
-                    return r;
+                    add_preprocess_issue(
+                        r,
+                        "preprocess.time_parse_failed",
+                        ri + 1,
+                        spec.time_col,
+                        tcell,
+                        time_kind_code(spec.time_kind));
+                    return fail(
+                        "preprocess.time_parse_failed",
+                        "time parse failed at row " + std::to_string(ri + 1) + ": '" + tcell + "'; " +
+                            time_parse_hint(tcell, spec.time_kind));
                 }
             }
             const std::string ekey = has_entity ? get_cell(entity_idx) : single_key;
@@ -632,27 +838,68 @@ namespace sugar {
             pr.ordinal = ri;
             pr.vals.resize(value_idx.size());
 
+            bool row_has_parse_error = false;
+            std::string first_row_parse_error;
             for (std::size_t c = 0; c < value_idx.size(); ++c) {
                 const std::string tok = get_cell(value_idx[c]);
                 std::optional<double> v;
                 std::string e;
                 if (!parse_value_token(tok, spec, v, e)) {
-                    r.err = "value parse failed at row " + std::to_string(ri + 1) + ", col '" + ingest_cols[c] + "': " + e;
-                    return r;
+                    row_has_parse_error = true;
+                    if (first_row_parse_error.empty()) {
+                        first_row_parse_error =
+                            "value parse failed at row " + std::to_string(ri + 1) +
+                            ", col '" + ingest_cols[c] + "': " + e;
+                    }
+                    add_preprocess_issue(
+                        r,
+                        "preprocess.value_parse_failed",
+                        ri + 1,
+                        ingest_cols[c],
+                        tok,
+                        numeric_token_category(tok),
+                        ekey);
+                    continue;
                 }
 
                 const bool is_spatial_col =
                     (spatial_x_ingest_idx && c == *spatial_x_ingest_idx) ||
                     (spatial_y_ingest_idx && c == *spatial_y_ingest_idx);
                 if (is_spatial_col && !v.has_value()) {
-                    r.err = "spatial axis parse failed at row " + std::to_string(ri + 1) +
-                        ", col '" + ingest_cols[c] + "': value is missing/non-numeric";
-                    return r;
+                    row_has_parse_error = true;
+                    if (first_row_parse_error.empty()) {
+                        first_row_parse_error =
+                            "spatial axis parse failed at row " + std::to_string(ri + 1) +
+                            ", col '" + ingest_cols[c] + "': value is missing/non-numeric";
+                    }
+                    add_preprocess_issue(
+                        r,
+                        "preprocess.spatial_axis_parse_failed",
+                        ri + 1,
+                        ingest_cols[c],
+                        tok,
+                        "missing_spatial_value",
+                        ekey);
+                    continue;
                 }
                 pr.vals[c] = v;
             }
 
+            if (row_has_parse_error) {
+                if (r.err.empty() && !first_row_parse_error.empty()) {
+                    r.err = first_row_parse_error;
+                }
+                continue;
+            }
+
             groups[ekey].push_back(std::move(pr));
+        }
+
+        if (!r.error_aggregates.empty()) {
+            if (r.err.empty()) {
+                r.err = "preprocess failed with structured parse diagnostics";
+            }
+            return r;
         }
 
         // TODO(data-spec): resampling/aggregation hook goes here (no behavior yet).
@@ -661,7 +908,19 @@ namespace sugar {
             NumericFrame out(schema);
             std::size_t dropped_rows = 0;
             std::string e;
-            if (!build_frame_for_group(single_key, spec, schema, value_ids, groups[single_key], out, dropped_rows, e)) {
+            if (!build_frame_for_group(
+                    single_key,
+                    spec,
+                    schema,
+                    value_ids,
+                    groups[single_key],
+                    out,
+                    dropped_rows,
+                    r,
+                    e)) {
+                if (r.error_code.empty()) {
+                    r.error_code = "preprocess.frame_build_failed";
+                }
                 r.err = e;
                 return r;
             }
@@ -673,11 +932,12 @@ namespace sugar {
                 r.warnings.push_back(
                     "drop-row missing policy removed " + std::to_string(total_dropped_rows) + " row(s)");
             }
-            append_degenerate_value_column_warnings(
+            append_value_column_quality(
                 ingest_cols,
                 value_ids,
                 spec.value_cols.size(),
                 r,
+                r.value_column_quality,
                 r.warnings);
             return r;
         }
@@ -689,7 +949,19 @@ namespace sugar {
             NumericFrame out(schema);
             std::size_t dropped_rows = 0;
             std::string e;
-            if (!build_frame_for_group(kv.first, spec, schema, value_ids, std::move(kv.second), out, dropped_rows, e)) {
+            if (!build_frame_for_group(
+                    kv.first,
+                    spec,
+                    schema,
+                    value_ids,
+                    std::move(kv.second),
+                    out,
+                    dropped_rows,
+                    r,
+                    e)) {
+                if (r.error_code.empty()) {
+                    r.error_code = "preprocess.frame_build_failed";
+                }
                 r.err = e;
                 return r;
             }
@@ -704,11 +976,12 @@ namespace sugar {
             r.warnings.push_back(
                 "drop-row missing policy removed " + std::to_string(total_dropped_rows) + " row(s)");
         }
-        append_degenerate_value_column_warnings(
+        append_value_column_quality(
             ingest_cols,
             value_ids,
             spec.value_cols.size(),
             r,
+            r.value_column_quality,
             r.warnings);
         return r;
     }

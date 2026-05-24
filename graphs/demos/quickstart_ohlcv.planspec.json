@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "name": "quickstart_ohlcv_trend_cross",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 1.0, "slippage_bps": 1.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "params": {
+    "fast_n": 5,
+    "slow_n": 13
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "fast", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "fast_n" } } },
+    { "id": "slow", "op": "ts.ema", "args": ["c"], "params": { "n": { "ref": "slow_n" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.cross_up", "args": ["fast", "slow"] },
+    { "id": "exit", "op": "cmp.cross_down", "args": ["fast", "slow"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

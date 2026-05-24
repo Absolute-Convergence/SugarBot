@@ -43,8 +43,28 @@ namespace sugar::app {
         const sugar::ResolvedObservationWorld& world,
         std::ostream& out);
 
+    void print_observation_report_json(
+        const sugar::ResolvedObservationWorld& world,
+        std::ostream& out);
+
+    void print_observation_report_error_json(
+        std::string_view code,
+        std::string_view message,
+        const sugar::PreprocessReport* report,
+        std::ostream& out);
+
     void print_plan_capability_report(
         const sugar::PlanCapabilityReport& report,
+        std::ostream& out,
+        std::string_view stage_label = {});
+
+    void print_plan_data_quality_notes(
+        const sugar::PlanSpec& spec,
+        const sugar::PreprocessReport& report,
+        std::ostream& out);
+
+    void print_plan_binding_notes(
+        const sugar::PlanSpec& spec,
         std::ostream& out);
 
     void print_plan_capability_report(

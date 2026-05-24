@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "i_exhaustive_threshold_sweep",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "NextBar",
+    "fill_timing": "NextBarOpen",
+    "costs": { "fee_bps": 1.0, "slippage_bps": 1.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "params": {
+    "threshold": 104.0
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "threshold_value", "op": "core.const", "params": { "value": { "ref": "threshold" } } }
+  ],
+  "bool_nodes": [
+    { "id": "entry", "op": "cmp.cross_up", "args": ["c", "threshold_value"] },
+    { "id": "exit", "op": "cmp.cross_down", "args": ["c", "threshold_value"] }
+  ],
+  "bindings": {
+    "entry_long": "entry",
+    "exit_long": "exit",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "sweep": {
+    "enabled": true,
+    "engine": "exhaustive",
+    "objective": "pnl_dd",
+    "dd_weight": 0.25,
+    "top_k": 3,
+    "max_evals": 6,
+    "params": {
+      "threshold": { "values": [101.0, 103.0, 105.0, 107.0] }
+    }
+  }
+}

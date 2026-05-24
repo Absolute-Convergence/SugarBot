@@ -28,65 +28,110 @@ Requirements:
 
 SugarBot has no third-party C++ library dependencies.
 
-The artifact paths below match the build commands in this section. The portable Linux / WSL command sets `SUGAR_OUT_ROOT="$PWD/build/artifacts"`, so final binaries land in `./build/artifacts/RelWithDebInfo/`. The portable Windows Visual Studio command leaves final binaries in `.\build\RelWithDebInfo\`. Preset builds use their preset-specific roots, such as `out/Linux/RelWithDebInfo` or `out\build\windows-msvc\RelWithDebInfo`.
+The commands below build only the main `sugarbot` executable. That is enough for `--help`, `--onramp`, the interactive tutorial, and local `sugarbot run ...` commands.
 
-### Linux / WSL
+Run commands from the repository root unless a section says otherwise. On Windows, you can open File Explorer to the SugarBot folder, click the address bar, type `powershell`, and press Enter.
 
-From the repository root:
+The beginner commands are:
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON -DSUGAR_OUT_ROOT="$PWD/build/artifacts"
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-```
+* `sugarbot --help`: print the command reference.
+* `sugarbot --onramp`: explain the CSV + layout + PlanSpec workflow.
+* `sugarbot`: start the interactive tutorial.
 
-Launch the main CLI:
+The interactive tutorial uses checked-in files from `data/` and `graphs/demos/`, so start it from the repository root or from a full package that includes those folders. `--help` and `--onramp` do not need the demo files.
 
-```bash
-./build/artifacts/RelWithDebInfo/sugarbot --help
-```
+### Windows: Build And Run
 
-### Windows
-
-From a Visual Studio Developer PowerShell or a shell where CMake can find Visual Studio:
+Open a Visual Studio Developer PowerShell, or another PowerShell where CMake can find Visual Studio, and run:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
-cmake --build build --config RelWithDebInfo --target sugarbot sugar_server sugar_client sugar_contracts
-ctest --test-dir build -C RelWithDebInfo --output-on-failure
+cmake -S . -B build\windows-msvc -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
+cmake --build build\windows-msvc --config RelWithDebInfo --target sugarbot
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe --help
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe --onramp
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe
 ```
 
-Launch the main CLI:
+### Linux / WSL: Build And Run
+
+Open a Linux or WSL terminal in the repository root and run:
+
+```bash
+cmake -S . -B build/linux-release -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON -DSUGAR_OUT_ROOT="$PWD/build/linux-artifacts"
+cmake --build build/linux-release --target sugarbot --parallel
+./build/linux-artifacts/RelWithDebInfo/sugarbot --help
+./build/linux-artifacts/RelWithDebInfo/sugarbot --onramp
+./build/linux-artifacts/RelWithDebInfo/sugarbot
+```
+
+### Visual Studio Or CMake Preset Builds
+
+Visual Studio and the repository presets write to `out/...`, not to the portable `build/...` tree above. If you built in an IDE, use these paths.
+
+Windows IDE / `windows-msvc` preset output:
 
 ```powershell
-.\build\RelWithDebInfo\sugarbot.exe --help
+.\out\build\windows-msvc\RelWithDebInfo\sugarbot.exe --help
+.\out\build\windows-msvc\RelWithDebInfo\sugarbot.exe --onramp
+.\out\build\windows-msvc\RelWithDebInfo\sugarbot.exe
 ```
+
+Linux/WSL IDE / `linux-release` preset output:
+
+```bash
+./out/Linux/RelWithDebInfo/sugarbot --help
+./out/Linux/RelWithDebInfo/sugarbot --onramp
+./out/Linux/RelWithDebInfo/sugarbot
+```
+
+### Prebuilt Executables
+
+If `sugarbot.exe` is already built and sitting in your current Windows folder:
+
+```powershell
+.\sugarbot.exe --help
+.\sugarbot.exe --onramp
+.\sugarbot.exe
+```
+
+If `sugarbot` is already built and sitting in your current Linux/WSL folder:
+
+```bash
+chmod +x ./sugarbot
+./sugarbot --help
+./sugarbot --onramp
+./sugarbot
+```
+
+For the no-argument interactive tutorial, type the menu number you want and press Enter. Type `q` at a menu prompt to leave without running anything.
 
 ## Run The Demos
 
 The polished demo plans live in `graphs/demos/`. They are designed to show current SugarBot behavior beyond the older interactive templates.
+
+The commands below use the portable `build/...` output paths from Quick Start. If you built from Visual Studio or a CMake preset, replace the executable path with the matching `out/...` path from the preset section.
 
 ### Linux / WSL
 
 Run these from the repository root after the Linux/WSL build:
 
 ```bash
-./build/artifacts/RelWithDebInfo/sugarbot run \
+./build/linux-artifacts/RelWithDebInfo/sugarbot run \
   graphs/demos/nvda_momentum_volatility.layout.json \
   graphs/demos/nvda_momentum_volatility.planspec.json \
   "data/BATS_NVDA, 1D.csv"
 
-./build/artifacts/RelWithDebInfo/sugarbot run \
+./build/linux-artifacts/RelWithDebInfo/sugarbot run \
   graphs/demos/btc_intraday_regime.layout.json \
   graphs/demos/btc_intraday_regime.planspec.json \
   data/BTCUSD_420.csv
 
-./build/artifacts/RelWithDebInfo/sugarbot run \
+./build/linux-artifacts/RelWithDebInfo/sugarbot run \
   graphs/demos/nashville_housing_panel.layout.json \
   graphs/demos/nashville_housing_panel.planspec.json \
   data/Nashville-Real-Estate-Data-clean.csv
 
-./build/artifacts/RelWithDebInfo/sugarbot run \
+./build/linux-artifacts/RelWithDebInfo/sugarbot run \
   graphs/demos/nvda_momentum_volatility.layout.json \
   graphs/demos/nvda_roc_sma_diff_cross.planspec.json \
   "data/BATS_NVDA, 1D.csv"
@@ -97,22 +142,22 @@ Run these from the repository root after the Linux/WSL build:
 Run these from the repository root after the Windows build:
 
 ```powershell
-.\build\RelWithDebInfo\sugarbot.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe run `
   graphs\demos\nvda_momentum_volatility.layout.json `
   graphs\demos\nvda_momentum_volatility.planspec.json `
   "data\BATS_NVDA, 1D.csv"
 
-.\build\RelWithDebInfo\sugarbot.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe run `
   graphs\demos\btc_intraday_regime.layout.json `
   graphs\demos\btc_intraday_regime.planspec.json `
   data\BTCUSD_420.csv
 
-.\build\RelWithDebInfo\sugarbot.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe run `
   graphs\demos\nashville_housing_panel.layout.json `
   graphs\demos\nashville_housing_panel.planspec.json `
   data\Nashville-Real-Estate-Data-clean.csv
 
-.\build\RelWithDebInfo\sugarbot.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugarbot.exe run `
   graphs\demos\nvda_momentum_volatility.layout.json `
   graphs\demos\nvda_roc_sma_diff_cross.planspec.json `
   "data\BATS_NVDA, 1D.csv"
@@ -154,6 +199,8 @@ Legacy candle-style CSV ingestion still exists as a compatibility path, but it a
 
 ## Common Commands
 
+These examples assume your shell is already in the folder that contains `sugarbot`. If you are running from the repository root, use the full executable path shown in Quick Start.
+
 Show CLI help:
 
 ```bash
@@ -194,17 +241,27 @@ Run one focused contract section:
 
 The hosted surface is local-first. By default, `sugar_server` binds to loopback and uses the `local-ai` service profile. The server and client use the same runtime as `sugarbot run`; the client uploads layout, logic, and CSV files to the server, submits the job, polls until completion, prints the retained hosted summary, and disconnects.
 
+This section uses `sugar_server` and `sugar_client`, which are separate executables. The Quick Start builds only `sugarbot`; build these extra targets before using the hosted examples.
+
+The hosted examples below use the portable `build/...` paths. If you built from Visual Studio or a CMake preset, build the same targets there and use the matching `out/...` executable paths.
+
 The examples below use port `4123`, the default service port. Use the command block that matches your shell: Linux / WSL examples use POSIX paths and `\` continuations; Windows examples use PowerShell paths, `.exe` suffixes, and backtick continuations.
 
 ### Linux / WSL
 
 Run these from a Linux / WSL shell.
 
+Build the hosted executables if needed:
+
+```bash
+cmake --build build/linux-release --target sugar_server sugar_client --parallel
+```
+
 Terminal 1:
 
 ```bash
 mkdir -p hosted_storage
-./build/artifacts/RelWithDebInfo/sugar_server \
+./build/linux-artifacts/RelWithDebInfo/sugar_server \
   --service-profile local-ai \
   --port 4123 \
   --storage-root hosted_storage
@@ -213,25 +270,25 @@ mkdir -p hosted_storage
 Terminal 2, run any demo:
 
 ```bash
-./build/artifacts/RelWithDebInfo/sugar_client run \
+./build/linux-artifacts/RelWithDebInfo/sugar_client run \
   --port 4123 \
   --layout graphs/demos/nvda_momentum_volatility.layout.json \
   --logic graphs/demos/nvda_momentum_volatility.planspec.json \
   --data "data/BATS_NVDA, 1D.csv"
 
-./build/artifacts/RelWithDebInfo/sugar_client run \
+./build/linux-artifacts/RelWithDebInfo/sugar_client run \
   --port 4123 \
   --layout graphs/demos/btc_intraday_regime.layout.json \
   --logic graphs/demos/btc_intraday_regime.planspec.json \
   --data data/BTCUSD_420.csv
 
-./build/artifacts/RelWithDebInfo/sugar_client run \
+./build/linux-artifacts/RelWithDebInfo/sugar_client run \
   --port 4123 \
   --layout graphs/demos/nashville_housing_panel.layout.json \
   --logic graphs/demos/nashville_housing_panel.planspec.json \
   --data data/Nashville-Real-Estate-Data-clean.csv
 
-./build/artifacts/RelWithDebInfo/sugar_client run \
+./build/linux-artifacts/RelWithDebInfo/sugar_client run \
   --port 4123 \
   --layout graphs/demos/nvda_momentum_volatility.layout.json \
   --logic graphs/demos/nvda_roc_sma_diff_cross.planspec.json \
@@ -244,11 +301,17 @@ Stop the server with `Ctrl+C` when finished.
 
 Run these from PowerShell on Windows.
 
+Build the hosted executables if needed:
+
+```powershell
+cmake --build build\windows-msvc --config RelWithDebInfo --target sugar_server sugar_client
+```
+
 Terminal 1:
 
 ```powershell
 New-Item -ItemType Directory -Force hosted_storage | Out-Null
-.\build\RelWithDebInfo\sugar_server.exe `
+.\build\windows-msvc\RelWithDebInfo\sugar_server.exe `
   --service-profile local-ai `
   --port 4123 `
   --storage-root hosted_storage
@@ -257,32 +320,32 @@ New-Item -ItemType Directory -Force hosted_storage | Out-Null
 Terminal 2, run any demo:
 
 ```powershell
-.\build\RelWithDebInfo\sugar_client.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugar_client.exe run `
   --port 4123 `
   --layout graphs\demos\nvda_momentum_volatility.layout.json `
   --logic graphs\demos\nvda_momentum_volatility.planspec.json `
   --data "data\BATS_NVDA, 1D.csv"
 
-.\build\RelWithDebInfo\sugar_client.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugar_client.exe run `
   --port 4123 `
   --layout graphs\demos\btc_intraday_regime.layout.json `
   --logic graphs\demos\btc_intraday_regime.planspec.json `
   --data data\BTCUSD_420.csv
 
-.\build\RelWithDebInfo\sugar_client.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugar_client.exe run `
   --port 4123 `
   --layout graphs\demos\nashville_housing_panel.layout.json `
   --logic graphs\demos\nashville_housing_panel.planspec.json `
   --data data\Nashville-Real-Estate-Data-clean.csv
 
-.\build\RelWithDebInfo\sugar_client.exe run `
+.\build\windows-msvc\RelWithDebInfo\sugar_client.exe run `
   --port 4123 `
   --layout graphs\demos\nvda_momentum_volatility.layout.json `
   --logic graphs\demos\nvda_roc_sma_diff_cross.planspec.json `
   --data "data\BATS_NVDA, 1D.csv"
 ```
 
-Stop the server with `Ctrl+C` when finished. Add `--compact` when a script needs the full one-line hosted JSON payload.
+Stop the server with `Ctrl+C` when finished. Add `--compact` for concise hosted output: `run`/`result` print the canonical nested `job_result.metadata.report`, while `status` prints progress and retention facts for long or canceled jobs. Use `--raw-json` when a script needs the full one-line protocol JSON payload. The older hosted `metadata.primary_backtest`, `metadata.sweep`, and `metadata.panel` fields remain compatibility aliases; new tooling should read `metadata.report`.
 
 ## Project Presets
 
@@ -292,7 +355,7 @@ Native Windows:
 
 ```powershell
 cmake --preset windows-msvc
-cmake --build --preset windows-msvc-release
+cmake --build --preset windows-msvc-release --target sugarbot
 ```
 
 WSL from the mounted Windows checkout:
@@ -301,14 +364,21 @@ WSL from the mounted Windows checkout:
 .\tools\Initialize-SugarBuildEnvironment.ps1
 ```
 
-Then use `linux-debug-mounted` or `linux-release-mounted` from Visual Studio or from WSL.
+Then use `linux-debug-mounted` or `linux-release-mounted` from Visual Studio, or run this from WSL in the mounted repository:
+
+```bash
+cmake --preset linux-release-mounted
+cmake --build --preset linux-release-mounted --target sugarbot
+```
 
 Native Linux checkout:
 
 ```bash
 cmake --preset linux-release
-cmake --build --preset linux-release
+cmake --build --preset linux-release --target sugarbot
 ```
+
+Omit `--target sugarbot` when you intentionally want to build every default target.
 
 ## Architecture Notes For Releases
 

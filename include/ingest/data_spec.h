@@ -64,6 +64,8 @@ namespace sugar {
         std::vector<std::string> value_cols;
         std::unordered_map<std::string, std::string> rename;
         std::string primary_value_col;
+        bool primary_value_col_inferred_from_single_value_col{ false };
+        bool value_cols_inferred_from_primary_value_col{ false };
         std::vector<std::string> missing_tokens;
         MissingPolicy missing_default{};
         bool sort_by_time{ true };
@@ -91,7 +93,7 @@ namespace sugar {
       "input_profile": "auto",
       "time_col": "date",
       "header_policy": "RequiredHeaders",
-      "time_kind": "YyyyMmDd",
+      "time_kind": "YYYY-MM-DD",
       "entity_col": "symbol",
       "spatial_x_col": "x",
       "spatial_y_col": "y",
@@ -133,7 +135,7 @@ namespace sugar {
         "close": 4,
         "volume": 5
       },
-      "time_kind": "Iso8601",
+      "time_kind": "ISO-8601",
       "value_cols": ["open", "high", "low", "close", "volume"],
       "primary_value_col": "close",
       "missing_default": { "kind": "NaN" },

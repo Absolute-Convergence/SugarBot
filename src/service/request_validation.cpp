@@ -14,6 +14,7 @@ namespace sugar::service {
         constexpr std::size_t kBaselineExhaustiveCandidatesPerMinute = 200000;
         constexpr std::size_t kBaselineCoarseFineCandidatesPerMinute = 20000;
         constexpr std::size_t kBaselineMonteCarloCandidatesPerMinute = 30000;
+        constexpr std::size_t kBaselinePosteriorCandidatesPerMinute = 10000;
 
         std::size_t estimate_payload_data_row_count(std::string_view csv_text) {
             if (csv_text.empty()) {
@@ -62,6 +63,18 @@ namespace sugar::service {
                     count = std::min(count, total_combinations);
                 }
                 return count;
+            }
+            if (sweep.engine == PlanSweepEngineKind::SuccessiveHalving) {
+                if (total_overflow) {
+                    return sweep.max_evals;
+                }
+                return std::min(total_combinations, sweep.max_evals);
+            }
+            if (sweep.engine == PlanSweepEngineKind::BayesianPosterior) {
+                if (total_overflow) {
+                    return sweep.max_evals;
+                }
+                return std::min(total_combinations, sweep.max_evals);
             }
 
             if (total_overflow) {
@@ -232,6 +245,10 @@ namespace sugar::service {
             ? kBaselineCoarseFineCandidatesPerMinute
             : engine == PlanSweepEngineKind::MonteCarlo
             ? kBaselineMonteCarloCandidatesPerMinute
+            : engine == PlanSweepEngineKind::SuccessiveHalving
+            ? kBaselineCoarseFineCandidatesPerMinute
+            : engine == PlanSweepEngineKind::BayesianPosterior
+            ? kBaselinePosteriorCandidatesPerMinute
             : kBaselineExhaustiveCandidatesPerMinute;
 
         const std::size_t scaled_rows =
@@ -443,6 +460,7 @@ namespace sugar::service {
                 err = "logic.json is not compatible with the resolved runtime target";
                 return false;
             }
+            append_plan_capability_snapshot(out.plan_report, out.runtime->run_manifest);
             err.clear();
             return true;
         }
@@ -490,6 +508,7 @@ namespace sugar::service {
                 err = "logic.json is not compatible with the resolved runtime target";
                 return false;
             }
+            append_plan_capability_snapshot(out.plan_report, out.runtime->run_manifest);
             err.clear();
             return true;
         }
@@ -531,6 +550,7 @@ namespace sugar::service {
             err = "logic.json is not compatible with the resolved observation world";
             return false;
         }
+        append_plan_capability_snapshot(out.plan_report, out.world.run_manifest);
 
         err.clear();
         return true;

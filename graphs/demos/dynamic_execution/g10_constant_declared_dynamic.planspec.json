@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "name": "g10_constant_route_declared_dynamic",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "entry_threshold", "op": "core.const", "params": { "value": 104.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "route_true", "op": "core.bool_const", "params": { "value": true } },
+    { "id": "fallback_entry", "op": "core.bool_const", "params": { "value": false } },
+    { "id": "selected_entry", "op": "cmp.gt", "args": ["c", "entry_threshold"] }
+  ],
+  "bindings": {
+    "entry_long": "fallback_entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  },
+  "execution": {
+    "mode": "declared_dynamic",
+    "subgraphs": [
+      { "id": "fallback", "nodes": ["fallback_entry"] },
+      { "id": "selected", "nodes": ["c", "selected_entry"] }
+    ],
+    "routes": [
+      {
+        "id": "constant_gate",
+        "condition": "route_true",
+        "cases": [
+          { "id": "selected_when_true", "when": true, "activate": ["selected"] }
+        ],
+        "fallback": ["fallback"]
+      }
+    ],
+    "outputs": {
+      "entry_long": "selected_entry"
+    },
+    "bounds": {
+      "max_routes": 1,
+      "max_active_subgraphs": 1,
+      "max_selected_outputs": 1,
+      "decision_sample_limit": 8
+    }
+  }
+}

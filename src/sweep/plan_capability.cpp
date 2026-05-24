@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <exception>
 #include <sstream>
 #include <unordered_map>
@@ -158,6 +159,14 @@ namespace sugar {
             return std::find(required.begin(), required.end(), actual) != required.end();
         }
 
+        bool topology_has_time_valid_edges(const TopologySpec& spec) {
+            return std::any_of(spec.static_edges.begin(),
+                spec.static_edges.end(),
+                [](const StaticGraphEdge& edge) {
+                    return edge.valid_from.has_value() || edge.valid_to.has_value();
+                });
+        }
+
         std::string join_strings(const std::vector<std::string>& values) {
             std::string out;
             for (std::size_t i = 0; i < values.size(); ++i) {
@@ -270,6 +279,36 @@ namespace sugar {
             return bundle.find_series_index(series) != static_cast<std::size_t>(-1);
         }
 
+        std::vector<std::string> list_runtime_column_names(const align::AlignedBundle& bundle) {
+            std::vector<std::string> names;
+            if (!bundle.schema) return names;
+            const auto& columns = bundle.schema->columns();
+            names.reserve(columns.size());
+            for (std::size_t i = 0; i < columns.size(); ++i) {
+                names.push_back(columns.name_by_id(ColumnId{ static_cast<std::uint32_t>(i) }));
+            }
+            return names;
+        }
+
+        std::string available_runtime_columns_suffix(const align::AlignedBundle& bundle) {
+            const auto columns = list_runtime_column_names(bundle);
+            if (columns.empty()) return {};
+            return " (available columns: " + join_strings(columns) + ")";
+        }
+
+        std::string available_runtime_series_suffix(const align::AlignedBundle& bundle) {
+            if (bundle.series_keys.empty()) return {};
+            return " (available series: " + join_strings(bundle.series_keys) + ")";
+        }
+
+        std::string unknown_operator_detail(std::string_view op_name) {
+            if (op_name == "core.param") {
+                return "core.param; use core.const with params.value={\"ref\":\"param_name\"} "
+                    "to expose a PlanSpec or sweep parameter as a numeric node";
+            }
+            return std::string(op_name);
+        }
+
         bool validate_runtime_token(const std::string& token,
             const RuntimeDiagnosisContext& runtime_ctx,
             std::vector<PlanCapabilityReason>& reasons) {
@@ -319,7 +358,7 @@ namespace sugar {
                     PlanCapabilityReasonCode::MissingRuntimeSeries,
                     AxisKind::Time,
                     false,
-                    series);
+                    series + available_runtime_series_suffix(bundle));
                 return false;
             }
 
@@ -329,7 +368,7 @@ namespace sugar {
                     PlanCapabilityReasonCode::MissingRuntimeColumn,
                     AxisKind::Time,
                     false,
-                    col_name);
+                    col_name + available_runtime_columns_suffix(bundle));
                 return false;
             }
 
@@ -339,7 +378,7 @@ namespace sugar {
                     PlanCapabilityReasonCode::MissingRuntimeColumn,
                     AxisKind::Time,
                     false,
-                    series + ":" + col_name);
+                    series + ":" + col_name + available_runtime_columns_suffix(bundle));
                 return false;
             }
 
@@ -423,6 +462,23 @@ namespace sugar {
                 validate_runtime_token_param(node, "a", plan_params, runtime_ctx, reasons);
                 return;
             }
+        }
+
+        void validate_precomputed_numeric_leaf(
+            const NodeSpec& node,
+            const ParamMap& plan_params,
+            const RuntimeDiagnosisContext& runtime_ctx,
+            std::vector<PlanCapabilityReason>& reasons) {
+            if (runtime_ctx.runtime == nullptr || !runtime_ctx.runtime->aligned_bundle) {
+                return;
+            }
+            if (normalize_plan_spec_runtime_op(node.op) != "core.precomputed_num") {
+                return;
+            }
+            if (node.params.find("name") == node.params.end()) {
+                return;
+            }
+            validate_runtime_token_param(node, "name", plan_params, runtime_ctx, reasons);
         }
 
         void validate_standard_params(const NodeSpec& node,
@@ -574,6 +630,15 @@ namespace sugar {
                     detail);
             }
 
+            if (topology_has_time_valid_edges(*topology) && !facts.has_time_axis) {
+                add_reason(reasons,
+                    PlanCapabilityReasonCode::TopologyResolutionFailed,
+                    AxisKind::Time,
+                    false,
+                    "topology '" + topology->name +
+                        "' has time-valid edges; add layout `time_col`/`time_kind` so topology queries can bind graph time");
+            }
+
             if (runtime_ctx.runtime == nullptr ||
                 !runtime_ctx.runtime->aligned_bundle) {
                 return;
@@ -626,7 +691,11 @@ namespace sugar {
             std::vector<std::string>& used_topology_names) {
             const auto* op = registry.get(out.op_name);
             if (!op) {
-                add_reason(out.reasons, PlanCapabilityReasonCode::UnknownOperator);
+                add_reason(out.reasons,
+                    PlanCapabilityReasonCode::UnknownOperator,
+                    AxisKind::Time,
+                    false,
+                    unknown_operator_detail(out.original_op_name.empty() ? out.op_name : out.original_op_name));
                 out.status = PlanCapabilityStatus::Invalid;
                 return;
             }
@@ -708,6 +777,7 @@ namespace sugar {
             }
             else {
                 validate_standard_params(node, *op, plan_params, out.reasons);
+                validate_precomputed_numeric_leaf(node, plan_params, runtime_ctx, out.reasons);
                 validate_node_args(node, *op, numeric_lookup, bool_lookup, out.reasons);
             }
 

@@ -3,12 +3,15 @@
 #include "plan_compiler_internal.h"
 #include "engine/program_evaluator.h"
 #include "strategy_plan_internal.h"
+#include "sweep/dynamic_execution.h"
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 
 namespace sugar {
 
@@ -32,6 +35,46 @@ namespace sugar {
             }
             oss << " -> " << id;
             return oss.str();
+        }
+
+        std::string available_leaf_key_hint(const CompileEnvStorage* storage, bool numeric) {
+            if (!storage) return {};
+            std::vector<std::string> keys;
+            if (numeric) {
+                keys.reserve(storage->numeric_leaf_values.size());
+                for (const auto& kv : storage->numeric_leaf_values) {
+                    keys.push_back(kv.first);
+                }
+            }
+            else {
+                keys.reserve(storage->bool_leaf_values.size());
+                for (const auto& kv : storage->bool_leaf_values) {
+                    keys.push_back(kv.first);
+                }
+            }
+            if (keys.empty()) return {};
+            std::sort(keys.begin(), keys.end());
+            constexpr std::size_t kLimit = 8;
+            std::ostringstream oss;
+            oss << " (available: ";
+            const std::size_t count = std::min(keys.size(), kLimit);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (i) oss << ", ";
+                oss << keys[i];
+            }
+            if (keys.size() > kLimit) {
+                oss << ", ...";
+            }
+            oss << ")";
+            return oss.str();
+        }
+
+        std::string unknown_operator_compile_hint(const std::string& op_name) {
+            if (op_name == "core.param") {
+                return "; use core.const with params.value={\"ref\":\"param_name\"} "
+                    "to expose a PlanSpec or sweep parameter as a numeric node";
+            }
+            return {};
         }
 
         class VisitGuard {
@@ -111,14 +154,17 @@ namespace sugar {
             if (op.spec.name == "core.precomputed_num") {
                 const auto key = as_str(out, "name").value_or(std::string{});
                 if (!storage || storage->numeric_leaf_values.find(key) == storage->numeric_leaf_values.end()) {
-                    err = "node '" + node_id + "': precomputed numeric leaf '" + key + "' not found in CompileEnv";
+                    err = "node '" + node_id + "': precomputed numeric leaf '" + key +
+                        "' not found in CompileEnv" + available_leaf_key_hint(storage, true) +
+                        "; for CSV columns use the exact column name from the layout's value_cols or an explicit series:column name";
                     return false;
                 }
             }
             if (op.spec.name == "core.precomputed_bool") {
                 const auto key = as_str(out, "name").value_or(std::string{});
                 if (!storage || storage->bool_leaf_values.find(key) == storage->bool_leaf_values.end()) {
-                    err = "node '" + node_id + "': precomputed bool leaf '" + key + "' not found in CompileEnv";
+                    err = "node '" + node_id + "': precomputed bool leaf '" + key +
+                        "' not found in CompileEnv" + available_leaf_key_hint(storage, false);
                     return false;
                 }
             }
@@ -141,7 +187,8 @@ namespace sugar {
             const NodeSpec& node = *nit->second;
             const OpEntry* op = ctx.reg.get(node.op);
             if (!op) {
-                err = "Unknown op '" + node.op + "' for numeric node '" + id + "'";
+                err = "Unknown op '" + node.op + "' for numeric node '" + id + "'" +
+                    unknown_operator_compile_hint(node.op);
                 return false;
             }
             if (op->spec.op_type != OpType::Numeric) {
@@ -205,7 +252,8 @@ namespace sugar {
             const NodeSpec& node = *bit->second;
             const OpEntry* op = ctx.reg.get(node.op);
             if (!op) {
-                err = "Unknown op '" + node.op + "' for bool node '" + id + "'";
+                err = "Unknown op '" + node.op + "' for bool node '" + id + "'" +
+                    unknown_operator_compile_hint(node.op);
                 return false;
             }
             if (op->spec.op_type != OpType::Bool) {
@@ -258,6 +306,355 @@ namespace sugar {
                 return true;
             }
             return build_bool_template(ctx, id, dst, err);
+        }
+
+        bool declared_dynamic_execution_enabled(const PlanSpec& spec) {
+            return spec.execution.has_value() &&
+                spec.execution->mode == PlanExecutionMode::DeclaredDynamic;
+        }
+
+        std::string dynamic_validation_issues_text(
+            const PlanDynamicExecutionValidationReport& report) {
+            std::ostringstream oss;
+            for (std::size_t i = 0; i < report.issues.size(); ++i) {
+                const auto& issue = report.issues[i];
+                if (i) oss << "; ";
+                oss << plan_dynamic_execution_validation_code_name(issue.code);
+                if (!issue.subject.empty()) {
+                    oss << "(" << issue.subject << ")";
+                }
+                if (!issue.detail.empty()) {
+                    oss << ": " << issue.detail;
+                }
+            }
+            return oss.str();
+        }
+
+        bool validate_declared_dynamic_execution_for_compile(
+            const PlanSpec& spec,
+            std::string& err) {
+            const auto report = validate_plan_dynamic_execution(spec);
+            if (report.valid) {
+                return true;
+            }
+            err = "declared_dynamic execution validation failed: " +
+                dynamic_validation_issues_text(report);
+            return false;
+        }
+
+        bool build_any_template(
+            TemplateBuildCtx& ctx,
+            const std::string& id,
+            CompiledDynamicNodeRef& out,
+            std::string& err) {
+            if (ctx.num_nodes.find(id) != ctx.num_nodes.end()) {
+                std::size_t slot = 0;
+                if (!build_numeric_template(ctx, id, slot, err)) {
+                    return false;
+                }
+                out = CompiledDynamicNodeRef{ id, ValueType::Num, slot };
+                return true;
+            }
+            if (ctx.bool_nodes.find(id) != ctx.bool_nodes.end()) {
+                std::size_t slot = 0;
+                if (!build_bool_template(ctx, id, slot, err)) {
+                    return false;
+                }
+                out = CompiledDynamicNodeRef{ id, ValueType::Bool, slot };
+                return true;
+            }
+            err = "Unknown dynamic execution node id '" + id + "'";
+            return false;
+        }
+
+        std::optional<bool> literal_bool_const_value(
+            const TemplateBuildCtx& ctx,
+            const std::string& id) {
+            auto it = ctx.bool_nodes.find(id);
+            if (it == ctx.bool_nodes.end() || !it->second) {
+                return std::nullopt;
+            }
+            const NodeSpec& node = *it->second;
+            if (node.op != "core.bool_const") {
+                return std::nullopt;
+            }
+            auto value = node.params.find("value");
+            if (value == node.params.end()) {
+                return std::nullopt;
+            }
+            if (const auto* b = std::get_if<bool>(&value->second)) {
+                return *b;
+            }
+            return std::nullopt;
+        }
+
+        bool append_subgraph_indices(
+            const std::vector<std::string>& ids,
+            const std::unordered_map<std::string, std::size_t>& subgraph_indices,
+            std::vector<std::size_t>& out,
+            std::string& err) {
+            out.clear();
+            out.reserve(ids.size());
+            for (const auto& id : ids) {
+                const auto it = subgraph_indices.find(id);
+                if (it == subgraph_indices.end()) {
+                    err = "declared_dynamic execution references unknown subgraph '" + id + "'";
+                    return false;
+                }
+                out.push_back(it->second);
+            }
+            return true;
+        }
+
+        void collect_subgraph_dependency_closure(
+            std::size_t index,
+            const std::vector<CompiledDynamicSubgraph>& subgraphs,
+            std::unordered_set<std::size_t>& seen,
+            std::vector<std::size_t>& out) {
+            if (index >= subgraphs.size()) {
+                return;
+            }
+            for (const auto dep : subgraphs[index].depends_on_subgraphs) {
+                if (!seen.insert(dep).second) {
+                    continue;
+                }
+                collect_subgraph_dependency_closure(dep, subgraphs, seen, out);
+                out.push_back(dep);
+            }
+        }
+
+        const std::string* find_execution_output_node(
+            const PlanExecutionSpec& execution,
+            const std::string& id) {
+            for (const auto& output : execution.outputs) {
+                if (output.id == id) {
+                    return &output.node;
+                }
+            }
+            return nullptr;
+        }
+
+        std::size_t find_dynamic_node_owner(
+            const CompiledDynamicExecutionMetadata& metadata,
+            const std::string& node_id) {
+            for (std::size_t subgraph_index = 0;
+                 subgraph_index < metadata.subgraphs.size();
+                 ++subgraph_index) {
+                const auto& subgraph = metadata.subgraphs[subgraph_index];
+                const auto found = std::find_if(
+                    subgraph.nodes.begin(),
+                    subgraph.nodes.end(),
+                    [&](const auto& node) {
+                        return node.node_id == node_id;
+                    });
+                if (found != subgraph.nodes.end()) {
+                    return subgraph_index;
+                }
+            }
+            return kInvalidProgramSlot;
+        }
+
+        bool compile_dynamic_execution_metadata(
+            TemplateBuildCtx& ctx,
+            const PlanExecutionSpec& execution,
+            CompiledProgram& program,
+            std::string& err) {
+            CompiledDynamicExecutionMetadata metadata{};
+            metadata.mode = CompiledDynamicExecutionMode::DeclaredDynamic;
+            metadata.enabled = true;
+            metadata.constant_route_only = true;
+            metadata.max_active_subgraphs = execution.bounds.max_active_subgraphs;
+            metadata.decision_sample_limit = execution.bounds.decision_sample_limit;
+
+            std::unordered_map<std::string, std::size_t> subgraph_indices;
+            subgraph_indices.reserve(execution.subgraphs.size());
+            for (std::size_t i = 0; i < execution.subgraphs.size(); ++i) {
+                subgraph_indices.emplace(execution.subgraphs[i].id, i);
+            }
+
+            metadata.subgraphs.reserve(execution.subgraphs.size());
+            for (const auto& subgraph : execution.subgraphs) {
+                CompiledDynamicSubgraph compiled{};
+                compiled.id = subgraph.id;
+                compiled.nodes.reserve(subgraph.nodes.size());
+                for (const auto& node_id : subgraph.nodes) {
+                    CompiledDynamicNodeRef ref{};
+                    if (!build_any_template(ctx, node_id, ref, err)) {
+                        err = "declared_dynamic subgraph '" + subgraph.id + "': " + err;
+                        return false;
+                    }
+                    compiled.nodes.push_back(std::move(ref));
+                }
+                metadata.subgraphs.push_back(std::move(compiled));
+            }
+
+            for (std::size_t i = 0; i < execution.subgraphs.size(); ++i) {
+                if (!append_subgraph_indices(
+                        execution.subgraphs[i].depends_on,
+                        subgraph_indices,
+                        metadata.subgraphs[i].depends_on_subgraphs,
+                        err)) {
+                    err = "declared_dynamic subgraph '" + execution.subgraphs[i].id + "': " + err;
+                    return false;
+                }
+            }
+            for (std::size_t i = 0; i < metadata.subgraphs.size(); ++i) {
+                std::unordered_set<std::size_t> seen;
+                collect_subgraph_dependency_closure(
+                    i,
+                    metadata.subgraphs,
+                    seen,
+                    metadata.subgraphs[i].dependency_closure_subgraphs);
+            }
+
+            metadata.routes.reserve(execution.routes.size());
+            for (const auto& route : execution.routes) {
+                CompiledDynamicRoute compiled{};
+                compiled.id = route.id;
+                compiled.condition_node_id = route.condition;
+                if (!build_bool_template(ctx, route.condition, compiled.condition_slot, err)) {
+                    err = "declared_dynamic route '" + route.id + "': " + err;
+                    return false;
+                }
+                const auto constant_condition =
+                    literal_bool_const_value(ctx, route.condition);
+                if (constant_condition.has_value()) {
+                    compiled.condition_is_constant = true;
+                    compiled.constant_condition_value = *constant_condition;
+                }
+                else {
+                    metadata.constant_route_only = false;
+                }
+
+                compiled.cases.reserve(route.cases.size());
+                const std::vector<std::string>* selected_subgraphs =
+                    &route.fallback_subgraphs;
+                for (const auto& route_case : route.cases) {
+                    CompiledDynamicRouteCase compiled_case{};
+                    compiled_case.id = route_case.id;
+                    compiled_case.when = route_case.when;
+                    if (!append_subgraph_indices(
+                            route_case.activate_subgraphs,
+                            subgraph_indices,
+                            compiled_case.activate_subgraphs,
+                            err)) {
+                        err = "declared_dynamic route case '" + route_case.id + "': " + err;
+                        return false;
+                    }
+                    if (constant_condition.has_value() &&
+                        route_case.when == *constant_condition &&
+                        selected_subgraphs == &route.fallback_subgraphs) {
+                        selected_subgraphs = &route_case.activate_subgraphs;
+                    }
+                    compiled.cases.push_back(std::move(compiled_case));
+                }
+                if (!append_subgraph_indices(
+                        route.fallback_subgraphs,
+                        subgraph_indices,
+                        compiled.fallback_subgraphs,
+                        err)) {
+                    err = "declared_dynamic route '" + route.id + "': " + err;
+                    return false;
+                }
+                if (constant_condition.has_value()) {
+                    if (!append_subgraph_indices(
+                            *selected_subgraphs,
+                            subgraph_indices,
+                            compiled.selected_subgraphs,
+                            err)) {
+                        err = "declared_dynamic route '" + route.id + "': " + err;
+                        return false;
+                    }
+                }
+                metadata.routes.push_back(std::move(compiled));
+            }
+
+            metadata.outputs.reserve(execution.outputs.size());
+            for (const auto& output : execution.outputs) {
+                CompiledDynamicNodeRef ref{};
+                if (!build_any_template(ctx, output.node, ref, err)) {
+                    err = "declared_dynamic output '" + output.id + "': " + err;
+                    return false;
+                }
+                const std::size_t owning_subgraph =
+                    find_dynamic_node_owner(metadata, output.node);
+                if (owning_subgraph == kInvalidProgramSlot) {
+                    err = "declared_dynamic output '" + output.id +
+                        "' references node '" + output.node +
+                        "' without a declared owning subgraph";
+                    return false;
+                }
+                metadata.outputs.push_back(CompiledDynamicOutput{
+                    output.id,
+                    output.node,
+                    ProgramInputRef{ ref.type, ref.slot },
+                    owning_subgraph,
+                });
+            }
+
+            program.dynamic_execution = std::move(metadata);
+            return true;
+        }
+
+        bool bind_static_strategy_surface(
+            TemplateBuildCtx& ctx,
+            CompiledProgram& program,
+            std::string& err) {
+            if (!bind_bool_template(ctx, ctx.spec.bind.entry_long, program.entry_long_slot, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.exit_long, program.exit_long_slot, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.entry_short, program.entry_short_slot, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.exit_short, program.exit_short_slot, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.allow_trade, program.allow_trade_slot, err)) return false;
+            return true;
+        }
+
+        bool build_declared_dynamic_binding_surface(
+            TemplateBuildCtx& ctx,
+            std::string& err) {
+            std::size_t ignored = kInvalidProgramSlot;
+            if (!bind_bool_template(ctx, ctx.spec.bind.entry_long, ignored, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.exit_long, ignored, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.entry_short, ignored, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.exit_short, ignored, err)) return false;
+            if (!bind_bool_template(ctx, ctx.spec.bind.allow_trade, ignored, err)) return false;
+            return true;
+        }
+
+        bool bind_declared_dynamic_output(
+            TemplateBuildCtx& ctx,
+            const PlanExecutionSpec& execution,
+            const std::string& role,
+            const std::string& role_binding,
+            std::size_t& dst,
+            std::string& err) {
+            if (role_binding.empty()) {
+                dst = kInvalidProgramSlot;
+                return true;
+            }
+            const std::string* output_node = find_execution_output_node(execution, role);
+            if (!output_node) {
+                err = "declared_dynamic execution output missing for active strategy binding '" + role + "'";
+                return false;
+            }
+            if (ctx.bool_nodes.find(*output_node) == ctx.bool_nodes.end()) {
+                err = "declared_dynamic execution output '" + role +
+                    "' must reference a bool node; got '" + *output_node + "'";
+                return false;
+            }
+            return build_bool_template(ctx, *output_node, dst, err);
+        }
+
+        bool bind_declared_dynamic_strategy_outputs(
+            TemplateBuildCtx& ctx,
+            const PlanExecutionSpec& execution,
+            CompiledProgram& program,
+            std::string& err) {
+            if (!bind_declared_dynamic_output(ctx, execution, "entry_long", ctx.spec.bind.entry_long, program.entry_long_slot, err)) return false;
+            if (!bind_declared_dynamic_output(ctx, execution, "exit_long", ctx.spec.bind.exit_long, program.exit_long_slot, err)) return false;
+            if (!bind_declared_dynamic_output(ctx, execution, "entry_short", ctx.spec.bind.entry_short, program.entry_short_slot, err)) return false;
+            if (!bind_declared_dynamic_output(ctx, execution, "exit_short", ctx.spec.bind.exit_short, program.exit_short_slot, err)) return false;
+            if (!bind_declared_dynamic_output(ctx, execution, "allow_trade", ctx.spec.bind.allow_trade, program.allow_trade_slot, err)) return false;
+            return true;
         }
 
         void initialize_plan_template(
@@ -315,6 +712,11 @@ namespace sugar {
             bump(program.entry_short_slot);
             bump(program.exit_short_slot);
             bump(program.allow_trade_slot);
+            if (program.dynamic_execution.enabled) {
+                for (const auto& route : program.dynamic_execution.routes) {
+                    bump(route.condition_slot);
+                }
+            }
             return first_valid;
         }
 
@@ -331,11 +733,15 @@ namespace sugar {
         TemplateBuildCtx ctx{ spec, registry, out };
         if (!seed_template_ctx(ctx, err)) return false;
 
-        if (!bind_bool_template(ctx, spec.bind.entry_long, out.program.entry_long_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.exit_long, out.program.exit_long_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.entry_short, out.program.entry_short_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.exit_short, out.program.exit_short_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.allow_trade, out.program.allow_trade_slot, err)) return false;
+        if (declared_dynamic_execution_enabled(spec)) {
+            if (!validate_declared_dynamic_execution_for_compile(spec, err)) return false;
+            if (!build_declared_dynamic_binding_surface(ctx, err)) return false;
+            if (!compile_dynamic_execution_metadata(ctx, *spec.execution, out.program, err)) return false;
+            if (!bind_declared_dynamic_strategy_outputs(ctx, *spec.execution, out.program, err)) return false;
+            return true;
+        }
+
+        if (!bind_static_strategy_surface(ctx, out.program, err)) return false;
 
         return true;
     }
@@ -362,11 +768,15 @@ namespace sugar {
             numeric_outputs.push_back(NamedNumericOutput{ node.id, output_slot });
         }
 
-        if (!bind_bool_template(ctx, spec.bind.entry_long, out.program.entry_long_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.exit_long, out.program.exit_long_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.entry_short, out.program.entry_short_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.exit_short, out.program.exit_short_slot, err)) return false;
-        if (!bind_bool_template(ctx, spec.bind.allow_trade, out.program.allow_trade_slot, err)) return false;
+        if (declared_dynamic_execution_enabled(spec)) {
+            if (!validate_declared_dynamic_execution_for_compile(spec, err)) return false;
+            if (!build_declared_dynamic_binding_surface(ctx, err)) return false;
+            if (!compile_dynamic_execution_metadata(ctx, *spec.execution, out.program, err)) return false;
+            if (!bind_declared_dynamic_strategy_outputs(ctx, *spec.execution, out.program, err)) return false;
+            return true;
+        }
+
+        if (!bind_static_strategy_surface(ctx, out.program, err)) return false;
 
         return true;
     }
@@ -402,6 +812,7 @@ namespace sugar {
         storage->program.entry_short_slot = plan_template.program.entry_short_slot;
         storage->program.exit_short_slot = plan_template.program.exit_short_slot;
         storage->program.allow_trade_slot = plan_template.program.allow_trade_slot;
+        storage->program.dynamic_execution = plan_template.program.dynamic_execution;
         storage->program.numeric_nodes.reserve(plan_template.numeric_nodes.size());
         storage->program.bool_nodes.reserve(plan_template.bool_nodes.size());
 

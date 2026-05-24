@@ -8,6 +8,16 @@ namespace sugar::app {
 
     int run_help_command(std::ostream& out);
 
+    int run_onramp_command(std::ostream& out);
+
+    int run_help_diagnostics_command(std::ostream& out);
+
+    int run_help_reports_command(std::ostream& out);
+
+    int run_scaffold_layout_command(const AppCommand& cmd,
+        std::ostream& out,
+        std::ostream& err);
+
     int run_obs_report_command(const AppCommand& cmd,
         std::ostream& out,
         std::ostream& err);

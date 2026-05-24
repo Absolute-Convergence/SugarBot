@@ -1,9 +1,10 @@
 #include "commands/app_commands.h"
 
 #include <algorithm>
-#include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -12,10 +13,11 @@
 
 #include "app_support/feature_dump.h"
 #include "contracts/contract_suite.h"
-#include "ops/op_registry.h"
+#include "ingest/utils.h"
+#include "sweep/evaluation_report.h"
+#include "sweep/dynamic_execution.h"
 #include "sweep/panel_runner.h"
 #include "sweep/strategy_menu.h"
-#include "ingest/utils.h"
 
 namespace {
 
@@ -150,134 +152,42 @@ namespace {
         return true;
     }
 
-    void print_layout_contract_brief(std::ostream& out) {
-        out
-            << "Layout contract:\n"
-            << "  - `layout.json` can be either a raw `DataSpec` object or a wrapped `LayoutSpec` with an `ingest` object.\n"
-            << "  - `data_spec` is not a supported wrapper key; use the raw object directly or wrap it under `ingest`.\n"
-            << "  - The same ingest schema is used by `run`, `--obs-report`, `--plan-report`, `--feature-dump`, `--prep-dump`, `--align-dump`, `--run-panel`, and interactive `--data-spec`.\n"
-            << "  - Need at least one observation axis: `time_col` + `time_kind`, or both `spatial_x_col` + `spatial_y_col`.\n"
-            << "  - Valid `time_kind`: `YyyyMmDd`, `Iso8601`, `YearQuarter`, `YearMonth`, `Index`.\n"
-            << "  - Run `sugarbot --dump-layout` for required fields, defaults, enum values, and worked examples.\n";
+    bool contains_text(const std::string& text, std::string_view needle) {
+        return text.find(needle) != std::string::npos;
     }
 
-    void print_layout_contract_dump(std::ostream& out) {
-        out
-            << "SugarBot Layout Contract\n"
-            << "\n"
-            << "`layout.json` for `sugarbot run <layout.json> <logic.json> <data.csv>` is not a special app wrapper.\n"
-            << "Use one of these two supported shapes:\n"
-            << "  1. Raw `DataSpec` object at the JSON root.\n"
-            << "  2. Wrapped `LayoutSpec` object with `ingest`, optional `alignment`, and optional `topologies`.\n"
-            << "\n"
-            << "`data_spec` is not a supported wrapper key.\n"
-            << "Do not use `{ \"data_spec\": { ... } }`.\n"
-            << "If you want a wrapper, the key is `ingest`.\n"
-            << "\n"
-            << "The same ingest contract is accepted by:\n"
-            << "  - `run`, `--obs-report`, `--plan-report`, `--feature-dump`\n"
-            << "  - `--prep-dump`, `--align-dump`, `--run-panel`\n"
-            << "  - interactive `--data-spec`\n"
-            << "\n"
-            << "Required and conditional fields\n"
-            << "  - Need at least one observation axis:\n"
-            << "    - temporal: `time_col` plus `time_kind`\n"
-            << "    - spatial: both `spatial_x_col` and `spatial_y_col`\n"
-            << "  - `value_cols` is required unless an explicit `input_profile` fills it.\n"
-            << "  - `primary_value_col` is required unless an explicit `input_profile` fills it.\n"
-            << "  - If `input_profile` is `auto` and `time_col` is present, `time_kind` is required.\n"
-            << "  - If `time_col` is omitted, `time_kind` must also be omitted.\n"
-            << "  - `columns_by_index` is required when `header_policy=HeaderlessPositional`.\n"
-            << "  - `entity_col` is optional, but it declares multi-entity or panel inputs; omit it for row-wise spatial neighborhoods.\n"
-            << "  - `rename` is optional and is used to normalize incoming CSV header names.\n"
-            << "  - `missing_tokens` is optional. Blank cells are still treated as missing even if this list is empty.\n"
-            << "\n"
-            << "Defaults when omitted\n"
-            << "  - `input_profile`: `auto`\n"
-            << "  - `header_policy`: `RequiredHeaders`\n"
-            << "  - `sort_by_time`: `true`\n"
-            << "  - `dedupe`: `Error`\n"
-            << "  - `missing_default`: `{ \"kind\": \"NaN\" }`\n"
-            << "  - `alignment_calendar`: `Intersection`\n"
-            << "  - `alignment_non_temporal_multi_series`: `Reject`\n"
-            << "  - `entity_col`, `spatial_x_col`, `spatial_y_col`, `rename`, `columns_by_index`: omitted\n"
-            << "  - `missing_tokens`: no named tokens beyond blank-cell handling\n"
-            << "\n"
-            << "Valid enum values\n"
-            << "  - `input_profile`: `auto`, `legacy_ohlcv_date`, `iso_ohlcv_time`\n"
-            << "  - `header_policy`: `RequiredHeaders`, `OptionalHeaders`, `HeaderlessPositional`\n"
-            << "  - `time_kind`:\n"
-            << "    - `YyyyMmDd`: date-only values such as `20211014`, `2021-10-14`, or `2021/10/14`\n"
-            << "    - `Iso8601`: timestamps such as `2024-10-09T01:00:00-06:00` or `2024-10-09T07:00:00Z`\n"
-            << "    - `YearQuarter`: `2024Q1` or `2024-Q1`\n"
-            << "    - `YearMonth`: `202410` or `2024-10`\n"
-            << "    - `Index`: integer row keys; blank values fall back to the row index\n"
-            << "  - `dedupe`: `Error`, `First`, `Last`\n"
-            << "  - `missing_default.kind`: `DropRow`, `NaN`, `Ffill`, `Const`\n"
-            << "  - `alignment_calendar`: `Intersection`, `Union`\n"
-            << "  - `alignment_non_temporal_multi_series`: `Reject`, `EqualLengthRowDomain`\n"
-            << "\n"
-            << "Input profile presets\n"
-            << "  - `legacy_ohlcv_date` fills `time_col=\"date\"`, `time_kind=\"YyyyMmDd\"`,\n"
-            << "    `value_cols=[\"open\",\"high\",\"low\",\"close\",\"volume\"]`, `primary_value_col=\"close\"`,\n"
-            << "    and a basic OHLCV header rename map.\n"
-            << "  - `iso_ohlcv_time` fills `time_col=\"time\"`, `time_kind=\"Iso8601\"`,\n"
-            << "    `value_cols=[\"open\",\"high\",\"low\",\"close\",\"volume\"]`, `primary_value_col=\"close\"`,\n"
-            << "    and a timestamp-oriented OHLCV header rename map.\n"
-            << "  - `auto` does not fill those observation fields for you.\n"
-            << "\n"
-            << "Example: raw single-series `layout.json`\n"
-            << "{\n"
-            << "  \"time_col\": \"date\",\n"
-            << "  \"time_kind\": \"YyyyMmDd\",\n"
-            << "  \"header_policy\": \"RequiredHeaders\",\n"
-            << "  \"value_cols\": [\"close\"],\n"
-            << "  \"primary_value_col\": \"close\",\n"
-            << "  \"missing_tokens\": [\"\", \"NA\", \"null\", \"nan\", \"NaN\"],\n"
-            << "  \"missing_default\": { \"kind\": \"NaN\" },\n"
-            << "  \"sort_by_time\": true,\n"
-            << "  \"dedupe\": \"Error\"\n"
-            << "}\n"
-            << "\n"
-            << "Example: raw multi-entity temporal `layout.json`\n"
-            << "{\n"
-            << "  \"time_col\": \"date\",\n"
-            << "  \"time_kind\": \"YyyyMmDd\",\n"
-            << "  \"entity_col\": \"symbol\",\n"
-            << "  \"value_cols\": [\"close\", \"volume\"],\n"
-            << "  \"primary_value_col\": \"close\",\n"
-            << "  \"alignment_calendar\": \"Intersection\",\n"
-            << "  \"alignment_non_temporal_multi_series\": \"Reject\"\n"
-            << "}\n"
-            << "\n"
-            << "Example: raw row-wise spatial-only `layout.json`\n"
-            << "{\n"
-            << "  \"spatial_x_col\": \"x\",\n"
-            << "  \"spatial_y_col\": \"y\",\n"
-            << "  \"value_cols\": [\"price_index\"],\n"
-            << "  \"primary_value_col\": \"price_index\"\n"
-            << "}\n"
-            << "Note: spatial/locality support is foundational and narrow. Add `entity_col` only when you intentionally want panel-shaped spatial data; non-temporal multi-series alignment then needs `alignment_non_temporal_multi_series=EqualLengthRowDomain`.\n"
-            << "\n"
-            << "Example: wrapped `LayoutSpec` with `ingest`\n"
-            << "{\n"
-            << "  \"ingest\": {\n"
-            << "    \"time_col\": \"date\",\n"
-            << "    \"time_kind\": \"YyyyMmDd\",\n"
-            << "    \"value_cols\": [\"close\"],\n"
-            << "    \"primary_value_col\": \"close\"\n"
-            << "  },\n"
-            << "  \"alignment\": {\n"
-            << "    \"calendar\": \"Intersection\",\n"
-            << "    \"non_temporal_multi_series\": \"Reject\"\n"
-            << "  },\n"
-            << "  \"topologies\": []\n"
-            << "}\n"
-            << "\n"
-            << "Validation workflow\n"
-            << "  1. `sugarbot --obs-report layout.json data.csv`\n"
-            << "  2. `sugarbot --plan-report layout.json logic.json data.csv`\n"
-            << "  3. `sugarbot run layout.json logic.json data.csv`\n";
+    std::string classify_layout_load_error(const std::string& message) {
+        if (contains_text(message, "time_kind")) {
+            return "dataspec.invalid_time_kind";
+        }
+        if (contains_text(message, "Failed to open file")) {
+            return "layout.open_failed";
+        }
+        if (contains_text(message, "line ") && contains_text(message, "col ")) {
+            return "layout.parse_failed";
+        }
+        if (contains_text(message, "`data_spec` is not a supported wrapper key")) {
+            return "layout.unsupported_wrapper";
+        }
+        if (contains_text(message, "layout.ingest:")) {
+            return "dataspec.invalid";
+        }
+        return "layout.invalid";
+    }
+
+    std::string classify_observation_world_error(
+        const sugar::ResolvedObservationWorld& world,
+        const std::string& message) {
+        if (!world.run_manifest.preprocess.preprocess_error_code.empty()) {
+            return world.run_manifest.preprocess.preprocess_error_code;
+        }
+        if (contains_text(message, "alignment failed")) {
+            return "alignment.failed";
+        }
+        if (contains_text(message, "layout topology registration failed")) {
+            return "layout.topology_registration_failed";
+        }
+        return "observation_world.invalid";
     }
 
     const char* valid_run_scope_values_text() {
@@ -287,6 +197,36 @@ namespace {
     std::string missing_run_scope_hint_text() {
         return std::string("multi-entity runs require logic.run.scope in logic.json; ") +
             valid_run_scope_values_text();
+    }
+
+    void print_obs_report_next_step(
+        std::ostream& err,
+        const sugar::app::AppCommand& cmd) {
+        err << "Next step: run `sugarbot --obs-report "
+            << cmd.run.layout_path << " " << cmd.run.csv_path
+            << "` to isolate CSV/layout ingest and observation-world issues.\n";
+    }
+
+    void print_plan_report_next_step(
+        std::ostream& err,
+        const sugar::app::AppCommand& cmd) {
+        err << "Next step: run `sugarbot --plan-report "
+            << cmd.run.layout_path << " " << cmd.run.logic_path << " " << cmd.run.csv_path
+            << "` to isolate PlanSpec bindings, operators, run scope, and capability mismatches.\n";
+    }
+
+    void print_align_dump_next_step(
+        std::ostream& err,
+        const sugar::app::AppCommand& cmd,
+        const sugar::LayoutSpec& layout) {
+        const std::string series_key_col =
+            layout.ingest.entity_col.has_value() && !layout.ingest.entity_col->empty()
+            ? *layout.ingest.entity_col
+            : std::string("<series-key-col>");
+        err << "Next step: run `sugarbot --align-dump "
+            << cmd.run.layout_path << " " << cmd.run.csv_path
+            << " --series-key-col " << series_key_col
+            << "` to inspect aligned series/entity lanes.\n";
     }
 
     void print_observation_stage_header(std::ostream& out, const char* label) {
@@ -309,264 +249,97 @@ namespace {
         print_observation_stage_header(out, "[2/2] Post-binding runtime assessment");
     }
 
-    void print_plan_contract_brief(std::ostream& out) {
-        out
-            << "Plan contract:\n"
-            << "  - `logic.json` is a raw `PlanSpec` object.\n"
-            << "  - `--dump-plan` documents `run`, `sweep`, `exec_settings`, node wiring, and binding rules.\n"
-            << "  - Use `--align-dump` before authoring `ms.*` or ranked plans so you know the aligned `series_count`, keys, and missingness.\n"
-            << "  - `ms.*` ops are cross-series tools; if you want same-series arithmetic such as `close - open`, use `ts.sub` instead of `ms.diff`.\n";
-    }
+    void print_plan_execution_validation_report(
+        const sugar::PlanSpec& spec,
+        const sugar::PlanDynamicExecutionValidationReport& report,
+        std::ostream& out,
+        std::string_view label) {
+        if (!report.execution_section_present) {
+            return;
+        }
 
-    void print_plan_contract_dump(std::ostream& out) {
-        out
-            << "SugarBot Plan Contract\n"
-            << "\n"
-            << "`logic.json` for `sugarbot run <layout.json> <logic.json> <data.csv>` is a raw `PlanSpec` root object.\n"
-            << "Use `--dump-ops` for the operator catalog and `--align-dump` to inspect the aligned data shape that the DAG will actually see.\n"
-            << "\n"
-            << "Authoring workflow\n"
-            << "  1. `sugarbot --dump-layout` to define the ingest/layout contract.\n"
-            << "  2. `sugarbot --obs-report layout.json data.csv` to confirm available axes and capabilities.\n"
-            << "  3. `sugarbot --align-dump layout.json data.csv --series-key-col <col>` when multi-series shape matters.\n"
-            << "  4. `sugarbot --dump-plan` to check `run`, `sweep`, and execution-schema rules.\n"
-            << "  5. `sugarbot --dump-ops` to choose valid ops and signatures for this build.\n"
-            << "  6. `sugarbot --plan-report layout.json logic.json data.csv` before `run`.\n"
-            << "\n"
-            << "Root schema\n"
-            << "  - required: `bindings`\n"
-            << "  - optional:\n"
-            << "    - `version` (default `1`)\n"
-            << "    - `name`\n"
-            << "    - `required` (registry-module declarations)\n"
-            << "    - `trade_mode` (default `LongShort`)\n"
-            << "    - `exec_settings`\n"
-            << "    - `params`\n"
-            << "    - `numeric_nodes`\n"
-            << "    - `bool_nodes`\n"
-            << "    - `sweep`\n"
-            << "    - `run`\n"
-            << "\n"
-            << "Bindings\n"
-            << "  - `bindings.entry_long`, `exit_long`, `entry_short`, `exit_short`, `allow_trade`\n"
-            << "  - each binding value is a bool-node id or an empty string\n"
-            << "  - `bindings` itself is always required even if some entries are empty\n"
-            << "\n"
-            << "Param values\n"
-            << "  - literal types: `null`, `bool`, integer, float, string\n"
-            << "  - references: `{ \"ref\": \"top_level_param_name\" }`\n"
-            << "  - objects other than `{ \"ref\": ... }` are rejected in param positions\n"
-            << "\n"
-            << "NodeSpec\n"
-            << "  - `id` (required string; unique within numeric or bool node lists)\n"
-            << "  - `op` (required string; must exist in `--dump-ops` for this build)\n"
-            << "  - `args` (optional array of prior node ids; arity must match the op signature exactly)\n"
-            << "  - `params` (optional object of literal values or `{ \"ref\": ... }`)\n"
-            << "  - inline expressions are not allowed inside `args`\n"
-            << "\n"
-            << "Trade and execution settings\n"
-            << "  - `trade_mode`: `LongOnly` or `LongShort` (default `LongShort`)\n"
-            << "  - `exec_settings.initial_equity` (default `1.0`)\n"
-            << "  - `exec_settings.eval_mode`: `SameBar`/`same` or `NextBar`/`next` (default `SameBar`)\n"
-            << "  - `exec_settings.fill_timing`: `SameBarClose`/`close` or `NextBarOpen`/`open` (default `SameBarClose`)\n"
-            << "  - `exec_settings.costs.fee_bps` and `slippage_bps` (default `0.0`)\n"
-            << "  - `exec_settings.exits_first` (default `true`)\n"
-            << "  - `exec_settings.allow_same_bar_reversal` (default `false`)\n"
-            << "  - `exec_settings.close_out_at_end` (default `true`)\n"
-            << "\n"
-            << "Run dispatch (`run`)\n"
-            << "  - omitted:\n"
-            << "    - valid for single-series CLI runs\n"
-            << "    - rejected for multi-entity CLI runs because a targeting mode is ambiguous\n"
-            << "  - `run.scope` values:\n"
-            << "    - `primary_series`\n"
-            << "    - `per_entity_ranked`\n"
-            << "  - `run.scope=primary_series`:\n"
-            << "    - binds one runtime target after observation-world assessment\n"
-            << "    - on multi-entity data, `run.target_entity` is required\n"
-            << "    - `run.top_k`, `run.objective`, `run.ranking_metric`, and `run.ranking_dd_weight` do not apply\n"
-            << "  - `run.scope=per_entity_ranked`:\n"
-            << "    - evaluates compatibility against the pre-binding observation world rather than one bound primary series\n"
-            << "    - requires multi-entity input and `run.top_k`\n"
-            << "    - `run.target_entity` does not apply\n"
-            << "    - canonical ranking uses `run.objective` object form with `value`, `direction`, optional `penalties`, and optional `tie_breaks`\n"
-            << "    - compatibility `run.ranking_metric` defaults to `pnl` only when `run.objective` is omitted\n"
-            << "    - `run.ranking_dd_weight` is required only when compatibility `run.ranking_metric=pnl_dd`\n"
-            << "    - `run.objective` may not be combined with compatibility `run.ranking_metric` or `run.ranking_dd_weight`\n"
-            << "  - compatibility `run.ranking_metric` values: `pnl`, `pnl_dd`\n"
-            << "\n"
-            << "Sweep (`sweep`)\n"
-            << "  - optional object\n"
-            << "  - defaults:\n"
-            << "    - `enabled=false`\n"
-            << "    - `top_k=10`\n"
-            << "    - `max_evals=5000`\n"
-            << "    - `objective=\"pnl\"`\n"
-            << "    - `dd_weight=1.0`\n"
-            << "    - `engine=\"exhaustive\"`\n"
-            << "  - `sweep.objective` accepts either:\n"
-            << "    - legacy string: `\"pnl\"` or `\"pnl_dd\"`\n"
-            << "    - object form with `value.source`, `value.name`, `direction`, optional `penalties`, and optional `tie_breaks`\n"
-            << "  - object-form `sweep.objective.value.source` values: `reported_metric`, `numeric_node_output`\n"
-            << "  - object-form numeric-node objectives currently summarize with `summary=\"last_finite\"`\n"
-            << "  - `sweep.engine` values: `exhaustive`, `coarse_fine`, `monte_carlo`\n"
-            << "  - `sweep.params.<name>` forms:\n"
-            << "    - discrete: `{ \"values\": [5, 10, 20], \"is_int\": true }`\n"
-            << "    - stepped range: `{ \"min\": 5, \"max\": 50, \"step\": 5, \"is_int\": true }`\n"
-            << "  - `sweep.engine_config.coarse_fine` fields:\n"
-            << "    - `k_stage1` (default `25`)\n"
-            << "    - `k_stage2` (default `50`; internal stage-2 candidate breadth, not final output count)\n"
-            << "    - `depollute_stage1` (default `true`)\n"
-            << "    - `dedupe_stage2` (default `true`; stage-2 candidate-index dedupe, not final `trade_hash` outcome dedupe)\n"
-            << "    - `suppression_hops` (default `1`)\n"
-            << "    - `stage2_hops` (default `1`)\n"
-            << "    - `coarse_step_multiplier` (default `0`; when >1, stage 1 samples every Nth value per sweep dimension and derives local refinement from remaining `max_evals` budget)\n"
-            << "    - `stage1_stride` (default `0`)\n"
-            << "    - final displayed sweep rows are still capped by top-level `sweep.top_k`\n"
-            << "  - `sweep.engine_config.monte_carlo` fields:\n"
-            << "    - `draws` (default: use `sweep.max_evals`; explicit values are still capped by `max_evals`)\n"
-            << "    - `seed` (default `0`, which means non-deterministic random_device seeding)\n"
-            << "    - `dedupe` (default `true`; samples parameter indices without replacement, not final `trade_hash` outcome dedupe)\n"
-            << "    - `top_k` (default `0`, which means use `sweep.top_k`)\n"
-            << "  - `sweep.result_diversity` is the final leaderboard control for glassy parameter manifolds and repeated trade paths:\n"
-            << "    - object presence enables the control unless `enabled=false`\n"
-            << "    - `dedupe_trade_hash` (default `true`) suppresses repeated final candidates with identical `trade_hash`\n"
-            << "    - `basin_aware` (default `false`) limits repeated final candidates from the same bucketed parameter basin\n"
-            << "    - `oversample_multiplier` (default `10`) retains a larger internal candidate pool before final diversity filtering\n"
-            << "    - `max_per_basin` (default `1`), `param_bucket_size` (default `4`), and `min_param_distance` (default `0`) tune basin suppression in parameter-step units\n"
-            << "    - `min_trades` (default `0`) suppresses final candidates with too few round-trip trades\n"
-            << "\n"
-            << "Cross-series and alignment guidance\n"
-            << "  - `--align-dump` is the planning tool for advanced DAGs, not just an alignment debugger.\n"
-            << "  - `--series-key-col <col>` is required for `--align-dump`; it names the CSV column whose values become the aligned series/entity keys.\n"
-            << "  - `series_count=1` means `ms.*` ops will fail because there is only one aligned series lane.\n"
-            << "  - `series_count>1` is the signal that cross-series ops and `run.scope=per_entity_ranked` may be valid.\n"
-            << "  - `ms.diff`, `ms.ratio`, `ms.zscore`, and other `ms.*` ops are for comparisons across aligned series/entity lanes.\n"
-            << "  - if you want arithmetic between two features from the same series, prefer same-series ops such as `ts.sub`, `ts.div`, or row-wise composition.\n"
-            << "\n"
-            << "Worked examples\n"
-            << "  - minimal single-series plan:\n"
-            << "    {\n"
-            << "      \"version\": 1,\n"
-            << "      \"trade_mode\": \"LongOnly\",\n"
-            << "      \"numeric_nodes\": [\n"
-            << "        { \"id\": \"c\", \"op\": \"core.close\" },\n"
-            << "        { \"id\": \"z\", \"op\": \"core.const\", \"params\": { \"value\": 0.0 } }\n"
-            << "      ],\n"
-            << "      \"bool_nodes\": [\n"
-            << "        { \"id\": \"entry\", \"op\": \"cmp.gt\", \"args\": [\"c\", \"z\"] },\n"
-            << "        { \"id\": \"exit\", \"op\": \"cmp.lt\", \"args\": [\"c\", \"z\"] }\n"
-            << "      ],\n"
-            << "      \"bindings\": {\n"
-            << "        \"entry_long\": \"entry\",\n"
-            << "        \"exit_long\": \"exit\",\n"
-            << "        \"entry_short\": \"\",\n"
-            << "        \"exit_short\": \"\",\n"
-            << "        \"allow_trade\": \"\"\n"
-            << "      }\n"
-            << "    }\n"
-            << "  - primary-series multi-entity dispatch:\n"
-            << "    {\n"
-            << "      \"run\": {\n"
-            << "        \"scope\": \"primary_series\",\n"
-            << "        \"target_entity\": \"BBB\"\n"
-            << "      }\n"
-            << "    }\n"
-            << "  - ranked multi-entity dispatch:\n"
-            << "    {\n"
-            << "      \"run\": {\n"
-            << "        \"scope\": \"per_entity_ranked\",\n"
-            << "        \"top_k\": 5,\n"
-            << "        \"objective\": {\n"
-            << "          \"value\": { \"source\": \"reported_metric\", \"name\": \"pnl\" },\n"
-            << "          \"direction\": \"maximize\",\n"
-            << "          \"penalties\": [\n"
-            << "            {\n"
-            << "              \"value\": { \"source\": \"reported_metric\", \"name\": \"max_drawdown\" },\n"
-            << "              \"weight\": 0.25\n"
-            << "            }\n"
-            << "          ]\n"
-            << "        }\n"
-            << "      }\n"
-            << "    }\n"
-            << "  - sweep skeleton:\n"
-            << "    {\n"
-            << "      \"sweep\": {\n"
-            << "        \"enabled\": true,\n"
-            << "        \"engine\": \"coarse_fine\",\n"
-            << "        \"objective\": \"pnl\",\n"
-            << "        \"top_k\": 10,\n"
-            << "        \"max_evals\": 5000,\n"
-            << "        \"params\": {\n"
-            << "          \"fast\": { \"min\": 5, \"max\": 25, \"step\": 5, \"is_int\": true }\n"
-            << "        }\n"
-            << "      }\n"
-            << "    }\n";
+        const auto& execution = *spec.execution;
+        out << "Execution validation";
+        if (!label.empty()) {
+            out << " (" << label << ")";
+        }
+        out << "\n";
+        out << "  mode: " << sugar::plan_execution_mode_name(execution.mode) << "\n";
+        out << "  status: " << (report.valid ? "valid" : "invalid") << "\n";
+        out << "  subgraphs: " << execution.subgraphs.size() << "\n";
+        out << "  routes: " << execution.routes.size() << "\n";
+        out << "  outputs: " << execution.outputs.size() << "\n";
+        out << "  bounds.max_routes: " << execution.bounds.max_routes << "\n";
+        out << "  bounds.max_active_subgraphs: " << execution.bounds.max_active_subgraphs << "\n";
+        out << "  bounds.max_selected_outputs: " << execution.bounds.max_selected_outputs << "\n";
+        out << "  bounds.decision_sample_limit: " << execution.bounds.decision_sample_limit << "\n";
+        if (!report.dynamic_enabled) {
+            out << "  static_validator: skipped (mode is static)\n";
+        }
+        else {
+            out << "  static_validator: " << (report.valid ? "passed" : "failed") << "\n";
+        }
+        if (!report.issues.empty()) {
+            out << "  issues:\n";
+            for (const auto& issue : report.issues) {
+                out << "    - code: "
+                    << sugar::plan_dynamic_execution_validation_code_name(issue.code)
+                    << " subject: " << issue.subject
+                    << " detail: " << issue.detail << "\n";
+            }
+        }
+        out << "\n";
     }
 
 } // namespace
 
 namespace sugar::app {
 
-    int run_help_command(std::ostream& out) {
-        out
-            << "SugarBot CLI\n"
-            << "\n"
-            << "Usage:\n"
-            << "  sugarbot --help\n"
-            << "  sugarbot --dump-layout\n"
-            << "  sugarbot --dump-plan\n"
-            << "  sugarbot --dump-ops [full|modules|ops|examples]\n"
-            << "  sugarbot run <layout.json> <logic.json> <data.csv>\n"
-            << "  sugarbot --obs-report <layout.json> <data.csv>\n"
-            << "  sugarbot --plan-report <layout.json> <logic.json> <data.csv>\n"
-            << "  sugarbot --feature-dump <layout.json> <logic.json> <data.csv>\n"
-            << "  sugarbot --prep-dump <layout.json> <csv>\n"
-            << "  sugarbot --align-dump <layout.json> <csv> --series-key-col <col> [--calendar union|intersection]\n"
-            << "  sugarbot --run-panel <layout.json> <csv> [--primary <col>] [--topk N]\n"
-            << "  sugarbot --run-contract-suite [--contract-section <key> ...]\n"
-            << "  sugarbot [csv] [--data-spec layout.json] [--format auto|legacy_ohlcv_date|iso_ohlcv_time]\n"
-            << "\n"
-            << "Quick start:\n"
-            << "  1. `sugarbot --dump-layout` explains the accepted raw/wrapped layout formats.\n"
-            << "  2. `sugarbot --obs-report layout.json data.csv` validates ingestion before strategy work.\n"
-            << "  3. `sugarbot --align-dump layout.json data.csv --series-key-col <col>` shows the aligned series/entity shape before you author `ms.*` or ranked plans.\n"
-            << "  4. `sugarbot --dump-plan` documents `logic.json` (`PlanSpec`) root fields, `run`, `sweep`, `exec_settings`, and worked examples.\n"
-            << "  5. `sugarbot --dump-ops modules` explains module rules and node evaluation; `--dump-ops ops` prints signatures; `--dump-ops examples` prints compact working examples.\n"
-            << "  6. `sugarbot --plan-report layout.json logic.json data.csv` validates the strategy without running it.\n"
-            << "  7. `sugarbot run layout.json logic.json data.csv` executes the noninteractive path.\n"
-            << "\n";
-        print_layout_contract_brief(out);
-        out
-            << "\n"
-            << "Reports and diagnostics:\n"
-            << "  - `--obs-report` prints observation-world provenance, ingest diagnostics, and capability surfaces.\n"
-            << "  - `--plan-report` prints the same observation diagnostics plus plan-compatibility results for the current logic.\n"
-            << "  - `--align-dump` requires `--series-key-col <col>` because it groups the CSV by that column to show concrete series/entity lanes; use columns such as `symbol`, `ticker`, or `region`.\n"
-            << "  - `run` prints the final execution report for the selected path: single-run, sweep report, or ranked panel report.\n"
-            << "  - interactive mode exposes these same report surfaces before execution, so the report-first workflow is discoverable without remembering flags.\n"
-            << "\n"
-            << "Alias:\n"
-            << "  - `--dump-logic` is accepted as an alias for `--dump-plan`.\n"
-            << "\n";
-        print_plan_contract_brief(out);
-        out
-            << "\n"
-            << "Notes:\n"
-            << "  - No mode flag enters interactive mode.\n"
-            << "  - `run` executes the noninteractive LayoutSpec + PlanSpec path.\n"
-            << "  - `--obs-report` and `--plan-report` validate/report without executing a full run.\n"
-            << "  - sweeps and ranked multi-entity runs print the same structured report seams that power service/job reporting.\n"
-            << "  - `--feature-dump` emits the evaluated numeric-node feature matrix as CSV.\n"
-            << "  - Spatial/locality support is foundational and intentionally narrow: current runnable locality ops are `spatial.radius_mean` and `st.radius_mean` over built-in topologies.\n";
-        return 0;
-    }
-
     int run_obs_report_command(const AppCommand& cmd, std::ostream& out, std::ostream& err) {
         sugar::LayoutSpec layout{};
         sugar::ResolvedObservationWorld world{};
         std::string load_err;
-        if (!load_layout_and_world(cmd.obs_report.layout_path, cmd.obs_report.csv_path, layout, world, load_err)) {
+        if (cmd.obs_report.json_output) {
+            std::string layout_err;
+            if (!sugar::load_layout_spec_file(cmd.obs_report.layout_path, layout, layout_err)) {
+                print_observation_report_error_json(
+                    classify_layout_load_error(layout_err),
+                    "failed to load layout spec: " + layout_err,
+                    nullptr,
+                    out);
+                return 1;
+            }
+
+            std::string world_err;
+            if (!sugar::build_resolved_observation_world(
+                    layout,
+                    cmd.obs_report.csv_path,
+                    world,
+                    world_err)) {
+                const auto code = classify_observation_world_error(world, world_err);
+                const auto* report =
+                    !world.run_manifest.preprocess.preprocess_error_code.empty() ||
+                        !world.run_manifest.preprocess.preprocess_error_message.empty()
+                    ? &world.run_manifest.preprocess
+                    : nullptr;
+                print_observation_report_error_json(
+                    code,
+                    world_err,
+                    report,
+                    out);
+                return 1;
+            }
+
+            print_observation_report_json(world, out);
+            return 0;
+        }
+
+        if (!load_layout_and_world(
+                cmd.obs_report.layout_path,
+                cmd.obs_report.csv_path,
+                layout,
+                world,
+                load_err)) {
             err << "Error: " << load_err << "\n";
             return 1;
         }
@@ -597,13 +370,24 @@ namespace sugar::app {
             spec.run->scope == sugar::PlanRunScope::PrimarySeries;
         print_prebinding_assessment_header(out, will_bind_runtime);
         print_observation_capability_report(world, out);
+        const auto execution_report = sugar::validate_plan_dynamic_execution(spec);
+        if (!execution_report.valid) {
+            print_plan_execution_validation_report(spec, execution_report, out, "pre-compatibility");
+            return 1;
+        }
 
         const bool multi_series = observation_world_is_multi_series(world);
         const auto facts = sugar::make_observation_world_facts(world);
+        auto print_execution_report = [&](std::string_view label) {
+            print_plan_execution_validation_report(spec, execution_report, out, label);
+        };
 
         auto print_facts_report = [&]() {
             const auto plan_report = sugar::diagnose_plan_capabilities(spec, facts);
-            print_plan_capability_report(plan_report, out);
+            print_plan_capability_report(plan_report, out, "pre-binding observation-world");
+            print_execution_report("pre-binding observation-world");
+            print_plan_data_quality_notes(spec, world.run_manifest.preprocess, out);
+            print_plan_binding_notes(spec, out);
             return plan_report;
         };
 
@@ -631,7 +415,10 @@ namespace sugar::app {
             print_postbinding_assessment_header(out);
             print_observation_capability_report(runtime, out);
             const auto plan_report = sugar::diagnose_plan_capabilities(spec, runtime);
-            print_plan_capability_report(plan_report, out);
+            print_plan_capability_report(plan_report, out, "post-binding runtime-target");
+            print_execution_report("post-binding runtime-target");
+            print_plan_data_quality_notes(spec, runtime.run_manifest.preprocess, out);
+            print_plan_binding_notes(spec, out);
             return plan_report.status == sugar::PlanCapabilityStatus::Valid ? 0 : 1;
         }
 
@@ -692,7 +479,10 @@ namespace sugar::app {
             print_postbinding_assessment_header(out);
             print_observation_capability_report(runtime, out);
             const auto plan_report = sugar::diagnose_plan_capabilities(spec, runtime);
-            print_plan_capability_report(plan_report, out);
+            print_plan_capability_report(plan_report, out, "post-binding runtime-target");
+            print_execution_report("post-binding runtime-target");
+            print_plan_data_quality_notes(spec, runtime.run_manifest.preprocess, out);
+            print_plan_binding_notes(spec, out);
             return plan_report.status == sugar::PlanCapabilityStatus::Valid ? 0 : 1;
         }
 
@@ -824,13 +614,74 @@ namespace sugar::app {
         return 0;
     }
 
-    int run_dump_layout_command(std::ostream& out) {
-        print_layout_contract_dump(out);
-        return 0;
+    bool planspec_has_sweep(const sugar::PlanSpec& spec) {
+        return spec.sweep.has_value() &&
+            (spec.sweep->enabled || !spec.sweep->params.empty());
     }
 
-    int run_dump_plan_command(std::ostream& out) {
-        print_plan_contract_dump(out);
+    int run_custom_plan_spec_with_projection(
+        const sugar::DataView& dv,
+        const sugar::ColumnRef& primary,
+        const sugar::PlanSpec& spec,
+        const sugar::PlanSweepRuntimeOptions& rt,
+        sugar::EvaluationReportProjection projection,
+        std::ostream& out,
+        const sugar::RunProvenanceSummary& run_provenance) {
+        if (projection == sugar::EvaluationReportProjection::Full) {
+            const bool ran = sugar::run_custom_plan_spec(
+                dv,
+                primary,
+                spec,
+                rt,
+                out,
+                nullptr,
+                nullptr,
+                &run_provenance);
+            return ran ? 0 : 1;
+        }
+
+        std::ostringstream execution_out;
+        sugar::BacktestResult result{};
+        sugar::PlanSweepReport sweep_report{};
+        const bool ran = sugar::run_custom_plan_spec(
+            dv,
+            primary,
+            spec,
+            rt,
+            execution_out,
+            &result,
+            &sweep_report,
+            &run_provenance);
+        if (!ran) {
+            if ((projection == sugar::EvaluationReportProjection::Json ||
+                    projection == sugar::EvaluationReportProjection::PosteriorDiagnostics) &&
+                planspec_has_sweep(spec) &&
+                sweep_report.requested_sweep.engine ==
+                    sugar::PlanSweepEngineKind::BayesianPosterior &&
+                sweep_report.posterior.requested) {
+                sugar::print_evaluation_report(
+                    sugar::make_sweep_evaluation_report(std::move(sweep_report)),
+                    projection,
+                    out);
+                return 1;
+            }
+            out << execution_out.str();
+            return 1;
+        }
+
+        if (planspec_has_sweep(spec)) {
+            sugar::print_evaluation_report(
+                sugar::make_sweep_evaluation_report(std::move(sweep_report)),
+                projection,
+                out);
+            return 0;
+        }
+
+        sugar::print_evaluation_report(
+            sugar::make_run_evaluation_report(
+                sugar::build_run_report(result, nullptr, &run_provenance)),
+            projection,
+            out);
         return 0;
     }
 
@@ -839,6 +690,7 @@ namespace sugar::app {
         std::string layout_err;
         if (!sugar::load_layout_spec_file(cmd.run.layout_path, layout, layout_err)) {
             err << "Error: failed to load layout spec: " << layout_err << "\n";
+            print_obs_report_next_step(err, cmd);
             return 1;
         }
 
@@ -851,10 +703,12 @@ namespace sugar::app {
                 has_embedded_observations,
                 plan_err)) {
             err << "Error: failed to load logic spec: " << plan_err << "\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
         if (has_embedded_observations) {
             err << "Error: logic.json embeds legacy observation inputs. That compatibility path is interactive-only.\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
 
@@ -862,14 +716,25 @@ namespace sugar::app {
         std::string world_err;
         if (!sugar::build_resolved_observation_world(layout, cmd.run.csv_path, world, world_err)) {
             err << "Error: " << world_err << "\n";
+            print_obs_report_next_step(err, cmd);
             return 1;
         }
 
-        out << "[Info] noninteractive artifact run active.\n";
+        const bool json_projection =
+            sugar::evaluation_report_projection_is_machine_readable(
+                cmd.run.report_projection);
+        const bool topology_projection =
+            cmd.run.report_projection == sugar::EvaluationReportProjection::TopologyDiagnostics;
+        const bool focused_projection = json_projection || topology_projection;
+        if (!focused_projection) {
+            out << "[Info] noninteractive artifact run active.\n";
+        }
         const bool will_bind_runtime = !spec.run.has_value() ? !observation_world_is_multi_series(world) :
             spec.run->scope == sugar::PlanRunScope::PrimarySeries;
-        print_prebinding_assessment_header(out, will_bind_runtime);
-        print_observation_capability_report(world, out);
+        if (!focused_projection) {
+            print_prebinding_assessment_header(out, will_bind_runtime);
+            print_observation_capability_report(world, out);
+        }
 
         const bool multi_series = observation_world_is_multi_series(world);
         const auto facts = sugar::make_observation_world_facts(world);
@@ -877,12 +742,16 @@ namespace sugar::app {
         if (!spec.run.has_value()) {
             if (multi_series) {
                 err << "Error: " << missing_run_scope_hint_text() << "\n";
+                print_plan_report_next_step(err, cmd);
+                print_align_dump_next_step(err, cmd, layout);
                 return 1;
             }
 
             sugar::ResolvedRuntimeInput runtime{};
             std::string bind_err;
-            print_runtime_binding_header(out);
+            if (!focused_projection) {
+                print_runtime_binding_header(out);
+            }
             if (!sugar::bind_resolved_runtime_target(
                     world,
                     layout.ingest.primary_value_col,
@@ -890,37 +759,45 @@ namespace sugar::app {
                     runtime,
                     bind_err)) {
                 err << "Error: " << bind_err << "\n";
+                print_obs_report_next_step(err, cmd);
                 return 1;
             }
 
-            print_postbinding_assessment_header(out);
-            print_observation_capability_report(runtime, out);
+            if (!focused_projection) {
+                print_postbinding_assessment_header(out);
+                print_observation_capability_report(runtime, out);
+            }
             const auto plan_report = sugar::diagnose_plan_capabilities(spec, runtime);
-            print_plan_capability_report(plan_report, out);
+            if (!focused_projection ||
+                (topology_projection && plan_report.status != sugar::PlanCapabilityStatus::Valid)) {
+                print_plan_capability_report(plan_report, out);
+                print_plan_data_quality_notes(spec, runtime.run_manifest.preprocess, out);
+            }
             if (plan_report.status != sugar::PlanCapabilityStatus::Valid) {
                 err << "Error: logic.json is not compatible with the resolved runtime target\n";
+                print_plan_report_next_step(err, cmd);
                 return 1;
             }
+            sugar::append_plan_capability_snapshot(plan_report, runtime.run_manifest);
 
             const sugar::DataView dv(*runtime.aligned_bundle);
             sugar::PlanSweepRuntimeOptions rt{};
             const auto run_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
-            const bool ran = sugar::run_custom_plan_spec(
+            return run_custom_plan_spec_with_projection(
                 dv,
                 runtime.primary_ref,
                 spec,
                 rt,
+                cmd.run.report_projection,
                 out,
-                nullptr,
-                nullptr,
-                &run_provenance);
-            return ran ? 0 : 1;
+                run_provenance);
         }
 
         const sugar::PlanRunSpec& run = *spec.run;
         if (run.scope == sugar::PlanRunScope::PrimarySeries) {
             if (run.top_k.has_value() || run.objective_spec.has_value()) {
                 err << "Error: logic.run.top_k, logic.run.objective, and logic.run.ranking_* apply only to logic.run.scope=per_entity_ranked\n";
+                print_plan_report_next_step(err, cmd);
                 return 1;
             }
 
@@ -929,12 +806,15 @@ namespace sugar::app {
             if (multi_series) {
                 if (run.target_entity.empty()) {
                     err << "Error: logic.run.target_entity is required when logic.run.scope=primary_series on multi-entity data\n";
+                    print_plan_report_next_step(err, cmd);
+                    print_align_dump_next_step(err, cmd, layout);
                     return 1;
                 }
                 std::string series_key;
                 std::string resolve_err;
                 if (!resolve_target_entity_series_key(world, run.target_entity, series_key, resolve_err)) {
                     err << "Error: " << resolve_err << "\n";
+                    print_align_dump_next_step(err, cmd, layout);
                     return 1;
                 }
                 target.primary_series_key = std::move(series_key);
@@ -944,6 +824,7 @@ namespace sugar::app {
                 std::string resolve_err;
                 if (!resolve_target_entity_series_key(world, run.target_entity, series_key, resolve_err)) {
                     err << "Error: " << resolve_err << "\n";
+                    print_obs_report_next_step(err, cmd);
                     return 1;
                 }
                 target.primary_series_key = std::move(series_key);
@@ -951,7 +832,9 @@ namespace sugar::app {
 
             sugar::ResolvedRuntimeInput runtime{};
             std::string bind_err;
-            print_runtime_binding_header(out);
+            if (!focused_projection) {
+                print_runtime_binding_header(out);
+            }
             if (!sugar::bind_resolved_runtime_target(
                     world,
                     layout.ingest.primary_value_col,
@@ -959,48 +842,61 @@ namespace sugar::app {
                     runtime,
                     bind_err)) {
                 err << "Error: " << bind_err << "\n";
+                print_align_dump_next_step(err, cmd, layout);
                 return 1;
             }
 
-            out << "[Info] run scope: primary_series";
-            if (!runtime.primary_entity_key.empty()) {
-                out << " target_entity=" << runtime.primary_entity_key;
+            if (!focused_projection) {
+                out << "[Info] run scope: primary_series";
+                if (!runtime.primary_entity_key.empty()) {
+                    out << " target_entity=" << runtime.primary_entity_key;
+                }
+                out << "\n";
             }
-            out << "\n";
-            print_postbinding_assessment_header(out);
-            print_observation_capability_report(runtime, out);
+            if (!focused_projection) {
+                print_postbinding_assessment_header(out);
+                print_observation_capability_report(runtime, out);
+            }
             const auto plan_report = sugar::diagnose_plan_capabilities(spec, runtime);
-            print_plan_capability_report(plan_report, out);
+            if (!focused_projection ||
+                (topology_projection && plan_report.status != sugar::PlanCapabilityStatus::Valid)) {
+                print_plan_capability_report(plan_report, out);
+                print_plan_data_quality_notes(spec, runtime.run_manifest.preprocess, out);
+            }
             if (plan_report.status != sugar::PlanCapabilityStatus::Valid) {
                 err << "Error: logic.json is not compatible with the resolved runtime target\n";
+                print_plan_report_next_step(err, cmd);
                 return 1;
             }
+            sugar::append_plan_capability_snapshot(plan_report, runtime.run_manifest);
 
             const sugar::DataView dv(*runtime.aligned_bundle);
             sugar::PlanSweepRuntimeOptions rt{};
             const auto run_provenance = sugar::build_run_provenance_summary(runtime.run_manifest);
-            const bool ran = sugar::run_custom_plan_spec(
+            return run_custom_plan_spec_with_projection(
                 dv,
                 runtime.primary_ref,
                 spec,
                 rt,
+                cmd.run.report_projection,
                 out,
-                nullptr,
-                nullptr,
-                &run_provenance);
-            return ran ? 0 : 1;
+                run_provenance);
         }
 
         if (!multi_series) {
             err << "Error: logic.run.scope=per_entity_ranked requires multi-entity observation input\n";
+            print_obs_report_next_step(err, cmd);
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
         if (!run.top_k.has_value()) {
             err << "Error: logic.run.top_k is required when logic.run.scope=per_entity_ranked\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
         if (!run.target_entity.empty()) {
             err << "Error: logic.run.target_entity does not apply when logic.run.scope=per_entity_ranked\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
 
@@ -1008,27 +904,37 @@ namespace sugar::app {
         std::string ranking_err;
         if (!sugar::build_panel_ranking_spec(run, ranking, ranking_err)) {
             err << "Error: " << ranking_err << "\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
 
         const auto plan_report = sugar::diagnose_plan_capabilities(spec, facts);
-        print_plan_capability_report(plan_report, out);
+        if (!focused_projection ||
+            (topology_projection && plan_report.status != sugar::PlanCapabilityStatus::Valid)) {
+            print_plan_capability_report(plan_report, out);
+            print_plan_data_quality_notes(spec, world.run_manifest.preprocess, out);
+        }
         if (plan_report.status != sugar::PlanCapabilityStatus::Valid) {
             err << "Error: logic.json is not compatible with the resolved observation world\n";
+            print_plan_report_next_step(err, cmd);
             return 1;
         }
+        sugar::append_plan_capability_snapshot(plan_report, world.run_manifest);
 
         sugar::ColumnId primary_col{};
         std::string primary_err;
         if (!resolve_world_primary_col_id(world, primary_col, primary_err)) {
             err << "Error: " << primary_err << "\n";
+            print_obs_report_next_step(err, cmd);
             return 1;
         }
 
-        out << "[Info] run scope: per_entity_ranked top_k=" << *run.top_k
-            << " ranking_objective=" << sugar::describe_ranking_objective(
-                sugar::build_panel_ranking_objective(ranking))
-            << "\n";
+        if (!focused_projection) {
+            out << "[Info] run scope: per_entity_ranked top_k=" << *run.top_k
+                << " ranking_objective=" << sugar::describe_ranking_objective(
+                    sugar::build_panel_ranking_objective(ranking))
+                << "\n";
+        }
 
         const sugar::DataView dv(*world.aligned_bundle);
         sugar::PlanSweepRuntimeOptions rt{};
@@ -1040,26 +946,21 @@ namespace sugar::app {
             *run.top_k,
             ranking);
         const auto panel_provenance = sugar::build_run_provenance_summary(world.run_manifest);
-        print_panel_result(pres, out, &panel_provenance);
-        return pres.entities_ok > 0 ? 0 : 1;
-    }
-
-    int run_dump_ops_command(const AppCommand& cmd, std::ostream& out) {
-        const auto reg = sugar::make_default_registry();
-        switch (cmd.dump_ops.section) {
-        case DumpOpsSection::Modules:
-            reg.print_modules_summary(out);
-            break;
-        case DumpOpsSection::Operations:
-            reg.print_operations_catalog(out);
-            break;
-        case DumpOpsSection::Examples:
-            reg.print_working_examples(out);
-            break;
-        case DumpOpsSection::Full:
-        default:
-            out << reg.describe_text(true);
-            break;
+        if (cmd.run.report_projection == sugar::EvaluationReportProjection::Full) {
+            print_panel_result(pres, out, &panel_provenance);
+        }
+        else {
+            sugar::print_evaluation_report(
+                sugar::make_panel_evaluation_report(
+                    sugar::build_panel_report(pres, &panel_provenance)),
+                cmd.run.report_projection,
+                out);
+        }
+        if (pres.entities_ok == 0) {
+            err << "Error: ranked run produced no successful entity results\n";
+            print_plan_report_next_step(err, cmd);
+            print_align_dump_next_step(err, cmd, layout);
+            return 1;
         }
         return 0;
     }

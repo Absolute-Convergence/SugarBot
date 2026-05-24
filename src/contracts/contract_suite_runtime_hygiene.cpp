@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sugar::contract_suite_internal {
@@ -23,10 +24,22 @@ namespace sugar::contract_suite_internal {
             std::string snippet;
         };
 
+        struct SourceSizePolicy {
+            std::string family;
+            std::size_t warning_lines{ 0 };
+            std::size_t failure_lines{ 0 };
+        };
+
         bool has_suffix(const std::string& text, const char* suffix) {
             const std::size_t suffix_len = std::char_traits<char>::length(suffix);
             return text.size() >= suffix_len &&
                 text.compare(text.size() - suffix_len, suffix_len, suffix) == 0;
+        }
+
+        bool has_prefix(const std::string& text, const char* prefix) {
+            const std::size_t prefix_len = std::char_traits<char>::length(prefix);
+            return text.size() >= prefix_len &&
+                text.compare(0, prefix_len, prefix) == 0;
         }
 
         std::filesystem::path contract_repo_root_from_source() {
@@ -75,6 +88,61 @@ namespace sugar::contract_suite_internal {
 
             std::sort(files.begin(), files.end());
             return files;
+        }
+
+        std::string lowercase_ascii(std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(),
+                [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            return text;
+        }
+
+        bool is_source_size_sentinel_file(const std::filesystem::path& path) {
+            const std::string ext = lowercase_ascii(path.extension().string());
+            return ext == ".h" ||
+                ext == ".hpp" ||
+                ext == ".hh" ||
+                ext == ".inl" ||
+                ext == ".cpp" ||
+                ext == ".cc" ||
+                ext == ".cxx";
+        }
+
+        std::vector<std::string> collect_source_size_sentinel_files(const std::filesystem::path& repo_root) {
+            std::vector<std::string> files;
+            const std::array<const char*, 3> roots = {{ "include", "src", "app" }};
+
+            for (const char* root_name : roots) {
+                const auto root = repo_root / root_name;
+                if (!std::filesystem::exists(root)) {
+                    continue;
+                }
+
+                for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                         root,
+                         std::filesystem::directory_options::skip_permission_denied)) {
+                    if (!entry.is_regular_file()) {
+                        continue;
+                    }
+                    if (!is_source_size_sentinel_file(entry.path())) {
+                        continue;
+                    }
+                    files.push_back(entry.path().lexically_relative(repo_root).generic_string());
+                }
+            }
+
+            std::sort(files.begin(), files.end());
+            return files;
+        }
+
+        SourceSizePolicy source_size_policy_for(const std::string& rel_path) {
+            if (has_prefix(rel_path, "include/")) {
+                return SourceSizePolicy{ "public header", 1200, 4000 };
+            }
+            if (has_prefix(rel_path, "src/contracts/") ||
+                has_prefix(rel_path, "app/tests/")) {
+                return SourceSizePolicy{ "test/contract source", 1800, 8000 };
+            }
+            return SourceSizePolicy{ "implementation source", 1800, 8000 };
         }
 
         std::string strip_cpp_comments_and_literals(const std::string& body) {
@@ -183,6 +251,16 @@ namespace sugar::contract_suite_internal {
                 std::count(text.begin(), text.begin() + std::min(offset, text.size()), '\n'));
         }
 
+        std::size_t source_line_count(const std::string& text) {
+            if (text.empty()) {
+                return 0;
+            }
+
+            const auto newlines = static_cast<std::size_t>(
+                std::count(text.begin(), text.end(), '\n'));
+            return newlines + ((text.back() == '\n') ? 0U : 1U);
+        }
+
         std::string collapse_whitespace(std::string text) {
             std::string out;
             out.reserve(text.size());
@@ -273,6 +351,47 @@ namespace sugar::contract_suite_internal {
                 }
             }
         }
+
+        return all_ok;
+    }
+
+    bool test_contract_source_hygiene_contracts(ContractAsserts& t) {
+        t.out << "[contract_source_hygiene] Dynamic source-size hygiene sentinels\n";
+
+        const std::filesystem::path repo_root = contract_repo_root_from_source();
+        const std::vector<std::string> files = collect_source_size_sentinel_files(repo_root);
+
+        bool all_ok = t.expect(!files.empty(), "source-size sentinels discover source/header files dynamically");
+        std::size_t scanned = 0;
+        for (const auto& rel : files) {
+            std::string body;
+            const bool loaded = read_text_file(repo_root / rel, body);
+            if (!loaded) {
+                if (!t.expect(false, "source-size sentinel can read " + rel)) {
+                    all_ok = false;
+                }
+                continue;
+            }
+
+            ++scanned;
+            const SourceSizePolicy policy = source_size_policy_for(rel);
+            const std::size_t lines = source_line_count(body);
+            if (lines > policy.warning_lines) {
+                t.warn(policy.family + " size warning: " + rel +
+                    " has " + std::to_string(lines) +
+                    " lines; warning sentinel is " + std::to_string(policy.warning_lines) +
+                    ", failure sentinel is " + std::to_string(policy.failure_lines));
+            }
+
+            const bool below_failure_sentinel = lines <= policy.failure_lines;
+            if (!below_failure_sentinel &&
+                !t.expect(false, "source-size monolith sentinel is not exceeded: " + rel)) {
+                all_ok = false;
+                t.out << "    " << rel << " has " << lines
+                    << " lines; failure sentinel is " << policy.failure_lines << "\n";
+            }
+        }
+        t.out << "    scanned " << scanned << " source/header files for source-size sentinels\n";
 
         return all_ok;
     }
@@ -618,12 +737,36 @@ namespace sugar::contract_suite_internal {
                     "plan_sweep excludes per-run compile_plan calls")) {
                     all_ok = false;
                 }
+                if (!t.expect(body.find("compile_plan_template(") == std::string::npos,
+                    "plan_sweep orchestration no longer owns template compilation")) {
+                    all_ok = false;
+                }
+                if (!t.expect(body.find("instantiate_compiled_plan(") == std::string::npos,
+                    "plan_sweep orchestration no longer owns per-trial instantiation")) {
+                    all_ok = false;
+                }
+            }
+        }
+
+        {
+            const auto p = repo_root / "src/sweep/plan_sweep_runtime_adapter.cpp";
+            std::string body;
+            const bool loaded = read_text_file(p, body);
+            if (!t.expect(loaded, "runtime gate can read src/sweep/plan_sweep_runtime_adapter.cpp")) {
+                all_ok = false;
+            }
+            else {
+                body.erase(std::remove(body.begin(), body.end(), '\r'), body.end());
+                if (!t.expect(body.find("compile_plan(") == std::string::npos,
+                    "plan_sweep runtime adapter excludes per-run compile_plan calls")) {
+                    all_ok = false;
+                }
                 if (!t.expect(body.find("compile_plan_template(") != std::string::npos,
-                    "plan_sweep uses compile-once template compilation")) {
+                    "plan_sweep runtime adapter owns compile-once template compilation")) {
                     all_ok = false;
                 }
                 if (!t.expect(body.find("instantiate_compiled_plan(") != std::string::npos,
-                    "plan_sweep instantiates compiled plans per trial override")) {
+                    "plan_sweep runtime adapter instantiates compiled plans per trial override")) {
                     all_ok = false;
                 }
             }

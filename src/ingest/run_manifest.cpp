@@ -149,11 +149,16 @@ namespace sugar {
         out.time_resolution = out.has_time_axis ? infer_time_resolution(spec.time_kind) : "none";
         out.has_entity_axis = spec.entity_col.has_value();
         out.csv_had_header = prep.csv_had_header;
+        out.parsed_columns = prep.parsed_columns;
         out.csv_physical_line_count = prep.csv_load.physical_line_count;
         out.csv_blank_line_count = prep.csv_load.blank_line_count;
         out.csv_data_row_count = prep.csv_load.data_row_count;
         out.dropped_row_count = prep.dropped_row_count;
+        out.value_column_quality = prep.value_column_quality;
         out.input_warnings = prep.warnings;
+        out.preprocess_error_code = prep.error_code;
+        out.preprocess_error_message = prep.err;
+        out.preprocess_error_aggregates = prep.error_aggregates;
 
         if (prep.frameset.has_value()) {
             out.produced_frameset = true;

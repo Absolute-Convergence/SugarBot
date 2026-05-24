@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "sweep/metrics.h"
+#include "sweep/evaluation_report.h"
 #include "sweep/panel_runner.h"
 #include "sweep/plan_sweep.h"
 
@@ -127,6 +128,7 @@ namespace sugar::service {
 
     struct ResultMetadata {
         ValidationMetadata validation{};
+        std::optional<EvaluationReport> report{};
         std::optional<BacktestResult> primary_backtest{};
         std::optional<PlanSweepReport> sweep_report{};
         std::optional<PanelResult> panel{};

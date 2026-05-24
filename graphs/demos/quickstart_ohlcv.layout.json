@@ -1,0 +1,22 @@
+{
+  "ingest": {
+    "input_profile": "auto",
+    "time_col": "date",
+    "time_kind": "YyyyMmDd",
+    "header_policy": "RequiredHeaders",
+    "value_cols": ["open", "high", "low", "close", "volume"],
+    "primary_value_col": "close",
+    "rename": {
+      "Date": "date",
+      "Open": "open",
+      "High": "high",
+      "Low": "low",
+      "Close": "close",
+      "Volume": "volume"
+    },
+    "missing_tokens": ["", "NA", "null", "nan", "NaN"],
+    "missing_default": { "kind": "NaN" },
+    "sort_by_time": true,
+    "dedupe": "Error"
+  }
+}

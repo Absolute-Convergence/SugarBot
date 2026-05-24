@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "g10_constant_route_static_equivalent",
+  "trade_mode": "LongOnly",
+  "exec_settings": {
+    "initial_equity": 10000,
+    "eval_mode": "SameBar",
+    "fill_timing": "SameBarClose",
+    "costs": { "fee_bps": 0.0, "slippage_bps": 0.0 },
+    "exits_first": true,
+    "allow_same_bar_reversal": false,
+    "close_out_at_end": true
+  },
+  "numeric_nodes": [
+    { "id": "c", "op": "core.close" },
+    { "id": "entry_threshold", "op": "core.const", "params": { "value": 104.0 } }
+  ],
+  "bool_nodes": [
+    { "id": "selected_entry", "op": "cmp.gt", "args": ["c", "entry_threshold"] }
+  ],
+  "bindings": {
+    "entry_long": "selected_entry",
+    "exit_long": "",
+    "entry_short": "",
+    "exit_short": "",
+    "allow_trade": ""
+  }
+}

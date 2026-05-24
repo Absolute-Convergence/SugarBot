@@ -3,12 +3,12 @@ out/
 .sandbox/
 AI_Log/
 build/
-Expansion_Plan/
 sandbox_build/
 sandbox_asan/
 codex_build/
 codex_asan/
 docs/security/
+Expansion_Plan/
 Testing/
 CMakeBuilds/
 CMakeUserPresets.json

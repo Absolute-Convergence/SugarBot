@@ -103,6 +103,8 @@ namespace sugar {
         std::size_t done = 0;
 
         policy.begin(space, cfg.top_k);
+        std::size_t proposal_order = 0;
+        std::size_t batch_index = 0;
 
         auto report = [&](bool force = false) {
             if (!cfg.progress_cb) return;
@@ -135,15 +137,40 @@ namespace sugar {
                     batch.done = true;
                     break;
                 }
+                ++proposal_order;
+                if (cfg.trace_cb) {
+                    SweepTraceEvent event{};
+                    event.kind = SweepTraceEventKind::Proposal;
+                    event.stage = SweepProgressStage::CandidateEvaluation;
+                    event.candidate_index = token.id;
+                    event.proposal_order = proposal_order;
+                    event.batch_index = batch_index;
+                    event.reason = policy.name();
+                    cfg.trace_cb(event);
+                }
                 const auto res = evaluator.evaluate(token);
                 const double sc = objective.score(res);
                 policy.observe(SweepObservation{ token, res, sc });
+                if (cfg.trace_cb) {
+                    SweepTraceEvent event{};
+                    event.kind = SweepTraceEventKind::Observation;
+                    event.stage = SweepProgressStage::CandidateEvaluation;
+                    event.candidate_index = token.id;
+                    event.proposal_order = proposal_order;
+                    event.batch_index = batch_index;
+                    event.score_present = true;
+                    event.score_finite = std::isfinite(sc);
+                    event.score = sc;
+                    event.reason = policy.name();
+                    cfg.trace_cb(event);
+                }
                 ++done;
                 report();
             }
 
             if (batch.done) break;
             if (batch.tokens.empty()) break; // defensive guard
+            ++batch_index;
         }
 
         report(true);

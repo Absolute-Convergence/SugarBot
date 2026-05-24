@@ -28,6 +28,11 @@ namespace sugar::contract_suite_internal {
         return ok;
     }
 
+    void ContractAsserts::warn(const std::string& label) {
+        ++warnings;
+        out << "  [WARN] " << label << "\n";
+    }
+
     bool nearly_equal(double a, double b, double eps) {
         return std::fabs(a - b) <= eps;
     }
@@ -365,6 +370,7 @@ namespace sugar {
             { "service_session_upload_quota_abuse", "service protocol session and upload quota abuse rejection", &test_service_session_upload_quota_abuse_contracts },
             { "service_expensive_sweep_policy_abuse", "service protocol expensive sweep policy abuse rejection", &test_service_expensive_sweep_policy_abuse_contracts },
             { "service_result_ownership", "service-core result ownership", &test_service_result_ownership_contracts },
+            { "service_hosted_unified_report", "hosted v1 unified evaluation report promotion", &test_service_hosted_unified_report_contracts },
             { "service_cancellation", "service-core queued cancellation state transitions", &test_service_cancellation_contracts },
             { "service_running_cancellation", "service-core cooperative running-job cancellation", &test_service_running_cancellation_contracts },
             { "service_artifact_sandbox_cleanup", "service-core artifact sandboxing and cleanup", &test_service_artifact_sandbox_cleanup_contracts },
@@ -410,6 +416,19 @@ namespace sugar {
             { "candle_adapters", "CandleSeries cache + NumericFrame/DataView conversion", &test_candle_adapter_contracts },
             { "kernel_warmup", "kernel warmup and derived-series invariants", &test_kernel_warmup_contracts },
             { "axis_domains", "temporal/spatial/spatiotemporal runtime domains", &test_axis_domain_runtime_contracts },
+            { "neighborhood_query_baseline", "NeighborhoodQuery baseline contracts", &test_neighborhood_query_baseline_contracts },
+            { "static_graph_query", "static graph NeighborhoodQuery contracts", &test_static_graph_neighborhood_query_contracts },
+            { "static_graph_runtime_binding", "static graph runtime binding and provenance contracts", &test_static_graph_runtime_binding_contracts },
+            { "topology_operator_runtime", "generic topology operator runtime contracts", &test_topology_operator_runtime_contracts },
+            { "hierarchy_query_runtime", "hierarchy query provider, binding, and operator contracts", &test_hierarchy_query_runtime_contracts },
+            { "semantic_neighbor_query_runtime", "semantic embedding query provider, binding, and operator contracts", &test_semantic_neighbor_query_runtime_contracts },
+            { "time_valid_graph_query_runtime", "time-valid and versioned graph query provider, binding, and operator contracts", &test_time_valid_graph_query_runtime_contracts },
+            { "topology_readiness_runtime", "final topology-query readiness contracts", &test_topology_readiness_runtime_contracts },
+            { "dynamic_execution_static_validation", "Milestone G declared dynamic execution schema and static validation", &test_dynamic_execution_static_validation_contracts },
+            { "dynamic_execution_compile_metadata", "Milestone G compiled metadata and constant-route equivalence", &test_dynamic_execution_compile_metadata_contracts },
+            { "dynamic_execution_runtime_hardening", "Milestone G declared dynamic execution sweep, panel, cancellation, and report-size hardening", &test_dynamic_execution_runtime_hardening_contracts },
+            { "dynamic_execution_topology_routing", "Milestone G topology-informed declared dynamic route selectors", &test_dynamic_execution_topology_routing_contracts },
+            { "dynamic_execution_replay_compatibility", "Milestone G declared dynamic sweep replay and determinism compatibility", &test_dynamic_execution_replay_compatibility_contracts },
             { "axis_query_temporal", "temporal axis payload and neighborhood-query contracts", &test_axis_query_temporal_contracts },
             { "axis_query_spatial", "spatial axis payload and neighborhood-query contracts", &test_axis_query_spatial_contracts },
             { "axis_query_spatiotemporal", "spatiotemporal axis payload and neighborhood-query contracts", &test_axis_query_spatiotemporal_contracts },
@@ -441,6 +460,7 @@ namespace sugar {
             { "ts_alias_runtime_parity", "TS runtime alias parity smoke contracts", &test_ts_alias_runtime_parity_contracts },
             { "ts_runtime_equivalence_smoke", "TS runtime representative equivalence smoke contracts", &test_ts_runtime_equivalence_smoke_contracts },
             { "assertion_hygiene", "test assertion-hygiene source scan", &test_assertion_hygiene_contracts },
+            { "contract_source_hygiene", "contract source size hygiene", &test_contract_source_hygiene_contracts },
             { "runtime_gates", "runtime no-legacy wrapper include gate", &test_runtime_no_legacy_composite_include },
             { "executor_determinism", "executor determinism", &test_executor_determinism },
         };
@@ -451,6 +471,7 @@ namespace sugar {
                 {
                     "service_invalid_request_rejection",
                     "service_result_ownership",
+                    "service_hosted_unified_report",
                     "service_cancellation",
                     "service_running_cancellation",
                     "service_artifact_sandbox_cleanup",
@@ -526,6 +547,11 @@ namespace sugar {
                 { "plan_capability_facts", "plan_capability_runtime_binding", "plan_capability_runtime_topology", "plan_capability_runtime_locality", "multi_entity_ref_binding_overload_rejection" }
             },
             {
+                "dynamic_execution",
+                "Milestone G declared dynamic execution readiness contracts",
+                { "dynamic_execution_static_validation", "dynamic_execution_compile_metadata", "dynamic_execution_runtime_hardening", "dynamic_execution_topology_routing", "dynamic_execution_replay_compatibility" }
+            },
+            {
                 "runtime_design_loads",
                 "load-rated runtime seams that should carry real execution today",
                 {
@@ -573,7 +599,12 @@ namespace sugar {
             {
                 "axis_queries",
                 "compatibility wrapper for split axis payload and neighborhood-query contracts",
-                { "axis_query_temporal", "axis_query_spatial", "axis_query_spatiotemporal" }
+                { "neighborhood_query_baseline", "static_graph_query", "axis_query_temporal", "axis_query_spatial", "axis_query_spatiotemporal" }
+            },
+            {
+                "topology_query_runtime",
+                "topology query providers, runtime binding, and operator contracts",
+                { "neighborhood_query_baseline", "static_graph_query", "static_graph_runtime_binding", "topology_operator_runtime", "hierarchy_query_runtime", "semantic_neighbor_query_runtime", "time_valid_graph_query_runtime", "topology_readiness_runtime", "axis_query_temporal", "axis_query_spatial", "axis_query_spatiotemporal" }
             },
             {
                 "ts_smoke",
@@ -653,6 +684,7 @@ namespace sugar {
 
         out << "\n=== Contract Suite Summary ===\n";
         out << "Passed: " << t.passed << "\n";
+        out << "Warnings: " << t.warnings << "\n";
         out << "Failed: " << t.failed << "\n";
         return t.failed == 0;
     }

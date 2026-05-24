@@ -56,7 +56,12 @@ namespace sugar::app::tests {
 
     void register_cli_tests(AppTestRegistry& tests);
     void register_runtime_tests(AppTestRegistry& tests);
-    void register_command_tests(AppTestRegistry& tests);
+    void register_reference_command_tests(AppTestRegistry& tests);
+    void register_observation_plan_report_tests(AppTestRegistry& tests);
+    void register_ux_diagnostic_tests(AppTestRegistry& tests);
+    void register_run_projection_tests(AppTestRegistry& tests);
+    void register_sweep_report_tests(AppTestRegistry& tests);
+    void register_preflight_diagnostic_tests(AppTestRegistry& tests);
     void register_interactive_tests(AppTestRegistry& tests);
     void register_run_tests(AppTestRegistry& tests);
 

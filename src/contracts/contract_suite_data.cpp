@@ -375,6 +375,71 @@ namespace sugar::contract_suite_internal {
             std::string err;
             const bool ok = parse_data_spec_json(R"JSON(
 {
+  "time_col": "date",
+  "time_kind": "YYYY-MM-DD",
+  "value_cols": ["close"]
+}
+)JSON", ds, err);
+            t.expect(ok, "friendly date alias parses with single value_col");
+            if (ok) {
+                t.expect(ds.time_kind == TimeKind::YyyyMmDd,
+                    "YYYY-MM-DD alias maps to YyyyMmDd internally");
+                t.expect(ds.primary_value_col == "close",
+                    "single value_col infers primary_value_col");
+                t.expect(ds.primary_value_col_inferred_from_single_value_col,
+                    "single value_col inference is recorded");
+            }
+        }
+
+        {
+            DataSpec ds{};
+            std::string err;
+            const bool ok = parse_data_spec_json(R"JSON(
+{
+  "time_col": "date",
+  "time_kind": "YYYY-MM-DD",
+  "primary_value_col": "measurement"
+}
+)JSON", ds, err);
+            t.expect(ok, "primary-only single-value shorthand parses");
+            if (ok) {
+                t.expect(ds.value_cols.size() == 1 && ds.value_cols[0] == "measurement",
+                    "value_cols is inferred from primary_value_col");
+                t.expect(ds.primary_value_col == "measurement",
+                    "primary_value_col is preserved for primary-only shorthand");
+                t.expect(ds.value_cols_inferred_from_primary_value_col,
+                    "primary-only value_cols inference is recorded");
+                t.expect(!ds.primary_value_col_inferred_from_single_value_col,
+                    "primary-only shorthand does not also record primary inference");
+            }
+        }
+
+        {
+            DataSpec ds{};
+            std::string err;
+            const bool ok = parse_data_spec_json(R"JSON(
+{
+  "time_col": "time",
+  "time_kind": "ISO-8601",
+  "value_cols": ["close"]
+}
+)JSON", ds, err);
+            t.expect(ok, "friendly ISO-8601 alias parses");
+            if (ok) {
+                t.expect(ds.time_kind == TimeKind::Iso8601,
+                    "ISO-8601 alias maps to Iso8601 internally");
+                t.expect(ds.primary_value_col == "close",
+                    "single ISO value_col infers primary_value_col");
+                t.expect(ds.primary_value_col_inferred_from_single_value_col,
+                    "single ISO value_col inference is recorded");
+            }
+        }
+
+        {
+            DataSpec ds{};
+            std::string err;
+            const bool ok = parse_data_spec_json(R"JSON(
+{
   "input_profile": "totally_invalid_profile"
 }
 )JSON", ds, err);

@@ -20,13 +20,57 @@ namespace sugar {
             return s;
         }
 
+        constexpr const char* kTimeKindUsage =
+            "YyyyMmDd|YYYY-MM-DD|YYYYMMDD|Iso8601|ISO-8601|YearQuarter|YearMonth|Index";
+
         bool parse_time_kind(const std::string& s, TimeKind& out) {
             const std::string x = to_lower(s);
-            if (x == "yyyymmdd" || x == "yyyy_mm_dd") { out = TimeKind::YyyyMmDd; return true; }
-            if (x == "iso8601" || x == "iso_8601") { out = TimeKind::Iso8601; return true; }
-            if (x == "yearquarter" || x == "year_quarter") { out = TimeKind::YearQuarter; return true; }
-            if (x == "yearmonth" || x == "year_month") { out = TimeKind::YearMonth; return true; }
-            if (x == "index") { out = TimeKind::Index; return true; }
+            if (x == "yyyymmdd" ||
+                x == "yyyy_mm_dd" ||
+                x == "yyyy-mm-dd" ||
+                x == "yyyy/mm/dd" ||
+                x == "date" ||
+                x == "date_only" ||
+                x == "date-only" ||
+                x == "date_dash" ||
+                x == "date-dash" ||
+                x == "date_slash" ||
+                x == "date-slash") {
+                out = TimeKind::YyyyMmDd;
+                return true;
+            }
+            if (x == "iso8601" ||
+                x == "iso_8601" ||
+                x == "iso-8601" ||
+                x == "datetime" ||
+                x == "date_time" ||
+                x == "date-time" ||
+                x == "timestamp") {
+                out = TimeKind::Iso8601;
+                return true;
+            }
+            if (x == "yearquarter" ||
+                x == "year_quarter" ||
+                x == "year-quarter" ||
+                x == "yyyyq" ||
+                x == "yyyy-q" ||
+                x == "yyyy_q") {
+                out = TimeKind::YearQuarter;
+                return true;
+            }
+            if (x == "yearmonth" ||
+                x == "year_month" ||
+                x == "year-month" ||
+                x == "yyyymm" ||
+                x == "yyyy-mm" ||
+                x == "yyyy/mm") {
+                out = TimeKind::YearMonth;
+                return true;
+            }
+            if (x == "index" || x == "row_index" || x == "row-index") {
+                out = TimeKind::Index;
+                return true;
+            }
             return false;
         }
 
@@ -45,6 +89,16 @@ namespace sugar {
                 return true;
             }
             return false;
+        }
+
+        std::string header_policy_error_for(std::string_view value) {
+            std::string err =
+                "header_policy must be one of RequiredHeaders|OptionalHeaders|HeaderlessPositional";
+            const std::string x = to_lower(std::string(value));
+            if (x == "first_row" || x == "firstrow" || x == "has_header" || x == "headers") {
+                err += "; for a CSV whose first row contains column names, use RequiredHeaders";
+            }
+            return err;
         }
 
         bool parse_input_profile(const std::string& s, InputProfile& out) {
@@ -303,11 +357,11 @@ namespace sugar {
 
         if (auto* p = obj_get(o, "header_policy")) {
             if (!p->is_str()) {
-                err = "header_policy must be one of RequiredHeaders|OptionalHeaders|HeaderlessPositional";
+                err = header_policy_error_for({});
                 return false;
             }
             if (!parse_header_policy(p->as_str(), tmp.header_policy)) {
-                err = "header_policy must be one of RequiredHeaders|OptionalHeaders|HeaderlessPositional";
+                err = header_policy_error_for(p->as_str());
                 return false;
             }
         }
@@ -318,11 +372,11 @@ namespace sugar {
 
         if (auto* p = obj_get(o, "time_kind")) {
             if (!p->is_str()) {
-                err = "time_kind must be one of YyyyMmDd|Iso8601|YearQuarter|YearMonth|Index";
+                err = std::string("time_kind must be one of ") + kTimeKindUsage;
                 return false;
             }
             if (!parse_time_kind(p->as_str(), tmp.time_kind)) {
-                err = "time_kind must be one of YyyyMmDd|Iso8601|YearQuarter|YearMonth|Index";
+                err = std::string("time_kind must be one of ") + kTimeKindUsage;
                 return false;
             }
             has_time_kind = true;
@@ -336,7 +390,9 @@ namespace sugar {
             return false;
         }
 
+        bool has_value_cols = false;
         if (auto* p = obj_get(o, "value_cols")) {
+            has_value_cols = true;
             if (!parse_string_array(*p, tmp.value_cols, err, "value_cols")) return false;
         }
 
@@ -344,7 +400,9 @@ namespace sugar {
             if (!parse_rename_map(*p, tmp.rename, err)) return false;
         }
 
+        bool has_primary_value_col = false;
         if (auto* p = obj_get(o, "primary_value_col")) {
+            has_primary_value_col = true;
             if (!p->is_str()) {
                 err = "primary_value_col must be string";
                 return false;
@@ -406,6 +464,17 @@ namespace sugar {
             if (tmp.rename.empty()) tmp.rename = prof.rename;
         }
 
+        if (!has_value_cols && has_primary_value_col && tmp.value_cols.empty() &&
+            !tmp.primary_value_col.empty()) {
+            tmp.value_cols = { tmp.primary_value_col };
+            tmp.value_cols_inferred_from_primary_value_col = true;
+        }
+
+        if (tmp.primary_value_col.empty() && tmp.value_cols.size() == 1) {
+            tmp.primary_value_col = tmp.value_cols.front();
+            tmp.primary_value_col_inferred_from_single_value_col = !has_primary_value_col;
+        }
+
         const bool has_time_axis = data_spec_has_time_axis(tmp);
         const bool has_spatial_axis = data_spec_has_spatial_axis(tmp);
 
@@ -426,7 +495,7 @@ namespace sugar {
             return false;
         }
         if (tmp.primary_value_col.empty()) {
-            err = "primary_value_col (string) is required";
+            err = "primary_value_col (string) is required when value_cols contains more than one column";
             return false;
         }
 

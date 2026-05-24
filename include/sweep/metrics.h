@@ -47,6 +47,12 @@ namespace sugar {
 		ObjectiveDirection direction{ ObjectiveDirection::Maximize };
 	};
 
+    struct ObjectiveVectorComponentSpec {
+        std::string label{};
+        ObjectiveValueSpec value{};
+        ObjectiveDirection direction{ ObjectiveDirection::Maximize };
+    };
+
 	struct RankingObjectiveSpec {
 		ObjectiveValueSpec primary{};
 		ObjectiveDirection direction{ ObjectiveDirection::Maximize };
@@ -60,13 +66,69 @@ namespace sugar {
 		ReportedValue = 2,
 	};
 
-	struct SignalCountSummary {
-		std::size_t allow_trade{ 0 };
-		std::size_t entry_long{ 0 };
-		std::size_t exit_long{ 0 };
-		std::size_t entry_short{ 0 };
-		std::size_t exit_short{ 0 };
-	};
+    struct SignalCountSummary {
+        std::size_t allow_trade{ 0 };
+        std::size_t entry_long{ 0 };
+        std::size_t exit_long{ 0 };
+        std::size_t entry_short{ 0 };
+        std::size_t exit_short{ 0 };
+    };
+
+    struct RunDynamicRouteCaseSummary {
+        std::string id{};
+        bool when{ true };
+        std::vector<std::string> activate_subgraphs{};
+        std::size_t decisions{ 0 };
+    };
+
+    struct RunDynamicRouteSummary {
+        std::string id{};
+        std::string condition_node_id{};
+        bool condition_is_constant{ false };
+        bool constant_condition_value{ false };
+        std::vector<RunDynamicRouteCaseSummary> cases{};
+        std::vector<std::string> fallback_subgraphs{};
+        std::size_t true_decisions{ 0 };
+        std::size_t false_decisions{ 0 };
+        std::size_t fallback_decisions{ 0 };
+    };
+
+    struct RunDynamicDecisionSample {
+        std::size_t row{ 0 };
+        std::string route_id{};
+        std::string selected_case_id{};
+        bool fallback_used{ false };
+        bool condition_value{ false };
+        std::vector<std::string> active_subgraphs{};
+    };
+
+    struct RunDynamicOutputSummary {
+        std::string id{};
+        std::string node_id{};
+        std::string owning_subgraph{};
+        std::size_t active_rows{ 0 };
+        std::size_t inactive_rows{ 0 };
+    };
+
+    struct RunDynamicExecutionSummary {
+        bool enabled{ false };
+        std::string mode{};
+        std::vector<std::string> subgraph_ids{};
+        std::vector<RunDynamicRouteSummary> routes{};
+        std::vector<RunDynamicOutputSummary> outputs{};
+        std::vector<RunDynamicDecisionSample> decision_samples{};
+        std::size_t total_decisions{ 0 };
+        std::size_t emitted_decision_samples{ 0 };
+        std::size_t suppressed_decisions{ 0 };
+        std::size_t decision_sample_limit{ 0 };
+        std::size_t fallback_decisions{ 0 };
+        std::size_t inactive_output_rows{ 0 };
+        std::size_t inactive_node_rows{ 0 };
+        std::size_t max_active_subgraphs_per_row{ 0 };
+        std::size_t max_active_subgraph_cap{ 0 };
+        bool bounded_by_declared_caps{ true };
+        std::uint64_t route_decision_digest{ 0 };
+    };
 
 	struct ResultMetricValue {
 		std::string name{};
@@ -89,8 +151,8 @@ namespace sugar {
 		TimeKey best_start_date{};								// first usable signal TimeKey
 		bool has_best_start_date{ false };						// true if best_start_date is set
 
-		std::size_t long_trades{};								// 
-		std::size_t short_trades{};								// 
+		std::size_t long_trades{};
+		std::size_t short_trades{};
 
 		double pnl_long{};										// sum of % from long trades
 		double pnl_short{};										// sum of % from short trades
@@ -98,6 +160,7 @@ namespace sugar {
 		std::size_t rows_evaluated{};							// rows seen by the executor on the active observation domain
 		std::size_t warmup_rows{};								// leading rows skipped before the plan becomes execution-valid
 		SignalCountSummary signal_counts{};						// counts of bound bool-signal activations over the row domain
+        RunDynamicExecutionSummary dynamic_execution{};          // declared dynamic DAG route/report diagnostics
 		std::vector<NamedReportedValue> reported_values{};		// named extra values preserved from the evaluated logic
 	};
 
@@ -117,11 +180,29 @@ namespace sugar {
 		NonFinitePenaltyValue = 5,
 	};
 
+    enum class RunObjectiveComponentRole {
+        Primary = 0,
+        Penalty = 1,
+        TieBreak = 2,
+    };
+
+    struct RunObjectiveComponent {
+        RunObjectiveComponentRole role{ RunObjectiveComponentRole::Primary };
+        ObjectiveValueSpec value{};
+        ObjectiveDirection direction{ ObjectiveDirection::Maximize };
+        double weight{ 0.0 };
+        bool present{ false };
+        bool finite{ false };
+        double raw_value{ 0.0 };
+        double score_contribution{ 0.0 };
+    };
+
 	struct RunObjectiveSummary {
 		bool requested{ false };
 		RankingObjectiveSpec objective{};
 		RunRankabilityState rankability{ RunRankabilityState::NotEvaluated };
 		double score{ 0.0 };
+        std::vector<RunObjectiveComponent> components{};
 	};
 
     struct RunOutcomeCounts {
@@ -139,6 +220,54 @@ namespace sugar {
         std::size_t missing_penalty_value{ 0 };
         std::size_t non_finite_penalty_value{ 0 };
     };
+
+    struct RunTopologyArtifactSummary {
+        bool present{ false };
+        std::string stable_id{};
+        std::string locator{};
+        std::string format{};
+        std::string digest{};
+        std::string producer{};
+    };
+
+    struct RunTopologySummary {
+        std::string name{};
+        std::string origin{};
+        std::string bearing{};
+        std::string family{};
+        std::string domain_scope{};
+        std::vector<std::string> query_kinds{};
+        bool directed{ false };
+        bool weighted{ false };
+        std::size_t node_count{ 0 };
+        std::size_t edge_count{ 0 };
+        std::size_t time_valid_edge_count{ 0 };
+        std::size_t versioned_edge_count{ 0 };
+        std::size_t semantic_embedding_count{ 0 };
+        RunTopologyArtifactSummary artifact{};
+    };
+
+    struct RunTopologyUsageSummary {
+        std::string subject_kind{};
+        std::string subject_id{};
+        std::string op_name{};
+        std::string topology_name{};
+        std::string topology_origin{};
+        std::string topology_bearing{};
+        std::string locality_subject_kind{};
+        std::string locality_subject_value{};
+        bool locality_subject_explicit{ false };
+        std::string resolved_series_key{};
+        std::string resolved_entity_key{};
+        std::vector<std::string> required_topology_families{};
+        std::vector<std::string> required_topology_query_kinds{};
+        bool catalog_present{ false };
+        bool runtime_resolved{ false };
+        RunTopologyArtifactSummary artifact{};
+    };
+
+    inline constexpr std::size_t kRunTopologyDiagnosticsTopologyLimit = 32;
+    inline constexpr std::size_t kRunTopologyDiagnosticsUsageLimit = 64;
 
     struct RunProvenanceSummary {
         std::string primary_series_key{};
@@ -162,6 +291,8 @@ namespace sugar {
         std::string alignment_non_temporal_multi_series{};
         std::vector<std::string> topology_names{};
         std::size_t topology_usage_count{ 0 };
+        std::vector<RunTopologySummary> topologies{};
+        std::vector<RunTopologyUsageSummary> topology_usages{};
     };
 
 	struct RunReport {
@@ -174,10 +305,13 @@ namespace sugar {
 
 	std::string_view objective_value_source_name(ObjectiveValueSource source);
 	std::string_view objective_direction_name(ObjectiveDirection direction);
+    std::string objective_vector_component_label(
+        const ObjectiveVectorComponentSpec& objective);
 	std::string_view numeric_node_summary_mode_name(NumericNodeSummaryMode mode);
 	std::string_view result_metric_kind_name(ResultMetricKind kind);
 	std::string_view run_outcome_state_name(RunOutcomeState state);
 	std::string_view run_rankability_state_name(RunRankabilityState state);
+    std::string_view run_objective_component_role_name(RunObjectiveComponentRole role);
     RunProvenanceSummary build_run_provenance_summary(const RunManifest& manifest);
 
 	RunReport build_run_report(

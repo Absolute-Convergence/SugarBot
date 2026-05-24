@@ -2,20 +2,25 @@
 #include "program_evaluator_internal.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "ops/op_kernels_math.h"
 #include "op_kernels_core.h"
 #include "op_kernels_ms.h"
 #include "op_kernels_spatial.h"
+#include "op_kernels_topology.h"
 #include "op_kernels_ts.h"
 #include "op_registry_internal.h"
 #include "strategy_plan_internal.h"
@@ -62,6 +67,11 @@ namespace sugar {
                 "spatial.identity",
                 "spatial.radius_mean",
                 "st.radius_mean",
+                "topology.neighbor_mean",
+                "topology.neighbor_min",
+                "topology.neighbor_max",
+                "topology.weighted_sum",
+                "topology.degree",
                 "ms.diff",
                 "ms.ratio",
                 "ms.zscore",
@@ -261,6 +271,111 @@ namespace sugar {
             return static_cast<bool>(out);
         }
 
+        std::string normalized_direction_string(std::string value) {
+            value.erase(std::remove_if(value.begin(), value.end(),
+                [](unsigned char ch) { return std::isspace(ch) != 0 || ch == '_' || ch == '-'; }),
+                value.end());
+            std::transform(value.begin(), value.end(), value.begin(),
+                [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            return value;
+        }
+
+        bool parse_topology_direction(
+            const ResolvedParamMap& params,
+            GraphNeighborhoodDirection& out,
+            std::string& err) {
+            const std::string raw = as_str(params, "direction").value_or("outgoing");
+            const std::string normalized = normalized_direction_string(raw);
+            if (normalized.empty() || normalized == "outgoing" || normalized == "out") {
+                out = GraphNeighborhoodDirection::Outgoing;
+                return true;
+            }
+            if (normalized == "incoming" || normalized == "in") {
+                out = GraphNeighborhoodDirection::Incoming;
+                return true;
+            }
+            if (normalized == "both" || normalized == "all") {
+                out = GraphNeighborhoodDirection::Both;
+                return true;
+            }
+            err = "unknown topology direction '" + raw + "'; expected outgoing, incoming, or both";
+            return false;
+        }
+
+        std::size_t topology_max_neighbors(const ResolvedParamMap& params) {
+            const auto value = as_i64(params, "max_neighbors");
+            if (!value.has_value()) {
+                return std::numeric_limits<std::size_t>::max();
+            }
+            return static_cast<std::size_t>(std::max<std::int64_t>(0, *value));
+        }
+
+        bool parse_topology_hierarchy_traversal(
+            const ResolvedParamMap& params,
+            std::string& out,
+            std::string& err) {
+            const auto value = as_str(params, "traversal");
+            if (!value.has_value()) {
+                out.clear();
+                return true;
+            }
+
+            const std::string normalized = normalized_direction_string(*value);
+            if (normalized.empty() ||
+                normalized == "children" ||
+                normalized == "child" ||
+                normalized == "descendants" ||
+                normalized == "descendant") {
+                out = "children";
+                return true;
+            }
+            if (normalized == "parent" ||
+                normalized == "parents" ||
+                normalized == "ancestor" ||
+                normalized == "ancestors") {
+                out = "parent";
+                return true;
+            }
+            if (normalized == "sibling" ||
+                normalized == "siblings") {
+                out = "siblings";
+                return true;
+            }
+            if (normalized == "adjacent" ||
+                normalized == "parentchildren" ||
+                normalized == "parentschildren" ||
+                normalized == "parentandchildren") {
+                out = "parent_and_children";
+                return true;
+            }
+
+            err = "unknown topology hierarchy traversal '" + *value +
+                "'; expected children, parent, siblings, or parent_and_children";
+            return false;
+        }
+
+        bool parse_topology_options(
+            const ResolvedParamMap& params,
+            op_kernels::TopologyNeighborhoodOptions& out,
+            std::string& err) {
+            if (!parse_topology_direction(params, out.direction, err)) {
+                return false;
+            }
+            out.include_anchor = as_bool(params, "include_anchor").value_or(false);
+            out.max_neighbors = topology_max_neighbors(params);
+            out.graph_version = as_str(params, "version").value_or(std::string{});
+            if (!parse_topology_hierarchy_traversal(params, out.hierarchy_traversal, err)) {
+                return false;
+            }
+
+            const auto max_depth = as_i64(params, "max_depth");
+            out.has_hierarchy_max_depth = max_depth.has_value();
+            out.hierarchy_max_depth = max_depth.has_value()
+                ? static_cast<std::size_t>(std::max<std::int64_t>(0, *max_depth))
+                : std::size_t{ 1 };
+            return true;
+        }
+
         BoolBuffer compare_vec(std::span<const double> a, std::span<const double> b, const std::string& op_name) {
             const std::size_t n = std::max(a.size(), b.size());
             BoolBuffer out(n, kBoolFalse);
@@ -399,6 +514,54 @@ namespace sugar {
                 std::unique_ptr<NeighborhoodQuery> nq;
                 if (!resolve_numeric_op_topology(ctx, op, node.params, nq, err)) return false;
                 out = op_kernels::st_radius_mean(inputs.at(0).num, *nq, last_n, radius);
+                return validate_numeric_size(out, n, err, op);
+            }
+            if (op == "topology.neighbor_mean" ||
+                op == "topology.neighbor_min" ||
+                op == "topology.neighbor_max" ||
+                op == "topology.weighted_sum") {
+                op_kernels::TopologyNeighborhoodOptions options{};
+                if (!parse_topology_options(node.params, options, err)) {
+                    err = op + " parameter validation failed: " + err;
+                    return false;
+                }
+                std::unique_ptr<NeighborhoodQuery> nq;
+                if (!resolve_numeric_op_topology(ctx, op, node.params, nq, err)) return false;
+                try {
+                    if (op == "topology.neighbor_mean") {
+                        out = op_kernels::topology_neighbor_mean(inputs.at(0).num, *nq, options);
+                    }
+                    else if (op == "topology.neighbor_min") {
+                        out = op_kernels::topology_neighbor_min(inputs.at(0).num, *nq, options);
+                    }
+                    else if (op == "topology.neighbor_max") {
+                        out = op_kernels::topology_neighbor_max(inputs.at(0).num, *nq, options);
+                    }
+                    else {
+                        out = op_kernels::topology_weighted_sum(inputs.at(0).num, *nq, options);
+                    }
+                }
+                catch (const std::exception& ex) {
+                    err = op + " topology query failed: " + std::string(ex.what());
+                    return false;
+                }
+                return validate_numeric_size(out, n, err, op);
+            }
+            if (op == "topology.degree") {
+                op_kernels::TopologyNeighborhoodOptions options{};
+                if (!parse_topology_options(node.params, options, err)) {
+                    err = op + " parameter validation failed: " + err;
+                    return false;
+                }
+                std::unique_ptr<NeighborhoodQuery> nq;
+                if (!resolve_numeric_op_topology(ctx, op, node.params, nq, err)) return false;
+                try {
+                    out = op_kernels::topology_degree(*nq, options, n);
+                }
+                catch (const std::exception& ex) {
+                    err = op + " topology query failed: " + std::string(ex.what());
+                    return false;
+                }
                 return validate_numeric_size(out, n, err, op);
             }
             if (op == "ms.diff") return binary_num(op_kernels::ms_diff);
@@ -788,19 +951,420 @@ namespace sugar {
             }
         }
 
-        auto assign_bool = [&](std::size_t slot, BoolBuffer& dst, bool default_true = false) {
-            if (slot == kInvalidProgramSlot) {
-                dst.assign(ctx.row_count, default_true ? kBoolTrue : kBoolFalse);
-                return;
-            }
-            dst = out.bool_slots.at(slot);
+        struct DynamicEvaluationState {
+            std::vector<BoolBuffer> subgraph_active{};
+            RunDynamicExecutionSummary summary{};
         };
 
-        assign_bool(program.entry_long_slot, out.signals.entry_long);
-        assign_bool(program.exit_long_slot, out.signals.exit_long);
-        assign_bool(program.entry_short_slot, out.signals.entry_short);
-        assign_bool(program.exit_short_slot, out.signals.exit_short);
-        assign_bool(program.allow_trade_slot, out.signals.allow_trade, true);
+        auto mix_route_digest = [](std::uint64_t digest,
+                                   std::uint64_t value) -> std::uint64_t {
+            return digest ^
+                (value + 0x9e3779b97f4a7c15ULL + (digest << 6) + (digest >> 2));
+        };
+
+        auto subgraph_name = [&](std::size_t index) -> std::string {
+            const auto& dynamic = program.dynamic_execution;
+            if (index >= dynamic.subgraphs.size()) {
+                return {};
+            }
+            return dynamic.subgraphs[index].id;
+        };
+
+        auto append_subgraph_with_closure = [&](std::vector<std::size_t>& out_indices,
+                                                std::size_t subgraph_index) {
+            const auto& dynamic = program.dynamic_execution;
+            if (subgraph_index >= dynamic.subgraphs.size()) {
+                return;
+            }
+            if (std::find(out_indices.begin(), out_indices.end(), subgraph_index) ==
+                out_indices.end()) {
+                out_indices.push_back(subgraph_index);
+            }
+            const auto& closure =
+                dynamic.subgraphs[subgraph_index].dependency_closure_subgraphs;
+            for (const auto dep : closure) {
+                if (dep < dynamic.subgraphs.size() &&
+                    std::find(out_indices.begin(), out_indices.end(), dep) ==
+                        out_indices.end()) {
+                    out_indices.push_back(dep);
+                }
+            }
+        };
+
+        auto append_dynamic_sample = [&](DynamicEvaluationState& state,
+                                         std::size_t row,
+                                         const CompiledDynamicRoute& route,
+                                         std::string selected_case_id,
+                                         bool fallback_used,
+                                         bool condition_value,
+                                         const std::vector<std::size_t>& active_subgraphs) {
+            auto& summary = state.summary;
+            if (summary.decision_samples.size() >= summary.decision_sample_limit) {
+                return;
+            }
+            RunDynamicDecisionSample sample{};
+            sample.row = row;
+            sample.route_id = route.id;
+            sample.selected_case_id = std::move(selected_case_id);
+            sample.fallback_used = fallback_used;
+            sample.condition_value = condition_value;
+            sample.active_subgraphs.reserve(active_subgraphs.size());
+            for (const auto subgraph_index : active_subgraphs) {
+                sample.active_subgraphs.push_back(subgraph_name(subgraph_index));
+            }
+            summary.decision_samples.push_back(std::move(sample));
+        };
+
+        auto build_dynamic_evaluation_state =
+            [&](DynamicEvaluationState& state) -> bool {
+            const auto& dynamic = program.dynamic_execution;
+            if (!dynamic.enabled) {
+                return true;
+            }
+
+            state = DynamicEvaluationState{};
+            state.subgraph_active.assign(
+                dynamic.subgraphs.size(),
+                BoolBuffer(ctx.row_count, kBoolFalse));
+
+            auto& summary = state.summary;
+            summary.enabled = true;
+            summary.mode = "declared_dynamic";
+            summary.decision_sample_limit = dynamic.decision_sample_limit;
+            summary.max_active_subgraph_cap = dynamic.max_active_subgraphs;
+            summary.route_decision_digest = 0x6d04f77f9fd41d5dULL;
+            summary.subgraph_ids.reserve(dynamic.subgraphs.size());
+            for (const auto& subgraph : dynamic.subgraphs) {
+                summary.subgraph_ids.push_back(subgraph.id);
+            }
+
+            summary.routes.reserve(dynamic.routes.size());
+            for (const auto& route : dynamic.routes) {
+                RunDynamicRouteSummary route_summary{};
+                route_summary.id = route.id;
+                route_summary.condition_node_id = route.condition_node_id;
+                route_summary.condition_is_constant = route.condition_is_constant;
+                route_summary.constant_condition_value = route.constant_condition_value;
+                route_summary.fallback_subgraphs.reserve(route.fallback_subgraphs.size());
+                for (const auto subgraph_index : route.fallback_subgraphs) {
+                    route_summary.fallback_subgraphs.push_back(subgraph_name(subgraph_index));
+                }
+                route_summary.cases.reserve(route.cases.size());
+                for (const auto& route_case : route.cases) {
+                    RunDynamicRouteCaseSummary case_summary{};
+                    case_summary.id = route_case.id;
+                    case_summary.when = route_case.when;
+                    case_summary.activate_subgraphs.reserve(
+                        route_case.activate_subgraphs.size());
+                    for (const auto subgraph_index : route_case.activate_subgraphs) {
+                        case_summary.activate_subgraphs.push_back(
+                            subgraph_name(subgraph_index));
+                    }
+                    route_summary.cases.push_back(std::move(case_summary));
+                }
+                summary.routes.push_back(std::move(route_summary));
+            }
+
+            summary.outputs.reserve(dynamic.outputs.size());
+            for (const auto& output : dynamic.outputs) {
+                RunDynamicOutputSummary output_summary{};
+                output_summary.id = output.id;
+                output_summary.node_id = output.node_id;
+                output_summary.owning_subgraph = subgraph_name(output.owning_subgraph);
+                summary.outputs.push_back(std::move(output_summary));
+            }
+
+            for (std::size_t row = 0; row < ctx.row_count; ++row) {
+                for (std::size_t route_index = 0;
+                     route_index < dynamic.routes.size();
+                     ++route_index) {
+                    const auto& route = dynamic.routes[route_index];
+                    if (route.condition_slot >= out.bool_slots.size()) {
+                        err = "dynamic route condition slot out of range for route '" +
+                            route.id + "'";
+                        return false;
+                    }
+                    const auto& condition = out.bool_slots[route.condition_slot];
+                    if (row >= condition.size()) {
+                        err = "dynamic route condition buffer is shorter than row domain for route '" +
+                            route.id + "'";
+                        return false;
+                    }
+                    const bool condition_value = condition[row] != kBoolFalse;
+                    auto& route_summary = summary.routes[route_index];
+                    if (condition_value) {
+                        ++route_summary.true_decisions;
+                    }
+                    else {
+                        ++route_summary.false_decisions;
+                    }
+
+                    const std::vector<std::size_t>* selected =
+                        &route.fallback_subgraphs;
+                    std::string selected_case_id = "fallback";
+                    bool fallback_used = true;
+                    std::size_t selected_case_index = kInvalidProgramSlot;
+                    for (std::size_t case_index = 0;
+                         case_index < route.cases.size();
+                         ++case_index) {
+                        const auto& route_case = route.cases[case_index];
+                        if (route_case.when == condition_value) {
+                            selected = &route_case.activate_subgraphs;
+                            selected_case_id = route_case.id;
+                            fallback_used = false;
+                            selected_case_index = case_index;
+                            ++route_summary.cases[case_index].decisions;
+                            break;
+                        }
+                    }
+                    if (fallback_used) {
+                        ++route_summary.fallback_decisions;
+                        ++summary.fallback_decisions;
+                    }
+
+                    std::vector<std::size_t> active_with_closure;
+                    for (const auto selected_subgraph : *selected) {
+                        append_subgraph_with_closure(
+                            active_with_closure,
+                            selected_subgraph);
+                    }
+                    for (const auto active_subgraph : active_with_closure) {
+                        if (active_subgraph < state.subgraph_active.size()) {
+                            state.subgraph_active[active_subgraph][row] = kBoolTrue;
+                        }
+                    }
+
+                    summary.route_decision_digest = mix_route_digest(
+                        summary.route_decision_digest,
+                        static_cast<std::uint64_t>(row));
+                    summary.route_decision_digest = mix_route_digest(
+                        summary.route_decision_digest,
+                        static_cast<std::uint64_t>(route_index));
+                    summary.route_decision_digest = mix_route_digest(
+                        summary.route_decision_digest,
+                        condition_value ? 1ULL : 0ULL);
+                    summary.route_decision_digest = mix_route_digest(
+                        summary.route_decision_digest,
+                        fallback_used ? 1ULL : 0ULL);
+                    summary.route_decision_digest = mix_route_digest(
+                        summary.route_decision_digest,
+                        selected_case_index == kInvalidProgramSlot
+                            ? 0xffffffffffffffffULL
+                            : static_cast<std::uint64_t>(selected_case_index));
+                    for (const auto active_subgraph : active_with_closure) {
+                        summary.route_decision_digest = mix_route_digest(
+                            summary.route_decision_digest,
+                            static_cast<std::uint64_t>(active_subgraph));
+                    }
+
+                    append_dynamic_sample(
+                        state,
+                        row,
+                        route,
+                        std::move(selected_case_id),
+                        fallback_used,
+                        condition_value,
+                        active_with_closure);
+                    ++summary.total_decisions;
+                }
+
+                std::size_t active_count = 0;
+                for (const auto& mask : state.subgraph_active) {
+                    if (row < mask.size() && mask[row] != kBoolFalse) {
+                        ++active_count;
+                    }
+                }
+                summary.max_active_subgraphs_per_row =
+                    std::max(summary.max_active_subgraphs_per_row, active_count);
+                if (dynamic.max_active_subgraphs > 0 &&
+                    active_count > dynamic.max_active_subgraphs) {
+                    summary.bounded_by_declared_caps = false;
+                    err = "dynamic execution active subgraph count " +
+                        std::to_string(active_count) +
+                        " exceeds execution.bounds.max_active_subgraphs " +
+                        std::to_string(dynamic.max_active_subgraphs);
+                    return false;
+                }
+            }
+
+            summary.emitted_decision_samples = summary.decision_samples.size();
+            summary.suppressed_decisions =
+                summary.total_decisions - summary.emitted_decision_samples;
+            return true;
+        };
+
+        auto apply_dynamic_node_masks =
+            [&](const DynamicEvaluationState& state) -> bool {
+            const auto& dynamic = program.dynamic_execution;
+            if (!dynamic.enabled) {
+                return true;
+            }
+            for (std::size_t subgraph_index = 0;
+                 subgraph_index < dynamic.subgraphs.size();
+                 ++subgraph_index) {
+                if (subgraph_index >= state.subgraph_active.size()) {
+                    err = "dynamic subgraph mask index out of range";
+                    return false;
+                }
+                const auto& active = state.subgraph_active[subgraph_index];
+                if (active.size() != ctx.row_count) {
+                    err = "dynamic subgraph mask has unexpected row count";
+                    return false;
+                }
+                for (const auto& node : dynamic.subgraphs[subgraph_index].nodes) {
+                    if (node.type == ValueType::Num) {
+                        if (node.slot >= out.numeric_slots.size()) {
+                            err = "dynamic numeric node slot out of range for node '" +
+                                node.node_id + "'";
+                            return false;
+                        }
+                        auto& buffer = out.numeric_slots[node.slot];
+                        if (buffer.size() != ctx.row_count) {
+                            err = "dynamic numeric node buffer has unexpected row count for node '" +
+                                node.node_id + "'";
+                            return false;
+                        }
+                        for (std::size_t row = 0; row < buffer.size(); ++row) {
+                            if (active[row] == kBoolFalse) {
+                                if (!std::isnan(buffer[row])) {
+                                    ++out.dynamic_execution.inactive_node_rows;
+                                }
+                                buffer[row] = qnan();
+                            }
+                        }
+                    }
+                    else {
+                        if (node.slot >= out.bool_slots.size()) {
+                            err = "dynamic bool node slot out of range for node '" +
+                                node.node_id + "'";
+                            return false;
+                        }
+                        auto& buffer = out.bool_slots[node.slot];
+                        if (buffer.size() != ctx.row_count) {
+                            err = "dynamic bool node buffer has unexpected row count for node '" +
+                                node.node_id + "'";
+                            return false;
+                        }
+                        for (std::size_t row = 0; row < buffer.size(); ++row) {
+                            if (active[row] == kBoolFalse) {
+                                if (buffer[row] != kBoolFalse) {
+                                    ++out.dynamic_execution.inactive_node_rows;
+                                }
+                                buffer[row] = kBoolFalse;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+
+        DynamicEvaluationState dynamic_state{};
+        if (!build_dynamic_evaluation_state(dynamic_state)) {
+            return false;
+        }
+        out.dynamic_execution = dynamic_state.summary;
+        if (!apply_dynamic_node_masks(dynamic_state)) {
+            return false;
+        }
+
+        auto subgraph_active_for_row = [&](std::size_t subgraph,
+                                           std::size_t row,
+                                           std::string& route_err) -> bool {
+            if (subgraph >= dynamic_state.subgraph_active.size()) {
+                route_err = "dynamic output owning subgraph index out of range";
+                return false;
+            }
+            const auto& mask = dynamic_state.subgraph_active[subgraph];
+            if (row >= mask.size()) {
+                route_err = "dynamic subgraph mask is shorter than row domain";
+                return false;
+            }
+            return mask[row] != kBoolFalse;
+        };
+
+        auto find_dynamic_output_index = [&](const std::string& role)
+            -> std::size_t {
+            const auto& outputs = program.dynamic_execution.outputs;
+            const auto found = std::find_if(
+                outputs.begin(),
+                outputs.end(),
+                [&](const auto& output) {
+                    return output.id == role;
+                });
+            return found == outputs.end()
+                ? kInvalidProgramSlot
+                : static_cast<std::size_t>(std::distance(outputs.begin(), found));
+        };
+
+        auto apply_dynamic_output_gate = [&](const std::string& role,
+                                             BoolBuffer& dst) -> bool {
+            if (!program.dynamic_execution.enabled) {
+                return true;
+            }
+            const auto output_index = find_dynamic_output_index(role);
+            if (output_index == kInvalidProgramSlot) {
+                return true;
+            }
+            const auto& output = program.dynamic_execution.outputs[output_index];
+            if (output.ref.type != ValueType::Bool) {
+                err = "dynamic execution output '" + role + "' is not a bool output";
+                return false;
+            }
+            if (output.owning_subgraph == kInvalidProgramSlot) {
+                err = "dynamic execution output '" + role + "' has no owning subgraph";
+                return false;
+            }
+            if (dst.size() != ctx.row_count) {
+                err = "dynamic execution output '" + role +
+                    "' produced size " + std::to_string(dst.size()) +
+                    ", expected " + std::to_string(ctx.row_count);
+                return false;
+            }
+
+            for (std::size_t row = 0; row < dst.size(); ++row) {
+                std::string route_err;
+                const bool active = subgraph_active_for_row(
+                    output.owning_subgraph,
+                    row,
+                    route_err);
+                if (!route_err.empty()) {
+                    err = route_err;
+                    return false;
+                }
+                if (active) {
+                    if (output_index < out.dynamic_execution.outputs.size()) {
+                        ++out.dynamic_execution.outputs[output_index].active_rows;
+                    }
+                }
+                else {
+                    if (output_index < out.dynamic_execution.outputs.size()) {
+                        ++out.dynamic_execution.outputs[output_index].inactive_rows;
+                    }
+                    ++out.dynamic_execution.inactive_output_rows;
+                    dst[row] = kBoolFalse;
+                }
+            }
+            return true;
+        };
+
+        auto assign_bool = [&](const std::string& role,
+                               std::size_t slot,
+                               BoolBuffer& dst,
+                               bool default_true = false) -> bool {
+            if (slot == kInvalidProgramSlot) {
+                dst.assign(ctx.row_count, default_true ? kBoolTrue : kBoolFalse);
+                return true;
+            }
+            dst = out.bool_slots.at(slot);
+            return apply_dynamic_output_gate(role, dst);
+        };
+
+        if (!assign_bool("entry_long", program.entry_long_slot, out.signals.entry_long)) return false;
+        if (!assign_bool("exit_long", program.exit_long_slot, out.signals.exit_long)) return false;
+        if (!assign_bool("entry_short", program.entry_short_slot, out.signals.entry_short)) return false;
+        if (!assign_bool("exit_short", program.exit_short_slot, out.signals.exit_short)) return false;
+        if (!assign_bool("allow_trade", program.allow_trade_slot, out.signals.allow_trade, true)) return false;
         return true;
     }
 
