@@ -15,7 +15,7 @@ It is not:
 * A black-box model.
 * A production trading system.
 
-License: ALL RIGHTS RESERVED. For internal use at Middle Tennessee State University only.
+License: ALL RIGHTS RESERVED.
 
 ## Quick Start
 
