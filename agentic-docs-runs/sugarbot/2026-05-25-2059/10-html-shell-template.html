@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentic Documentation Shell</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --panel-2: #1c2430;
+      --text: #eef3f8;
+      --muted: #9aa7b4;
+      --line: #2b3746;
+      --blue: #5aa7ff;
+      --green: #4bd18a;
+      --orange: #f6a04d;
+      --red: #ff6b6b;
+      --purple: #b993ff;
+      --cyan: #4dd7e8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      background: #10161f;
+      padding: 18px;
+    }
+    main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      min-height: 100vh;
+    }
+    .brand { font-weight: 700; margin-bottom: 16px; }
+    .timeline { display: grid; gap: 8px; }
+    .dot {
+      width: 100%;
+      text-align: left;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 10px;
+      cursor: pointer;
+    }
+    .dot.active { color: var(--text); border-color: var(--blue); background: #142033; }
+    .slide {
+      padding: clamp(24px, 4vw, 56px);
+      display: grid;
+      align-content: center;
+      gap: 22px;
+    }
+    .eyebrow { color: var(--cyan); font-size: 0.85rem; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(2rem, 5vw, 4.5rem); letter-spacing: 0; }
+    .thesis { color: var(--muted); font-size: 1.05rem; max-width: 900px; }
+    .visual {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 280px;
+    }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--panel-2); }
+    .caption {
+      border-top: 1px solid var(--line);
+      padding: 12px 18px;
+      color: var(--muted);
+      background: #10161f;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    button {
+      background: #1b2635;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 11px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--blue); }
+    .counter { margin-left: auto; color: var(--muted); }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      aside { display: none; }
+      main { min-height: 100vh; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand">Walkthrough</div>
+      <div class="timeline" id="timeline"></div>
+    </aside>
+    <main>
+      <div class="controls">
+        <button id="prev">Prev</button>
+        <button id="next">Next</button>
+        <button id="replay">Replay</button>
+        <button id="play">Play</button>
+        <span class="counter" id="counter"></span>
+      </div>
+      <section class="slide" id="slide"></section>
+      <div class="caption" id="caption"></div>
+    </main>
+  </div>
+  <script>
+    const slides = [
+      {
+        id: "title",
+        section: "Start",
+        title: "Subject-Specific Walkthrough",
+        thesis: "Replace placeholder slide data with codebase-specific findings.",
+        visualType: "claim",
+        content: ["Evidence-backed claim", "Transformation path", "Proof and risk"],
+        narration: "This reusable shell renders a small slide deck with captions, timeline navigation, keyboard controls, replay, and autoplay.",
+        takeaway: "Populate the slide data to build the final walkthrough."
+      },
+      {
+        id: "pipeline",
+        section: "Flow",
+        title: "Pipeline Placeholder",
+        thesis: "Use this component for state transformations.",
+        visualType: "pipeline",
+        content: ["Input", "Normalize", "Compile", "Execute", "Report"],
+        narration: "Pipeline slides should show sequence and causality.",
+        takeaway: "The visual remains useful without animation."
+      }
+    ];
+    let index = 0;
+    let timer = null;
+    const slideEl = document.getElementById("slide");
+    const captionEl = document.getElementById("caption");
+    const timelineEl = document.getElementById("timeline");
+    const counterEl = document.getElementById("counter");
+
+    function renderTimeline() {
+      timelineEl.innerHTML = "";
+      slides.forEach((slide, i) => {
+        const button = document.createElement("button");
+        button.className = "dot" + (i === index ? " active" : "");
+        button.textContent = `${i + 1}. ${slide.title}`;
+        button.addEventListener("click", () => { index = i; render(); });
+        timelineEl.appendChild(button);
+      });
+    }
+
+    function renderVisual(slide) {
+      if (slide.visualType === "pipeline") {
+        return `<div class="cards">${slide.content.map((x, i) => `<div class="card">${i + 1}. ${x}</div>`).join("")}</div>`;
+      }
+      return `<div class="cards">${slide.content.map(x => `<div class="card">${x}</div>`).join("")}</div>`;
+    }
+
+    function render() {
+      const slide = slides[index];
+      slideEl.innerHTML = `
+        <div class="eyebrow">${slide.section}</div>
+        <h1>${slide.title}</h1>
+        <p class="thesis">${slide.thesis}</p>
+        <div class="visual">${renderVisual(slide)}</div>
+      `;
+      captionEl.textContent = slide.narration + " Takeaway: " + slide.takeaway;
+      counterEl.textContent = `${index + 1} / ${slides.length}`;
+      renderTimeline();
+    }
+
+    function next() { index = Math.min(slides.length - 1, index + 1); render(); }
+    function prev() { index = Math.max(0, index - 1); render(); }
+    function replay() { render(); }
+    function togglePlay() {
+      const play = document.getElementById("play");
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        play.textContent = "Play";
+      } else {
+        timer = setInterval(() => {
+          if (index >= slides.length - 1) togglePlay();
+          else next();
+        }, 9000);
+        play.textContent = "Pause";
+      }
+    }
+
+    document.getElementById("next").addEventListener("click", next);
+    document.getElementById("prev").addEventListener("click", prev);
+    document.getElementById("replay").addEventListener("click", replay);
+    document.getElementById("play").addEventListener("click", togglePlay);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight") next();
+      if (event.key === "ArrowLeft") prev();
+      if (event.key === " ") { event.preventDefault(); togglePlay(); }
+    });
+    render();
+  </script>
+</body>
+</html>

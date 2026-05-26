@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SugarBot Runtime Explainer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --rail: #101720;
+      --panel: #141c26;
+      --panel-2: #1a2430;
+      --line: #2c3948;
+      --text: #edf3f8;
+      --muted: #9eacba;
+      --blue: #5aa7ff;
+      --green: #4bd18a;
+      --orange: #f5a24d;
+      --red: #ff6b6b;
+      --purple: #b993ff;
+      --cyan: #4dd7e8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      letter-spacing: 0;
+    }
+    button, select, input[type="range"] {
+      font: inherit;
+    }
+    button, select {
+      color: var(--text);
+      background: #192332;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 11px;
+    }
+    button { cursor: pointer; }
+    button:hover, button:focus-visible, select:focus-visible { border-color: var(--blue); outline: none; }
+    select { max-width: min(38vw, 360px); }
+    .app { display: grid; grid-template-columns: minmax(230px, 290px) minmax(0, 1fr); min-height: 100vh; }
+    .rail {
+      background: var(--rail);
+      border-right: 1px solid var(--line);
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 16px;
+    }
+    .brand .kicker { color: var(--cyan); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 5px; }
+    .brand h2 { margin: 0; font-size: 1.05rem; line-height: 1.25; }
+    .brand p { margin: 8px 0 0; color: var(--muted); font-size: 0.86rem; line-height: 1.45; }
+    .timeline { display: grid; align-content: start; gap: 8px; overflow: auto; }
+    .timeline button { width: 100%; text-align: left; display: grid; gap: 3px; padding: 10px; background: transparent; }
+    .timeline button.active { background: #142033; border-color: var(--blue); }
+    .timeline button.visited:not(.active) { border-color: #33465c; }
+    .slide-number { color: var(--cyan); font-size: 0.74rem; }
+    .slide-name { color: var(--text); font-size: 0.86rem; line-height: 1.25; }
+    .rail-foot { color: var(--muted); font-size: 0.8rem; line-height: 1.4; border-top: 1px solid var(--line); padding-top: 12px; }
+    main { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 100vh; }
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #0f151d; }
+    .voice-picker { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 0.88rem; }
+    .counter { margin-left: auto; color: var(--muted); font-size: 0.88rem; }
+    .slide {
+      padding: clamp(22px, 4vw, 54px);
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+      align-content: start;
+      gap: 18px;
+      overflow: auto;
+    }
+    .eyebrow { color: var(--cyan); font-size: 0.82rem; text-transform: uppercase; }
+    h1 { margin: 0; max-width: 1080px; font-size: clamp(2rem, 4.6vw, 4.35rem); line-height: 0.98; letter-spacing: 0; }
+    .thesis { margin: 0; max-width: 1020px; color: var(--muted); font-size: clamp(1rem, 1.55vw, 1.2rem); line-height: 1.55; }
+    .visual { min-height: 430px; display: grid; gap: 16px; align-content: stretch; }
+    .caption { display: grid; gap: 5px; padding: 12px 18px; border-top: 1px solid var(--line); background: #0f151d; color: var(--muted); line-height: 1.45; }
+    .caption strong { color: var(--text); }
+    .panel, .card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card { background: var(--panel-2); min-height: 96px; }
+    .card.active, .node.active, .state-card.active, .row-card.active { border-color: var(--cyan); background: #132333; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+    .card h3, .panel h3 { margin: 0 0 9px; font-size: 0.98rem; line-height: 1.2; }
+    .card p, .panel p { margin: 0; color: var(--muted); line-height: 1.45; font-size: 0.92rem; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: #121a24;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    .blue { border-color: #326aa5; color: #b7d9ff; }
+    .green { border-color: #2f8459; color: #b8f2d0; }
+    .orange { border-color: #8a5d2a; color: #ffd3a4; }
+    .purple { border-color: #725ab1; color: #ddd0ff; }
+    .cyan { border-color: #2c7885; color: #bff5fb; }
+    .red { border-color: #8c3434; color: #ffc2c2; }
+    .pipeline { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 10px; align-items: stretch; }
+    .node, .state-card, .row-card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 14px; min-height: 112px; }
+    .node .label, .state-card .label { color: var(--cyan); font-size: 0.76rem; margin-bottom: 7px; text-transform: uppercase; }
+    .node .name, .state-card .name, .row-card .name { font-weight: 700; line-height: 1.25; }
+    .node .detail, .state-card .detail, .row-card .detail { color: var(--muted); font-size: 0.84rem; line-height: 1.4; margin-top: 8px; }
+    .bridge { display: grid; grid-template-columns: minmax(0, 1fr) 190px minmax(0, 1fr); gap: 14px; align-items: stretch; }
+    .bridge-center { border: 1px solid #326aa5; background: #132033; border-radius: 8px; display: grid; place-items: center; text-align: center; padding: 16px; color: #cae5ff; font-weight: 700; line-height: 1.35; }
+    .list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+    .list li { border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; color: var(--muted); background: #121a24; line-height: 1.35; }
+    .code { margin: 0; white-space: pre-wrap; background: #0b1017; border: 1px solid var(--line); border-radius: 8px; padding: 14px; color: #d8e9fa; overflow: auto; font-family: Consolas, "Courier New", monospace; font-size: 0.82rem; line-height: 1.45; }
+    .table { width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--panel); }
+    .table th, .table td { border-bottom: 1px solid var(--line); padding: 10px 11px; text-align: left; vertical-align: top; color: var(--muted); line-height: 1.35; font-size: 0.9rem; }
+    .table th { color: var(--text); background: #172231; }
+    .badge { display: inline-flex; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line); font-size: 0.73rem; color: var(--muted); margin-left: 8px; }
+    .proof { border-color: #2f8459; color: #b8f2d0; }
+    .risk, .caution { border-color: #8a5d2a; color: #ffd3a4; }
+    .diagram-core { border: 1px solid #326aa5; background: #132033; color: #cae5ff; border-radius: 8px; padding: 18px; text-align: center; font-weight: 700; display: grid; place-items: center; min-height: 110px; }
+    .lane { display: grid; grid-template-columns: 165px minmax(0, 1fr); gap: 10px; align-items: stretch; margin-bottom: 10px; }
+    .lane-label { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #121a24; color: var(--text); font-weight: 700; }
+    .lane-track { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--panel-2); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .takeaway-box, .trace-box { border-left: 4px solid var(--green); background: #112018; border-radius: 8px; padding: 14px; color: #d8f7e5; line-height: 1.45; }
+    .trace-box { border-left-color: var(--cyan); background: #101f27; color: #cdeff6; }
+    .viz-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .viz-controls input[type="range"] { width: min(420px, 100%); accent-color: var(--cyan); }
+    .mask-grid { display: grid; grid-template-columns: repeat(8, minmax(34px, 1fr)); gap: 7px; }
+    .mask-cell { border: 1px solid var(--line); border-radius: 7px; padding: 9px 4px; text-align: center; color: var(--muted); background: #121a24; }
+    .mask-cell.on { border-color: #2f8459; color: #b8f2d0; background: #112018; }
+    .mask-cell.off { border-color: #8a5d2a; color: #ffd3a4; background: #23190f; }
+    .slide.replay .node, .slide.replay .card, .slide.replay .panel, .slide.replay .state-card, .slide.replay .row-card { animation: flash 520ms ease-out; }
+    @keyframes flash { 0% { transform: translateY(3px); border-color: var(--cyan); } 100% { transform: translateY(0); } }
+    @media (max-width: 1100px) { .pipeline { grid-template-columns: repeat(3, minmax(120px, 1fr)); } .grid-3 { grid-template-columns: 1fr; } }
+    @media (max-width: 840px) {
+      .app { grid-template-columns: 1fr; }
+      .rail { display: none; }
+      .topbar { position: sticky; top: 0; z-index: 5; }
+      .grid-2, .bridge, .lane { grid-template-columns: 1fr; }
+      .pipeline { grid-template-columns: 1fr; }
+      .slide { padding: 20px; }
+      .visual { min-height: 0; }
+      .counter { width: 100%; margin-left: 0; }
+      select { max-width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <script type="application/json" id="walkthrough-metadata">
+    {
+      "artifact_id": "final/walkthrough.html",
+      "harness_id": "agentic-docs.final-assembly",
+      "library_version": "1.0.0",
+      "subject": "SugarBot",
+      "scope": "D:/repositories/sugar_bot active runtime, app, service, contracts, demos, docs",
+      "generated_at": "2026-05-25T21:00:28.8150479-04:00",
+      "source_revision": "cd7156e",
+      "inputs": [
+        "00-run-context.md",
+        "01-codebase-inventory.md",
+        "02-system-purpose-context.md",
+        "03-transformation-map.md",
+        "04-call-graph-control-flow.md",
+        "04b-behavioral-dynamics-inventory.md",
+        "05-invariant-proof-ledger.md",
+        "06-edge-case-risk-ledger.md",
+        "07-narrative-architecture.md",
+        "08-visual-storyboard.md",
+        "09-narration-package.md",
+        "10-html-shell-template.html"
+      ],
+      "confidence_policy": "observed | inferred | speculative labels required"
+    }
+  </script>
+  <div class="app">
+    <aside class="rail" aria-label="Slide navigation">
+      <div class="brand">
+        <div class="kicker">SugarBot explainer</div>
+        <h2>Runtime architecture walkthrough</h2>
+        <p>Trace-backed visual deck with live controls where motion explains runtime behavior.</p>
+      </div>
+      <nav class="timeline" id="timeline" aria-label="Slides"></nav>
+      <div class="rail-foot">Keyboard: Left/Right to move, Space for auto advance, S to speak, X to stop speech.</div>
+    </aside>
+    <main>
+      <div class="topbar" role="toolbar" aria-label="Presentation controls">
+        <button id="prev">Prev</button>
+        <button id="next">Next</button>
+        <button id="replay">Replay</button>
+        <button id="auto">Auto</button>
+        <label class="voice-picker">Voice <select id="voiceSelect" aria-label="Narration voice"><option value="">Loading voices...</option></select></label>
+        <button id="speak">Speak</button>
+        <button id="pauseSpeech">Pause</button>
+        <button id="stopSpeech">Stop</button>
+        <span class="counter" id="counter"></span>
+      </div>
+      <section class="slide" id="slide" tabindex="-1" aria-live="polite"></section>
+      <div class="caption" id="caption" aria-live="polite"></div>
+    </main>
+  </div>
+  <script>
+    const slides = [
+      {
+        id: "runtime-not-script",
+        section: "Thesis",
+        title: "SugarBot Is A Validated Runtime, Not A Script",
+        thesis: "One runtime contract is wrapped by CLI, service, tests, sweeps, panels, and reports.",
+        marker: "proof",
+        visualType: "claim",
+        vizClass: "static",
+        traceSource: "CMakeLists.txt target graph and app/service entry points",
+        proofAnchor: "CMakeLists.txt, app/entrypoints/*, src/service/*",
+        staticFallback: "Claim card and layer chips.",
+        claim: "artifact truth -> capability truth -> compiled graph -> deterministic execution -> report truth",
+        pills: ["CMake layers", "DataView", "PlanSpec", "CompiledProgram", "StrategyExecutor", "Contracts"],
+        cards: [
+          ["Observed surfaces", "sugarbot, sugar_contracts, sugar_server, sugar_client, app tests, demos."],
+          ["Shared core", "ingest, ops, engine, sweep, and service link back to the same runtime libraries."],
+          ["Executive meaning", "The system reduces silent ambiguity by validating data and plan meaning before reporting a result."]
+        ],
+        narration: "SugarBot looks like it has many products: a CLI, a server, demos, panels, sweeps, reports, and a contract runner. The source says something tighter. These surfaces point back to one runtime pattern: load explicit artifacts, validate what they mean, compile a typed graph, evaluate row-aligned buffers, execute a finite-state strategy, then report the result. That makes the system easier to extend, but only when new work lands at the right boundary.",
+        takeaway: "Treat SugarBot as one validated runtime with several adapters."
+      },
+      {
+        id: "two-truths",
+        section: "Architecture",
+        title: "Observation Truth And Strategy Truth Meet At Runtime",
+        thesis: "The key boundary reconciles what the data can provide with what the plan asks to compute.",
+        marker: "proof",
+        visualType: "bridge",
+        vizClass: "static",
+        traceSource: "include/ingest/data_view.h and include/sweep/plan_spec.h",
+        proofAnchor: "DataView, PlanSpec, OperatorRegistry",
+        staticFallback: "Two-column bridge remains complete.",
+        leftTitle: "Observation truth",
+        left: ["DataSpec and LayoutSpec", "FrameSet and AlignedBundle", "IndexSchema and axes", "TopologyCatalog", "DataView and ColumnRef"],
+        center: "Validated boundary: DataView + PlanSpec + OperatorRegistry",
+        rightTitle: "Strategy truth",
+        right: ["PlanSpec params", "Numeric and bool DAG nodes", "Signal bindings", "Sweep and run scope", "Declared dynamic execution"],
+        narration: "The core split is between observation truth and strategy truth. Observation truth is what the data can honestly provide: columns, rows, axes, primary series, and topology providers. Strategy truth is what the plan asks to compute: nodes, params, operator requirements, signal bindings, sweep policy, and optional dynamic routing. The compiler and runtime checks reconcile those two sides. This is why DataView and PlanSpec are the important boundary.",
+        takeaway: "The architectural center is the contract between DataView and PlanSpec."
+      },
+      {
+        id: "artifact-pipeline",
+        section: "Pipeline",
+        title: "Artifacts Become Reports Through A Typed Chain",
+        thesis: "The live scrubber shows the state boundary at each step of the quickstart-shaped runtime path.",
+        marker: "proof",
+        visualType: "pipelineLive",
+        vizClass: "animated-sequence",
+        traceSource: "graphs/demos/quickstart_ohlcv.layout.json, graphs/demos/quickstart_ohlcv.planspec.json, data/sample.csv",
+        proofAnchor: "src/ingest/run_pipeline.cpp, include/ingest/data_view.h, include/engine/compiled_program.h",
+        staticFallback: "All pipeline stages remain visible with the selected detail card.",
+        states: [
+          ["Artifact", "CSV + LayoutSpec + PlanSpec", "Files describe rows, schema, target, operators, and bindings.", "cyan"],
+          ["Preprocess", "FrameSet", "Rows are parsed, typed, and normalized under DataSpec rules.", "blue"],
+          ["Align", "AlignedBundle", "Series share a row domain and runtime axes.", "blue"],
+          ["Bind", "DataView + ColumnRef", "A primary series and column are selected before execution.", "green"],
+          ["Compile", "CompiledProgram", "Plan nodes become typed slots and signal bindings.", "purple"],
+          ["Report", "BacktestResult + projections", "Execution metrics become run, sweep, panel, or hosted reports.", "green"]
+        ],
+        narration: "This live pipeline follows the quickstart fixture shape. A run starts as CSV and layout files, then becomes frames, an aligned bundle, topology-aware runtime input, a DataView, a compiled program, evaluated buffers, and finally reports. The important part is not the animation; it is the state boundary between each step. Each boundary is a chance to validate meaning before the executor can produce a plausible but wrong result.",
+        takeaway: "Every run crosses explicit artifact, runtime, compile, and report boundaries."
+      },
+      {
+        id: "compile-buffer-execute",
+        section: "Engine",
+        title: "The Compiler Makes Buffers; The Executor Simulates Trades",
+        thesis: "The state machine separates graph semantics from trade lifecycle mechanics.",
+        marker: "proof",
+        visualType: "engineState",
+        vizClass: "interactive-state-machine",
+        traceSource: "Source-backed toy trace from CompiledProgram, program_evaluator, and StrategyExecutor",
+        proofAnchor: "include/engine/compiled_program.h, src/engine/program_evaluator.cpp, src/engine/strategy_executor.cpp",
+        staticFallback: "Compile, evaluate, and execute cards are visible at once.",
+        states: [
+          ["Compile", "PlanSpec DAG -> typed slots", "fast_sma: numeric slot 2; entry_long: bool slot 0; allow_trade defaults true if absent.", "purple"],
+          ["Evaluate", "Slots -> row buffers", "row 4: close=102.1, fast=101.6, entry_long=true, exit_long=false.", "blue"],
+          ["Execute", "Signals -> position state", "gate=true and entry_long=true opens long; later exit closes and updates metrics.", "green"]
+        ],
+        narration: "The interactive state machine separates three jobs. The compiler validates PlanSpec nodes and assigns slots. The evaluator fills numeric and bool buffers over the active row domain. The executor consumes only price columns, entry and exit signals, an allow-trade gate, and execution settings. New indicators belong in the registry and evaluator. Fill timing, costs, reversal rules, and trade lifecycle belong in the executor.",
+        takeaway: "Keep graph semantics out of the trade-state executor."
+      },
+      {
+        id: "operators-capabilities",
+        section: "Capabilities",
+        title: "Operator Metadata Is Runtime Correctness, Not Catalog Text",
+        thesis: "Registry metadata is consumed by compilation, diagnostics, topology/locality validation, and user-facing catalogs.",
+        marker: "risk",
+        visualType: "registry",
+        vizClass: "static",
+        traceSource: "include/ops/op_registry.h and src/ops/op_module_*.cpp",
+        proofAnchor: "OpSpec fields and OperatorRegistry",
+        staticFallback: "Metadata hub and consumer cards.",
+        spokes: ["types", "params", "warmup", "module", "axis scope", "required axes", "topology families", "locality subject"],
+        cards: [
+          ["Compiler", "Checks arity, value types, params, and supported compiled-program ops."],
+          ["Diagnostics", "Uses axis and topology metadata to reject incompatible plans early."],
+          ["Risk", "If metadata drifts from evaluator support, preflight can lie even when kernels compile."]
+        ],
+        narration: "OperatorRegistry is more than a list of names. Its metadata tells the compiler the input and output types, tells diagnostics which axes and topology families are required, and tells users how an operator behaves. If a new operator is added only as evaluator code, the runtime can lose one of its strongest properties: early, useful rejection. Registry metadata must evolve with kernels, capability checks, and contracts.",
+        takeaway: "A correct operator is metadata, implementation, diagnostics, and tests together."
+      },
+      {
+        id: "scale-surfaces",
+        section: "Scale",
+        title: "Sweeps, Panels, And Hosted Jobs Reuse The Same Core",
+        thesis: "Advanced features fan into the same DataView plus PlanSpec runtime behavior.",
+        marker: "proof",
+        visualType: "fanout",
+        vizClass: "static",
+        traceSource: "include/sweep/plan_sweep.h, include/sweep/panel_runner.h, src/service/server_runtime.cpp",
+        proofAnchor: "run_custom_plan_spec, PanelResult, ServerRuntime",
+        staticFallback: "Fan-in diagram and output cards.",
+        surfaces: ["CLI run", "Sweep candidates", "Panel entities", "Hosted jobs", "Contract tests"],
+        core: "DataView + PlanSpec runtime",
+        outputs: ["BacktestResult", "PlanSweepReport", "PanelReport", "EvaluationReport", "JobResult"],
+        cards: [
+          ["Sweep", "Parameter candidates choose overrides; strategy semantics remain PlanSpec semantics."],
+          ["Panel", "Each aligned entity is bound as a primary target and ranked with visible failures."],
+          ["Hosted", "Sessions, uploads, quotas, queues, cancellation, and result stores wrap the same core."]
+        ],
+        narration: "The advanced surfaces are not separate runtimes. Sweeps repeat PlanSpec execution across parameter candidates. Panels repeat it across aligned entities. Hosted service code stages artifacts, validates requests, applies quotas, schedules jobs, handles cancellation, and stores results. Those are operational wrappers around the same execution model. This is why local and hosted behavior can be compared.",
+        takeaway: "The broad feature set stays coherent because it fans into one runtime."
+      },
+      {
+        id: "dynamic-routing",
+        section: "Dynamic Execution",
+        title: "Dynamic Execution Is Declared Routing Over A Static Graph",
+        thesis: "A comparison replay makes route masks and gated outputs visible without implying graph mutation.",
+        marker: "caution",
+        visualType: "dynamicReplay",
+        vizClass: "comparison-replay",
+        traceSource: "graphs/demos/dynamic_execution/g10_constant_static_equivalent.planspec.json, g10_constant_declared_dynamic.planspec.json, g10_row_varying_declared_dynamic.planspec.json, g10_topology_declared_dynamic.planspec.json",
+        proofAnchor: "PlanExecutionSpec, CompiledDynamicExecutionMetadata, evaluator masks",
+        staticFallback: "Scenario table, mask grid, and gated-output summary.",
+        scenarios: [
+          { name: "Static equivalent", kind: "baseline", condition: ["true", "true", "true", "true", "true", "true", "true", "true"], mask: [1,1,1,1,1,1,1,1], output: "Matches the static PlanSpec branch." },
+          { name: "Constant dynamic", kind: "comparison", condition: ["true", "true", "true", "true", "true", "true", "true", "true"], mask: [1,1,1,1,1,1,1,1], output: "Declared route always activates the selected subgraph." },
+          { name: "Row-varying", kind: "route", condition: ["off", "off", "on", "on", "off", "on", "on", "off"], mask: [0,0,1,1,0,1,1,0], output: "Inactive rows are masked before outputs are gated." },
+          { name: "Topology route", kind: "topology", condition: ["deg0", "deg1", "deg2", "deg2", "deg1", "deg3", "deg0", "deg2"], mask: [0,1,1,1,1,1,0,1], output: "Route condition is informed by topology.degree provenance." }
+        ],
+        narration: "Dynamic execution needs careful wording. The active design is not arbitrary runtime graph construction. PlanSpec declares subgraphs, routes, cases, fallback subgraphs, outputs, and bounds. The compiler validates those declarations. The evaluator computes route decisions, masks inactive subgraph rows, and gates declared outputs. The comparison replay uses the G10 demos to show constant static equivalence, row-varying routing, and topology-informed routing without changing the compiled-graph contract.",
+        takeaway: "Dynamic execution is bounded routing over a compiled graph."
+      },
+      {
+        id: "sweep-search",
+        section: "Search",
+        title: "Sweep Search Is A Trace Of Proposals, Observations, And Filters",
+        thesis: "A trace replay shows how search policy produces candidate observations and report filters.",
+        marker: "proof",
+        visualType: "sweepReplay",
+        vizClass: "trace-replay",
+        traceSource: "graphs/demos/sweep_engines/i_advanced_report_projection_sweep.planspec.json --report trace",
+        proofAnchor: "include/sweep/plan_sweep.h and src/sweep/*",
+        staticFallback: "Candidate event ledger with retained Top-K summary.",
+        events: [
+          ["proposal", "#12", "threshold=0.25", "candidate queued by sweep policy"],
+          ["observation", "#12", "score=18.4", "BacktestResult becomes a ranked observation"],
+          ["proposal", "#31", "threshold=0.55", "next candidate sampled from search space"],
+          ["observation", "#31", "score=22.1", "candidate enters retained pool"],
+          ["filter", "#12", "duplicate trade hash", "diversity filter suppresses duplicate path"],
+          ["pareto", "#31", "front rank 1", "multi-objective view retains non-dominated row"],
+          ["trace", "digest", "captured", "proposal and observation stream remains replayable"]
+        ],
+        narration: "Sweep behavior is best understood as a trace. A policy proposes candidates, each candidate runs through the same PlanSpec runtime, the result becomes an observation, and report logic ranks, filters, and explains the retained set. Exhaustive, Monte Carlo, coarse/fine, successive halving, and Bayesian posterior policies differ in how they choose candidates. The visualization should never imply that all engines walk the space in the same order.",
+        takeaway: "Sweeps change search policy, not strategy semantics."
+      },
+      {
+        id: "panel-execution",
+        section: "Panels",
+        title: "Panel Execution Rebinds One Plan Across Many Entities",
+        thesis: "The entity matrix keeps target binding, failures, and ranking visible together.",
+        marker: "caution",
+        visualType: "panelMatrix",
+        vizClass: "interactive-scrubber",
+        traceSource: "graphs/demos/nashville_housing_panel.layout.json, nashville_housing_panel.planspec.json, data/Nashville-Real-Estate-Data-clean.csv",
+        proofAnchor: "src/sweep/panel_runner.cpp and include/sweep/panel_runner.h",
+        staticFallback: "Entity matrix with success and failure counts.",
+        entities: [
+          ["Davidson", "success", "close", "rank 1", "market heat score retained"],
+          ["Rutherford", "success", "close", "rank 2", "same PlanSpec, different primary binding"],
+          ["Williamson", "success", "close", "rank 3", "lower score but visible in Top-K"],
+          ["Missing Example", "failure", "close", "not ranked", "missing primary column remains explicit"]
+        ],
+        narration: "Panel execution is not a separate strategy model. The same PlanSpec is applied repeatedly while each aligned entity is bound as the primary target. Successful entities receive scores and rankings. Failed entities must remain visible because hiding them would make the Top-K look more complete than it is. The matrix view is useful because it keeps primary binding, success, failure, and ranking in one place.",
+        takeaway: "Panel rankings are only trustworthy when failures stay visible."
+      },
+      {
+        id: "topology-locality",
+        section: "Topology",
+        title: "Topology Operators Resolve A Subject, Query, And Provenance",
+        thesis: "The locality scrubber shows topology as runtime capability: subject, query, neighbors, aggregation, provenance.",
+        marker: "proof",
+        visualType: "topologyExplorer",
+        vizClass: "interactive-scrubber",
+        traceSource: "graphs/demos/topology_readiness/* and data/topology_readiness/*",
+        proofAnchor: "include/ingest/neighborhood_query*.h, src/ops/op_module_topology.cpp",
+        staticFallback: "Topology query table with provenance cards.",
+        queries: [
+          ["Relational time graph", "row-domain subject", "weighted neighbors", "neighbor_mean / weighted_sum", "time-valid edges and version overlays"],
+          ["Hierarchy", "entity subject", "ancestor/descendant query", "hierarchy traversal", "family and query kind reported"],
+          ["Semantic", "embedding subject", "nearest-neighbor query", "semantic similarity aggregation", "topology provenance retained"]
+        ],
+        narration: "Topology is a runtime capability, not a feature toggle. A topology operator must resolve a subject, choose a topology provider, issue a supported query, compute over the neighbor set, and preserve provenance in reports. The F8 topology demos split the surface across relational time-valid graphs, hierarchy traversal, and semantic similarity. A scrubber helps because the meaning changes with subject, query kind, and topology family.",
+        takeaway: "Topology work should preserve subject, query, and provenance together."
+      },
+      {
+        id: "hosted-lifecycle",
+        section: "Hosted Service",
+        title: "Hosted Mode Adds Job Controls Around Local Semantics",
+        thesis: "The service timeline shows operational state transitions around the same core runtime.",
+        marker: "caution",
+        visualType: "hostedTimeline",
+        vizClass: "animated-sequence",
+        traceSource: "src/service/server_runtime.cpp, src/service/protocol_dispatch.cpp, src/contracts/contract_suite_service*.cpp",
+        proofAnchor: "ServerRuntime, ProtocolDispatcher, service contracts",
+        staticFallback: "Lifecycle timeline table with state cards.",
+        steps: [
+          ["connect", "Session created", "client receives session id"],
+          ["upload", "Artifacts staged", "layout, PlanSpec, and CSV are sandboxed"],
+          ["validate", "Request checked", "schema, quotas, and compatibility validated"],
+          ["submit", "Job accepted", "job id enters scheduler"],
+          ["queue", "Worker selected", "fairness and backpressure policies apply"],
+          ["execute", "Core runtime runs", "same DataView plus PlanSpec semantics"],
+          ["result", "Result retained", "owner session can retrieve report"],
+          ["cleanup", "Artifacts/results cleaned", "lifecycle ends explicitly"]
+        ],
+        narration: "Hosted mode adds a control plane around the same runtime. A client connects, uploads or references artifacts, validates a request, submits a job, waits through queue and execution states, then retrieves a result or cancellation. Service contracts cover ownership, abuse rejection, fairness, backpressure, and cancellation. The key caveat is that these controls govern job handling; they should not redefine what a valid SugarBot run means.",
+        takeaway: "Hosted service policy wraps local semantics rather than replacing them."
+      },
+      {
+        id: "gpu-lane",
+        section: "Future Acceleration",
+        title: "GPU Support Belongs Behind The Buffer And Batch Boundaries",
+        thesis: "The roadmap is static in v1 because no active GPU backend exists in the code.",
+        marker: "caution",
+        visualType: "gpu",
+        vizClass: "static",
+        traceSource: "docs/gpu_support_roadmap.md",
+        proofAnchor: "CompiledProgram buffer contract and sweep/panel architecture",
+        staticFallback: "CPU/GPU lane table.",
+        lanes: [
+          ["CPU canonical", "DataView", "CompiledProgram", "Evaluator", "StrategyExecutor", "Reports"],
+          ["GPU phase 1", "backend interface", "row-wise kernels", "rolling kernels", "CPU fallback"],
+          ["GPU scale", "batched sweeps", "panel lanes", "scheduler sharding", "A100 device-resident batches"],
+          ["Parity gate", "warmup", "NaN", "ranking", "trade hash", "cancellation"]
+        ],
+        narration: "GPU support should follow the architecture that already exists. The safest first targets are evaluator-side row buffers and batched sweep or panel work. A single small run may not benefit, especially on a consumer GPU, because transfer and launch overhead can dominate. Large candidate batches, long row domains, many entities, and topology or posterior workloads are better fits. The CPU path should remain canonical until parity tests are explicit.",
+        takeaway: "GPU work should accelerate shared buffers and batches without changing semantics."
+      },
+      {
+        id: "stewardship",
+        section: "Guidance",
+        title: "Stewardship Means Keeping Semantics In The Owning Layer",
+        thesis: "The architecture can absorb new features if each feature lands where its meaning belongs.",
+        marker: "risk",
+        visualType: "stewardship",
+        vizClass: "static",
+        traceSource: "Maintainer map from architecture artifacts",
+        proofAnchor: "DataView, PlanSpec, OperatorRegistry, StrategyExecutor, ServerRuntime",
+        staticFallback: "Layer ownership ledger.",
+        rows: [
+          ["Data-domain concept", "ingest, alignment, topology, DataView", "Do not hide data binding in app code"],
+          ["New computation", "OperatorRegistry, op modules, evaluator kernels", "Do not patch StrategyExecutor for indicators"],
+          ["Trade mechanics", "ExecSettings and StrategyExecutor", "Do not express fills as graph tricks"],
+          ["Search method", "sweep policy and report collectors", "Do not bake strategy semantics into candidate search"],
+          ["Hosted control", "service quotas, sessions, scheduling, stores", "Do not leak service policy into BacktestResult"],
+          ["Report interpretation", "RunReport, PlanSweepReport, PanelReport", "Do not overload raw execution state"]
+        ],
+        sources: ["include/ingest/data_view.h", "include/sweep/plan_spec.h", "include/ops/op_registry.h", "include/engine/compiled_program.h", "src/engine/strategy_executor.cpp", "src/service/server_runtime.cpp"],
+        narration: "The practical rule is simple: put new meaning where that meaning belongs. Data-domain concepts belong in ingest, alignment, topology, and DataView. Computation belongs in operator metadata and evaluator support. Trading mechanics belong in StrategyExecutor. Search belongs in sweep policy. Hosted limits belong in service policy. Report interpretation belongs in report structures. The architecture can absorb a lot of growth, but it becomes harder to trust when those responsibilities blur.",
+        takeaway: "SugarBot stays maintainable when extension work respects the runtime boundaries."
+      }
+    ];
+
+    const vizState = {};
+    let current = 0;
+    let highestVisited = 0;
+    let autoTimer = null;
+    let speechPaused = false;
+    let availableVoices = [];
+    const slideEl = document.getElementById("slide");
+    const captionEl = document.getElementById("caption");
+    const timelineEl = document.getElementById("timeline");
+    const counterEl = document.getElementById("counter");
+    const autoBtn = document.getElementById("auto");
+    const pauseSpeechBtn = document.getElementById("pauseSpeech");
+    const voiceSelect = document.getElementById("voiceSelect");
+    const voiceStorageKey = "sugarbot.walkthrough.voice";
+
+    function escapeHtml(value) {
+      return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+    function badge(marker) {
+      const label = marker === "proof" ? "Proof-backed" : marker === "risk" ? "Risk marker" : "Caution";
+      return `<span class="badge ${escapeHtml(marker)}">${label}</span>`;
+    }
+    function card(row, active) {
+      return `<article class="card${active ? " active" : ""}"><h3>${escapeHtml(row[0])}</h3><p>${escapeHtml(row[1])}</p></article>`;
+    }
+    function pills(items, cls) {
+      return `<div class="pill-row">${items.map(x => `<span class="pill ${cls || ""}">${escapeHtml(x)}</span>`).join("")}</div>`;
+    }
+    function table(headers, rows) {
+      return `<table class="table"><thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    }
+    function traceBar(slide) {
+      return `<div class="trace-box"><strong>Trace source:</strong> ${escapeHtml(slide.traceSource)}<br><strong>Visualization class:</strong> ${escapeHtml(slide.vizClass)}<br><strong>Static fallback:</strong> ${escapeHtml(slide.staticFallback || "Visible slide content remains complete without motion.")}</div>`;
+    }
+    function stateFor(slide, max) {
+      const st = vizState[slide.id] || { step: 0, selected: 0 };
+      st.step = Math.max(0, Math.min(max, st.step || 0));
+      st.selected = Math.max(0, st.selected || 0);
+      vizState[slide.id] = st;
+      return st;
+    }
+    function vizControls(slide, max, label) {
+      const st = stateFor(slide, max);
+      return `<div class="viz-controls">
+        <button data-viz-action="prev">Prev ${escapeHtml(label)}</button>
+        <button data-viz-action="next">Next ${escapeHtml(label)}</button>
+        <button data-viz-action="reset">Reset</button>
+        <input type="range" min="0" max="${max}" value="${st.step}" data-viz-action="range" aria-label="${escapeHtml(label)} scrubber">
+        <span class="pill cyan">${escapeHtml(label)} ${st.step + 1} / ${max + 1}</span>
+      </div>`;
+    }
+    function renderClaim(slide) {
+      return `<div class="panel"><div class="eyebrow">Architecture claim</div><h3>${escapeHtml(slide.claim)}</h3>${pills(slide.pills, "blue")}</div><div class="cards">${slide.cards.map(row => card(row)).join("")}</div>${traceBar(slide)}`;
+    }
+    function renderBridge(slide) {
+      return `<div class="bridge"><section class="panel"><h3>${escapeHtml(slide.leftTitle)}</h3><ul class="list">${slide.left.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></section><div class="bridge-center">${escapeHtml(slide.center)}</div><section class="panel"><h3>${escapeHtml(slide.rightTitle)}</h3><ul class="list">${slide.right.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></section></div>${traceBar(slide)}`;
+    }
+    function renderPipelineLive(slide) {
+      const st = stateFor(slide, slide.states.length - 1);
+      const active = slide.states[st.step];
+      return `${vizControls(slide, slide.states.length - 1, "stage")}
+        <div class="pipeline">${slide.states.map((s, i) => `<div class="node ${i === st.step ? "active" : ""}"><div class="label">${escapeHtml(s[0])}</div><div class="name">${escapeHtml(s[1])}</div><div class="detail">${escapeHtml(s[2])}</div></div>`).join("")}</div>
+        <div class="grid-2"><div class="panel"><h3>${escapeHtml(active[1])}</h3><p>${escapeHtml(active[2])}</p></div><div class="panel"><h3>Invariant at this boundary</h3><p>${escapeHtml(active[0])} state must preserve row meaning, target intent, and evidence provenance before the next stage runs.</p></div></div>${traceBar(slide)}`;
+    }
+    function renderEngineState(slide) {
+      const st = stateFor(slide, slide.states.length - 1);
+      return `${vizControls(slide, slide.states.length - 1, "phase")}
+        <div class="grid-3">${slide.states.map((s, i) => `<div class="state-card ${i === st.step ? "active" : ""}"><div class="label">${escapeHtml(s[0])}</div><div class="name">${escapeHtml(s[1])}</div><div class="detail">${escapeHtml(s[2])}</div></div>`).join("")}</div>
+        <pre class="code">CompiledProgram contract:
+  numeric and bool slots are row-aligned buffers
+  evaluation_order is topological
+  StrategyExecutor consumes final signal buffers, not the DAG</pre>${traceBar(slide)}`;
+    }
+    function renderRegistry(slide) {
+      return `<div class="grid-2"><div class="panel"><h3>OpSpec metadata</h3>${pills(slide.spokes, "orange")}</div><div class="cards">${slide.cards.map(row => card(row)).join("")}</div></div>${traceBar(slide)}`;
+    }
+    function renderFanout(slide) {
+      return `<div class="grid-3"><section class="panel"><h3>Surfaces</h3><ul class="list">${slide.surfaces.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></section><div class="diagram-core">${escapeHtml(slide.core)}</div><section class="panel"><h3>Outputs</h3><ul class="list">${slide.outputs.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></section></div><div class="cards">${slide.cards.map(row => card(row)).join("")}</div>${traceBar(slide)}`;
+    }
+    function renderDynamicReplay(slide) {
+      const st = stateFor(slide, slide.scenarios.length - 1);
+      const scenario = slide.scenarios[st.step];
+      return `${vizControls(slide, slide.scenarios.length - 1, "scenario")}
+        <div class="grid-2"><div class="panel"><h3>${escapeHtml(scenario.name)}</h3><p>${escapeHtml(scenario.output)}</p>${pills([scenario.kind, "declared route", "bounded masks"], "purple")}</div><div class="panel"><h3>Route condition by row</h3><div class="mask-grid">${scenario.condition.map((c, i) => `<div class="mask-cell ${scenario.mask[i] ? "on" : "off"}">${escapeHtml(c)}</div>`).join("")}</div></div></div>
+        <div class="panel"><h3>Active subgraph mask</h3><div class="mask-grid">${scenario.mask.map((on, i) => `<div class="mask-cell ${on ? "on" : "off"}">row ${i + 1}<br>${on ? "active" : "masked"}</div>`).join("")}</div></div>${traceBar(slide)}`;
+    }
+    function renderSweepReplay(slide) {
+      const st = stateFor(slide, slide.events.length - 1);
+      const active = slide.events[st.step];
+      return `${vizControls(slide, slide.events.length - 1, "event")}
+        <div class="grid-2"><div class="panel"><h3>${escapeHtml(active[0])}: ${escapeHtml(active[1])}</h3><p>${escapeHtml(active[2])}. ${escapeHtml(active[3])}</p></div><div class="panel"><h3>Trace meaning</h3><p>Proposal events choose work. Observation events attach BacktestResult facts. Filters and Pareto/posterior projections explain retained candidates.</p></div></div>
+        ${table(["Event", "Candidate", "Payload", "Meaning"], slide.events.map((event, i) => i === st.step ? ["> " + event[0], event[1], event[2], event[3]] : event))}${traceBar(slide)}`;
+    }
+    function renderPanelMatrix(slide) {
+      const st = stateFor(slide, slide.entities.length - 1);
+      const rows = slide.entities.map((e, i) => [i === st.step ? "> " + e[0] : e[0], e[1], e[2], e[3], e[4]]);
+      const active = slide.entities[st.step];
+      return `${vizControls(slide, slide.entities.length - 1, "entity")}
+        <div class="grid-2"><div>${table(["Entity", "Status", "Primary", "Rank", "Note"], rows)}</div><div class="panel"><h3>${escapeHtml(active[0])}</h3><p>${escapeHtml(active[4])}</p>${pills([active[1], active[2], active[3]], active[1] === "success" ? "green" : "orange")}</div></div>${traceBar(slide)}`;
+    }
+    function renderTopologyExplorer(slide) {
+      const st = stateFor(slide, slide.queries.length - 1);
+      const active = slide.queries[st.step];
+      return `${vizControls(slide, slide.queries.length - 1, "query")}
+        <div class="grid-2"><div>${table(["Topology", "Subject", "Query", "Aggregation", "Provenance"], slide.queries.map((q, i) => i === st.step ? ["> " + q[0], q[1], q[2], q[3], q[4]] : q))}</div><div class="panel"><h3>${escapeHtml(active[0])}</h3><p>Subject: ${escapeHtml(active[1])}. Query: ${escapeHtml(active[2])}. Aggregation: ${escapeHtml(active[3])}.</p>${pills(["subject", "query kind", "neighbors", "provenance"], "cyan")}</div></div>${traceBar(slide)}`;
+    }
+    function renderHostedTimeline(slide) {
+      const st = stateFor(slide, slide.steps.length - 1);
+      const active = slide.steps[st.step];
+      return `${vizControls(slide, slide.steps.length - 1, "state")}
+        <div class="pipeline">${slide.steps.map((s, i) => `<div class="node ${i === st.step ? "active" : ""}"><div class="label">${escapeHtml(s[0])}</div><div class="name">${escapeHtml(s[1])}</div><div class="detail">${escapeHtml(s[2])}</div></div>`).join("")}</div>
+        <div class="takeaway-box">Current hosted state: ${escapeHtml(active[1])}. This controls job handling, not strategy semantics.</div>${traceBar(slide)}`;
+    }
+    function renderGpu(slide) {
+      return `<div>${slide.lanes.map(lane => `<div class="lane"><div class="lane-label">${escapeHtml(lane[0])}</div><div class="lane-track">${lane.slice(1).map(x => `<span class="pill cyan">${escapeHtml(x)}</span>`).join("")}</div></div>`).join("")}</div><div class="takeaway-box">Roadmap rule: measure first, then add backend interface, row-wise kernels, and CPU fallback before deeper multi-GPU work.</div>${traceBar(slide)}`;
+    }
+    function renderStewardship(slide) {
+      return `${table(["Change type", "Owning layer", "Watch point"], slide.rows)}<div class="panel"><h3>Source landmarks</h3>${pills(slide.sources, "green")}</div>${traceBar(slide)}`;
+    }
+    function renderVisual(slide) {
+      switch (slide.visualType) {
+        case "claim": return renderClaim(slide);
+        case "bridge": return renderBridge(slide);
+        case "pipelineLive": return renderPipelineLive(slide);
+        case "engineState": return renderEngineState(slide);
+        case "registry": return renderRegistry(slide);
+        case "fanout": return renderFanout(slide);
+        case "dynamicReplay": return renderDynamicReplay(slide);
+        case "sweepReplay": return renderSweepReplay(slide);
+        case "panelMatrix": return renderPanelMatrix(slide);
+        case "topologyExplorer": return renderTopologyExplorer(slide);
+        case "hostedTimeline": return renderHostedTimeline(slide);
+        case "gpu": return renderGpu(slide);
+        case "stewardship": return renderStewardship(slide);
+        default: return "";
+      }
+    }
+    function renderTimeline() {
+      timelineEl.innerHTML = "";
+      slides.forEach((slide, i) => {
+        const button = document.createElement("button");
+        button.className = (i === current ? "active " : "") + (i <= highestVisited ? "visited" : "");
+        button.setAttribute("aria-current", i === current ? "step" : "false");
+        button.innerHTML = `<span class="slide-number">${i + 1}. ${escapeHtml(slide.section)} / ${escapeHtml(slide.vizClass)}</span><span class="slide-name">${escapeHtml(slide.title)}</span>`;
+        button.addEventListener("click", () => goTo(i));
+        timelineEl.appendChild(button);
+      });
+    }
+    function render() {
+      const slide = slides[current];
+      highestVisited = Math.max(highestVisited, current);
+      slideEl.classList.remove("replay");
+      slideEl.innerHTML = `<div class="eyebrow">${escapeHtml(slide.section)} ${badge(slide.marker)} <span class="badge">${escapeHtml(slide.vizClass)}</span></div><h1>${escapeHtml(slide.title)}</h1><p class="thesis">${escapeHtml(slide.thesis)}</p><div class="visual">${renderVisual(slide)}</div>`;
+      captionEl.innerHTML = `<strong>Narration:</strong> ${escapeHtml(slide.narration)}<br><strong>Takeaway:</strong> ${escapeHtml(slide.takeaway)}`;
+      counterEl.textContent = `${current + 1} / ${slides.length}`;
+      renderTimeline();
+      slideEl.focus({ preventScroll: true });
+    }
+    function resetViz(id) {
+      vizState[id] = { step: 0, selected: 0 };
+    }
+    function handleVizAction(target) {
+      const action = target.getAttribute("data-viz-action");
+      if (!action) return;
+      const slide = slides[current];
+      const max = (slide.states || slide.scenarios || slide.events || slide.entities || slide.queries || slide.steps || [0]).length - 1;
+      const st = stateFor(slide, Math.max(0, max));
+      if (action === "prev") st.step = Math.max(0, st.step - 1);
+      if (action === "next") st.step = Math.min(max, st.step + 1);
+      if (action === "reset") st.step = 0;
+      if (action === "range") st.step = Number(target.value || 0);
+      render();
+    }
+    slideEl.addEventListener("click", event => {
+      const target = event.target.closest("[data-viz-action]");
+      if (target) handleVizAction(target);
+    });
+    slideEl.addEventListener("input", event => {
+      const target = event.target.closest("[data-viz-action='range']");
+      if (target) handleVizAction(target);
+    });
+    function voiceIsMicrosoft(voice) {
+      return /microsoft/i.test(`${voice.name} ${voice.voiceURI}`);
+    }
+    function voiceSortScore(voice) {
+      if (voiceIsMicrosoft(voice)) return 0;
+      if (/^en[-_]/i.test(voice.lang || "")) return 1;
+      return 2;
+    }
+    function voiceLabel(voice) {
+      const tags = [];
+      if (voiceIsMicrosoft(voice)) tags.push("Microsoft");
+      if (voice.localService) tags.push("local");
+      const suffix = tags.length ? ` - ${tags.join(", ")}` : "";
+      return `${voice.name} (${voice.lang || "unknown"})${suffix}`;
+    }
+    function voiceKey(voice) {
+      return voice.voiceURI || voice.name;
+    }
+    function loadSavedVoiceKey() {
+      try { return localStorage.getItem(voiceStorageKey) || ""; }
+      catch { return ""; }
+    }
+    function saveVoiceKey(value) {
+      try { localStorage.setItem(voiceStorageKey, value); }
+      catch { /* Voice selection still works for the current page. */ }
+    }
+    function selectedVoice() {
+      if (!voiceSelect || !voiceSelect.value) return null;
+      return availableVoices.find(voice => voiceKey(voice) === voiceSelect.value) || null;
+    }
+    function populateVoices() {
+      if (!voiceSelect) return;
+      if (!("speechSynthesis" in window)) {
+        voiceSelect.innerHTML = '<option value="">Speech unavailable</option>';
+        voiceSelect.disabled = true;
+        return;
+      }
+      availableVoices = window.speechSynthesis.getVoices().slice().sort((a, b) => voiceSortScore(a) - voiceSortScore(b) || voiceLabel(a).localeCompare(voiceLabel(b)));
+      voiceSelect.innerHTML = "";
+      if (!availableVoices.length) {
+        voiceSelect.appendChild(new Option("Loading voices...", ""));
+        voiceSelect.disabled = true;
+        return;
+      }
+      voiceSelect.disabled = false;
+      const savedKey = loadSavedVoiceKey();
+      const preferred = availableVoices.find(voice => voiceKey(voice) === savedKey) ||
+        availableVoices.find(voice => voiceIsMicrosoft(voice) && /^en[-_]/i.test(voice.lang || "")) ||
+        availableVoices.find(voice => voiceIsMicrosoft(voice)) ||
+        availableVoices.find(voice => /^en[-_]/i.test(voice.lang || "")) ||
+        availableVoices[0];
+      for (const voice of availableVoices) {
+        voiceSelect.appendChild(new Option(voiceLabel(voice), voiceKey(voice)));
+      }
+      if (preferred) voiceSelect.value = voiceKey(preferred);
+    }
+    function stopSpeech() {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      speechPaused = false;
+      pauseSpeechBtn.textContent = "Pause";
+    }
+    function speakCurrent() {
+      if (!("speechSynthesis" in window)) {
+        captionEl.innerHTML += "<br><strong>Speech:</strong> Browser speech synthesis is not available.";
+        return;
+      }
+      stopSpeech();
+      const slide = slides[current];
+      const utterance = new SpeechSynthesisUtterance(`${slide.title}. ${slide.narration} Takeaway: ${slide.takeaway}`);
+      const voice = selectedVoice();
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang || utterance.lang;
+      }
+      utterance.rate = 0.96;
+      window.speechSynthesis.speak(utterance);
+    }
+    function toggleSpeechPause() {
+      if (!("speechSynthesis" in window)) return;
+      if (window.speechSynthesis.speaking && !speechPaused) {
+        window.speechSynthesis.pause();
+        speechPaused = true;
+        pauseSpeechBtn.textContent = "Resume";
+      } else if (speechPaused) {
+        window.speechSynthesis.resume();
+        speechPaused = false;
+        pauseSpeechBtn.textContent = "Pause";
+      }
+    }
+    function goTo(i) {
+      current = Math.max(0, Math.min(slides.length - 1, i));
+      stopSpeech();
+      render();
+    }
+    function next() { goTo(current + 1); }
+    function prev() { goTo(current - 1); }
+    function replay() {
+      resetViz(slides[current].id);
+      render();
+      slideEl.classList.remove("replay");
+      void slideEl.offsetWidth;
+      slideEl.classList.add("replay");
+    }
+    function toggleAuto() {
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        autoBtn.textContent = "Auto";
+      } else {
+        autoBtn.textContent = "Pause Auto";
+        autoTimer = setInterval(() => current >= slides.length - 1 ? toggleAuto() : next(), 12000);
+      }
+    }
+    document.getElementById("prev").addEventListener("click", prev);
+    document.getElementById("next").addEventListener("click", next);
+    document.getElementById("replay").addEventListener("click", replay);
+    document.getElementById("auto").addEventListener("click", toggleAuto);
+    document.getElementById("speak").addEventListener("click", speakCurrent);
+    document.getElementById("pauseSpeech").addEventListener("click", toggleSpeechPause);
+    document.getElementById("stopSpeech").addEventListener("click", stopSpeech);
+    if (voiceSelect) {
+      voiceSelect.addEventListener("change", () => {
+        saveVoiceKey(voiceSelect.value);
+        stopSpeech();
+      });
+    }
+    if ("speechSynthesis" in window) {
+      populateVoices();
+      window.speechSynthesis.onvoiceschanged = populateVoices;
+    } else {
+      populateVoices();
+    }
+    document.addEventListener("keydown", event => {
+      if (event.key === "ArrowRight") next();
+      if (event.key === "ArrowLeft") prev();
+      if (event.key === " ") { event.preventDefault(); toggleAuto(); }
+      if (event.key.toLowerCase() === "s") speakCurrent();
+      if (event.key.toLowerCase() === "x") stopSpeech();
+    });
+    window.addEventListener("beforeunload", stopSpeech);
+    render();
+  </script>
+</body>
+</html>
