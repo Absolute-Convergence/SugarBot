@@ -8,6 +8,10 @@ option(SUGAR_ENABLE_INSTALL_RULES
   "Generate CMake install rules and the INSTALL target. Keep off for normal IDE/build verification hygiene."
   OFF)
 
+option(SUGAR_ENABLE_PARQUET
+  "Enable optional Apache Arrow/Parquet tabular input and feature-dump output support."
+  OFF)
+
 if (SUGAR_ENABLE_INSTALL_RULES)
   set(CMAKE_SKIP_INSTALL_RULES OFF CACHE BOOL "Skip generated install rules and the INSTALL target." FORCE)
 else()
@@ -26,6 +30,11 @@ endif()
 
 project(SugarBot LANGUAGES C CXX)
 include(GNUInstallDirs)
+
+if(SUGAR_ENABLE_PARQUET)
+  find_package(Arrow REQUIRED)
+  find_package(Parquet REQUIRED)
+endif()
 
 option(SUGAR_ALLOW_VS_WSL_SOURCE_COPY
   "Allow Visual Studio WSL copy-source builds from /home/<user>/.vs. This is intentionally off for shared SugarBot development."
@@ -161,6 +170,10 @@ add_library(sugar_ingest
 )
 target_include_directories(sugar_ingest PUBLIC "${CMAKE_SOURCE_DIR}/include")
 sugar_add_private_impl_includes(sugar_ingest)
+if(SUGAR_ENABLE_PARQUET)
+  target_compile_definitions(sugar_ingest PUBLIC SUGAR_ENABLE_PARQUET=1)
+  target_link_libraries(sugar_ingest PUBLIC Arrow::arrow_shared Parquet::parquet_shared)
+endif()
 sugar_apply_defaults(sugar_ingest)
 
 # --- Library: sugar_ops -------------------------------------------------

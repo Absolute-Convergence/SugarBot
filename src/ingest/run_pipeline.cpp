@@ -392,12 +392,13 @@ namespace sugar {
         PreprocessReport& out_report,
         std::string& err,
         const std::optional<align::AlignConfig>& align_cfg,
-        std::shared_ptr<FrameSchema> schema)
+        std::shared_ptr<FrameSchema> schema,
+        TabularFileFormat input_format)
     {
         if (!schema) {
             schema = std::make_shared<FrameSchema>();
         }
-        auto prep = preprocess_csv(spec, csv_path, schema);
+        auto prep = preprocess_tabular(spec, csv_path, input_format, schema);
         if (!prep.err.empty()) {
             out_report = make_preprocess_report(spec, prep, align_cfg);
             err = "preprocess failed: " + prep.err;
@@ -551,7 +552,8 @@ namespace sugar {
         const align::AlignConfig& cfg,
         const std::vector<TopologySpec>& declared_topologies,
         ResolvedObservationWorld& out,
-        std::string& err)
+        std::string& err,
+        TabularFileFormat input_format)
     {
         out = ResolvedObservationWorld{};
         out.source_kind = RuntimeObservationSourceKind::AppSuppliedObservations;
@@ -560,7 +562,15 @@ namespace sugar {
 
         FrameSet fs{};
         PreprocessReport preprocess_report{};
-        if (!preprocess_to_frameset(spec, out.primary_input_path, fs, preprocess_report, err, cfg)) {
+        if (!preprocess_to_frameset(
+                spec,
+                out.primary_input_path,
+                fs,
+                preprocess_report,
+                err,
+                cfg,
+                {},
+                input_format)) {
             out.run_manifest = make_run_manifest(
                 preprocess_report,
                 {},
@@ -606,7 +616,8 @@ namespace sugar {
         const LayoutSpec& layout,
         const std::string& csv_path,
         ResolvedObservationWorld& out,
-        std::string& err)
+        std::string& err,
+        TabularFileFormat input_format)
     {
         return build_resolved_observation_world(
             layout.ingest,
@@ -614,7 +625,8 @@ namespace sugar {
             make_align_config_from_data_spec(layout.ingest),
             layout.topologies,
             out,
-            err);
+            err,
+            input_format);
     }
 
     bool bind_resolved_runtime_target(
@@ -676,10 +688,18 @@ namespace sugar {
         const std::string& primary_col_name,
         const RuntimeBuildOptions& options,
         ResolvedRuntimeInput& out,
-        std::string& err)
+        std::string& err,
+        TabularFileFormat input_format)
     {
         ResolvedObservationWorld world{};
-        if (!build_resolved_observation_world(spec, csv_path, options.align_config, {}, world, err)) {
+        if (!build_resolved_observation_world(
+                spec,
+                csv_path,
+                options.align_config,
+                {},
+                world,
+                err,
+                input_format)) {
             return false;
         }
         return bind_resolved_runtime_target(world, primary_col_name, options.target, out, err);
@@ -691,11 +711,12 @@ namespace sugar {
         const std::string& primary_col_name,
         const align::AlignConfig& cfg,
         ResolvedRuntimeInput& out,
-        std::string& err)
+        std::string& err,
+        TabularFileFormat input_format)
     {
         RuntimeBuildOptions options = make_compatibility_runtime_build_options(spec);
         options.align_config = cfg;
-        return build_resolved_runtime_input(spec, csv_path, primary_col_name, options, out, err);
+        return build_resolved_runtime_input(spec, csv_path, primary_col_name, options, out, err, input_format);
     }
 
     bool build_embedded_plan_observation_compat_runtime(

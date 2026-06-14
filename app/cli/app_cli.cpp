@@ -28,11 +28,14 @@ namespace {
             flag == "--run-panel" ||
             flag == "--primary" ||
             flag == "--topk" ||
+            flag == "--input-format" ||
+            flag == "--output-format" ||
+            flag == "--output" ||
             flag == "--contract-section";
     }
 
     bool is_allowed_interactive_flag(std::string_view flag) {
-        return flag == "--data-spec" || flag == "--format";
+        return flag == "--data-spec" || flag == "--format" || flag == "--input-format";
     }
 
     std::string first_non_option_arg(int argc, char** argv) {
@@ -67,6 +70,27 @@ namespace {
         const int i = find_flag_index(argc, argv, flag);
         if (i < 0 || i + 1 >= argc) return false;
         out = std::string(argv[i + 1]);
+        return true;
+    }
+
+    bool read_tabular_format_flag(
+        int argc,
+        char** argv,
+        std::string_view flag,
+        sugar::TabularFileFormat& out,
+        std::string& err) {
+        const int i = find_flag_index(argc, argv, flag);
+        if (i < 0) {
+            return true;
+        }
+        if (i + 1 >= argc) {
+            err = std::string(flag) + " requires <auto|csv|parquet>";
+            return false;
+        }
+        if (!sugar::parse_tabular_file_format(argv[i + 1], out)) {
+            err = std::string(flag) + " must be one of auto | csv | parquet";
+            return false;
+        }
         return true;
     }
 
@@ -201,30 +225,46 @@ namespace sugar::app {
 
         if (argc >= 2 && std::string_view(argv[1]) == "scaffold") {
             if (argc < 3) {
-                err = "scaffold requires <data.csv>";
+                err = "scaffold requires <data>";
                 return false;
             }
             out.kind = CommandKind::ScaffoldLayout;
             out.scaffold_layout.csv_path =
                 sugar::normalize_path_for_runtime(std::string(argv[2]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.scaffold_layout.input_format,
+                    err)) {
+                return false;
+            }
             return true;
         }
 
         const int scaffold_i = find_flag_index(argc, argv, "--scaffold");
         if (scaffold_i >= 0) {
             if (scaffold_i + 1 >= argc) {
-                err = "--scaffold requires <data.csv>";
+                err = "--scaffold requires <data>";
                 return false;
             }
             out.kind = CommandKind::ScaffoldLayout;
             out.scaffold_layout.csv_path =
                 sugar::normalize_path_for_runtime(std::string(argv[scaffold_i + 1]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.scaffold_layout.input_format,
+                    err)) {
+                return false;
+            }
             return true;
         }
 
         if (argc >= 2 && std::string_view(argv[1]) == "run") {
             if (argc < 5) {
-                err = "run requires <layout.json> <logic.json> <csv_path>";
+                err = "run requires <layout.json> <logic.json> <data>";
                 return false;
             }
             out.kind = CommandKind::Run;
@@ -234,6 +274,17 @@ namespace sugar::app {
             for (int i = 5; i < argc; ++i) {
                 const std::string_view arg(argv[i]);
                 if (arg != "--report") {
+                    if (arg == "--input-format") {
+                        if (i + 1 >= argc) {
+                            err = "--input-format requires <auto|csv|parquet>";
+                            return false;
+                        }
+                        if (!sugar::parse_tabular_file_format(argv[++i], out.run.input_format)) {
+                            err = "--input-format must be one of auto | csv | parquet";
+                            return false;
+                        }
+                        continue;
+                    }
                     err = "unknown run argument '" + std::string(arg) + "'";
                     return false;
                 }
@@ -254,7 +305,7 @@ namespace sugar::app {
         const int obs_report_i = find_flag_index(argc, argv, "--obs-report");
         if (obs_report_i >= 0) {
             if (obs_report_i + 2 >= argc) {
-                err = "--obs-report requires <layout.json> <csv_path>";
+                err = "--obs-report requires <layout.json> <data>";
                 return false;
             }
             out.kind = CommandKind::ObsReport;
@@ -264,6 +315,17 @@ namespace sugar::app {
                 const std::string_view arg(argv[i]);
                 if (arg == "--json") {
                     out.obs_report.json_output = true;
+                    continue;
+                }
+                if (arg == "--input-format") {
+                    if (i + 1 >= argc) {
+                        err = "--input-format requires <auto|csv|parquet>";
+                        return false;
+                    }
+                    if (!sugar::parse_tabular_file_format(argv[++i], out.obs_report.input_format)) {
+                        err = "--input-format must be one of auto | csv | parquet";
+                        return false;
+                    }
                     continue;
                 }
                 if (arg == "--report") {
@@ -288,26 +350,54 @@ namespace sugar::app {
         const int plan_report_i = find_flag_index(argc, argv, "--plan-report");
         if (plan_report_i >= 0) {
             if (plan_report_i + 3 >= argc) {
-                err = "--plan-report requires <layout.json> <logic.json> <csv_path>";
+                err = "--plan-report requires <layout.json> <logic.json> <data>";
                 return false;
             }
             out.kind = CommandKind::PlanReport;
             out.plan_report.layout_path = sugar::normalize_path_for_runtime(std::string(argv[plan_report_i + 1]));
             out.plan_report.logic_path = sugar::normalize_path_for_runtime(std::string(argv[plan_report_i + 2]));
             out.plan_report.csv_path = sugar::normalize_path_for_runtime(std::string(argv[plan_report_i + 3]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.plan_report.input_format,
+                    err)) {
+                return false;
+            }
             return true;
         }
 
         const int feature_dump_i = find_flag_index(argc, argv, "--feature-dump");
         if (feature_dump_i >= 0) {
             if (feature_dump_i + 3 >= argc) {
-                err = "--feature-dump requires <layout.json> <logic.json> <csv_path>";
+                err = "--feature-dump requires <layout.json> <logic.json> <data>";
                 return false;
             }
             out.kind = CommandKind::FeatureDump;
             out.feature_dump.layout_path = sugar::normalize_path_for_runtime(std::string(argv[feature_dump_i + 1]));
             out.feature_dump.logic_path = sugar::normalize_path_for_runtime(std::string(argv[feature_dump_i + 2]));
             out.feature_dump.csv_path = sugar::normalize_path_for_runtime(std::string(argv[feature_dump_i + 3]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.feature_dump.input_format,
+                    err)) {
+                return false;
+            }
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--output-format",
+                    out.feature_dump.output_format,
+                    err)) {
+                return false;
+            }
+            if (read_flag_value(argc, argv, "--output", out.feature_dump.output_path)) {
+                out.feature_dump.output_path =
+                    sugar::normalize_path_for_runtime(out.feature_dump.output_path);
+            }
             return true;
         }
 
@@ -351,25 +441,41 @@ namespace sugar::app {
         const int prep_i = find_flag_index(argc, argv, "--prep-dump");
         if (prep_i >= 0) {
             if (prep_i + 2 >= argc) {
-                err = "--prep-dump requires <layout.json> <csv_path>";
+                err = "--prep-dump requires <layout.json> <data>";
                 return false;
             }
             out.kind = CommandKind::PrepDump;
             out.prep_dump.spec_path = sugar::normalize_path_for_runtime(std::string(argv[prep_i + 1]));
             out.prep_dump.csv_path = sugar::normalize_path_for_runtime(std::string(argv[prep_i + 2]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.prep_dump.input_format,
+                    err)) {
+                return false;
+            }
             return true;
         }
 
         const int align_i = find_flag_index(argc, argv, "--align-dump");
         if (align_i >= 0) {
             if (align_i + 2 >= argc) {
-                err = "--align-dump requires <layout.json> <csv_path>";
+                err = "--align-dump requires <layout.json> <data>";
                 return false;
             }
 
             out.kind = CommandKind::AlignDump;
             out.align_dump.spec_path = sugar::normalize_path_for_runtime(std::string(argv[align_i + 1]));
             out.align_dump.csv_path = sugar::normalize_path_for_runtime(std::string(argv[align_i + 2]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.align_dump.input_format,
+                    err)) {
+                return false;
+            }
             if (!read_flag_value(argc, argv, "--series-key-col", out.align_dump.series_key_col) ||
                 out.align_dump.series_key_col.empty())
             {
@@ -390,13 +496,21 @@ namespace sugar::app {
         const int panel_i = find_flag_index(argc, argv, "--run-panel");
         if (panel_i >= 0) {
             if (panel_i + 2 >= argc) {
-                err = "--run-panel requires <layout.json> <csv_path>";
+                err = "--run-panel requires <layout.json> <data>";
                 return false;
             }
 
             out.kind = CommandKind::RunPanel;
             out.run_panel.spec_path = sugar::normalize_path_for_runtime(std::string(argv[panel_i + 1]));
             out.run_panel.csv_path = sugar::normalize_path_for_runtime(std::string(argv[panel_i + 2]));
+            if (!read_tabular_format_flag(
+                    argc,
+                    argv,
+                    "--input-format",
+                    out.run_panel.input_format,
+                    err)) {
+                return false;
+            }
             (void)read_flag_value(argc, argv, "--primary", out.run_panel.primary_col);
 
             std::string topk_s;
@@ -446,6 +560,15 @@ namespace sugar::app {
             !parse_runtime_format(fmt_arg, out.interactive.requested_format))
         {
             err = "--format must be one of auto | legacy_ohlcv_date | iso_ohlcv_time";
+            return false;
+        }
+
+        if (!read_tabular_format_flag(
+                argc,
+                argv,
+                "--input-format",
+                out.interactive.input_format,
+                err)) {
             return false;
         }
 

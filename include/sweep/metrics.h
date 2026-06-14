@@ -279,6 +279,8 @@ namespace sugar {
         bool has_entity_axis{ false };
         bool has_spatial_axis{ false };
         std::size_t input_warning_count{ 0 };
+        std::string input_format{ "csv" };
+        std::size_t input_row_count{ 0 };
         bool csv_had_header{ false };
         std::size_t csv_physical_line_count{ 0 };
         std::size_t csv_blank_line_count{ 0 };

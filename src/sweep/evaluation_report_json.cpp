@@ -271,6 +271,9 @@ namespace sugar::evaluation_report_internal {
             out << ",\"has_spatial_axis\":"
                 << (provenance.has_spatial_axis ? "true" : "false");
             out << ",\"input_warning_count\":" << provenance.input_warning_count;
+            out << ",\"input_format\":";
+            append_json_string(out, provenance.input_format.empty() ? "csv" : provenance.input_format);
+            out << ",\"input_row_count\":" << provenance.input_row_count;
             out << ",\"csv_had_header\":"
                 << (provenance.csv_had_header ? "true" : "false");
             out << ",\"csv_physical_line_count\":"

@@ -26,7 +26,7 @@ Requirements:
 * Windows: Visual Studio 2022 MSVC x64
 * Linux/WSL: GCC or Clang on x86-64 or ARM64/aarch64
 
-SugarBot has no third-party C++ library dependencies.
+SugarBot's default build has no third-party C++ library dependencies. Optional Parquet support requires Apache Arrow C++ and Parquet C++ and is enabled with `-DSUGAR_ENABLE_PARQUET=ON`.
 
 The commands below build only the main `sugarbot` executable. That is enough for `--help`, `--onramp`, the interactive tutorial, and local `sugarbot run ...` commands.
 
@@ -39,6 +39,31 @@ The beginner commands are:
 * `sugarbot`: start the interactive tutorial.
 
 The interactive tutorial uses checked-in files from `data/` and `graphs/demos/`, so start it from the repository root or from a full package that includes those folders. `--help` and `--onramp` do not need the demo files.
+
+### CSV And Parquet
+
+CSV remains the default format for small examples and files you want to inspect by hand. When SugarBot is built with `SUGAR_ENABLE_PARQUET=ON`, commands that accept tabular data can also read `.parquet` and `.pq` files, and feature dumps can be written as Parquet.
+
+Parquet support is local CLI/library support in v1. Hosted service Parquet upload/output remains deferred until the service protocol has a binary-safe upload contract.
+
+Use Parquet instead of CSV when you care about:
+
+| Concern | CSV | Parquet |
+|---|---|---|
+| File size | Larger | Usually much smaller |
+| Type preservation | Weak | Strong |
+| Analytics reads | Slower | Faster, especially column scans |
+| Spark / DuckDB / pandas / Synapse use | Usable | Preferred |
+| Human readability | High | Low |
+| Implementation simplicity | Easy | More setup |
+
+Examples:
+
+```bash
+sugarbot run layout.json logic.json data.parquet
+sugarbot --obs-report layout.json data.parquet
+sugarbot --feature-dump layout.json logic.json data.parquet --output-format parquet --output features.parquet
+```
 
 ### Windows: Build And Run
 

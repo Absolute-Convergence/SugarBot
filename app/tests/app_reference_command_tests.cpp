@@ -187,8 +187,9 @@ namespace sugar::app::tests {
                 "help output includes reports help surface");
             t.check(text.find("--scaffold") != std::string::npos,
                 "help output includes scaffold surface");
-            t.check(text.find("run <layout.json> <logic.json> <data.csv>") != std::string::npos,
-                "help output includes unified run surface");
+            t.check(text.find("run <layout.json> <logic.json> <data.csv|data.parquet>") != std::string::npos &&
+                    text.find("--input-format auto|csv|parquet") != std::string::npos,
+                "help output includes unified run surface and tabular input formats");
             t.check(text.find("sugarbot run graphs/demos/quickstart_ohlcv.layout.json graphs/demos/quickstart_ohlcv.planspec.json data/sample.csv") != std::string::npos,
                 "help output includes the checked-in quickstart workflow");
             t.check(text.find("--dump-layout") != std::string::npos,
@@ -209,6 +210,10 @@ namespace sugar::app::tests {
                 "help output points first-time users to the onramp and human default output");
             t.check(text.find("Interactive mode keeps exploratory CSV compatibility presets separate from the canonical three-artifact `run` path") != std::string::npos,
                 "help output scopes compatibility presets to interactive mode");
+            t.check(text.find("Parquet:") != std::string::npos &&
+                    text.find("sugarbot run layout.json logic.json data.parquet") != std::string::npos &&
+                    text.find("--output-format parquet --output features.parquet") != std::string::npos,
+                "help output documents Parquet input and feature output examples");
             t.check(text.find("Reports and diagnostics:") == std::string::npos &&
                     text.find("Plan contract:") == std::string::npos &&
                     text.find("Layout contract:") == std::string::npos,

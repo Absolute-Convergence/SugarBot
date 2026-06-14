@@ -182,6 +182,106 @@ namespace sugar::app::tests {
             return t.failed == 0;
         }
 
+        bool test_parse_tabular_format_flags(TestContext& t) {
+            t.out << "[app_cli] tabular format flag parsing\n";
+
+            char arg0[] = "prog";
+            char run_arg[] = "run";
+            char layout_arg[] = "layout.json";
+            char logic_arg[] = "logic.json";
+            char parquet_data_arg[] = "data.parquet";
+            char input_format_arg[] = "--input-format";
+            char parquet_value[] = "parquet";
+            char* run_argv[] = {
+                arg0,
+                run_arg,
+                layout_arg,
+                logic_arg,
+                parquet_data_arg,
+                input_format_arg,
+                parquet_value,
+            };
+
+            AppCommand run_cmd{};
+            std::string err;
+            const bool run_ok = parse_app_command(7, run_argv, run_cmd, err);
+            t.check(run_ok, "run accepts --input-format parquet");
+            t.check(err.empty(), "run input-format parse has no error");
+            t.check(run_cmd.run.input_format == sugar::TabularFileFormat::Parquet,
+                "run records parquet input format");
+
+            char feature_arg[] = "--feature-dump";
+            char output_format_arg[] = "--output-format";
+            char output_arg[] = "--output";
+            char output_path_arg[] = "features.parquet";
+            char* feature_argv[] = {
+                arg0,
+                feature_arg,
+                layout_arg,
+                logic_arg,
+                parquet_data_arg,
+                input_format_arg,
+                parquet_value,
+                output_format_arg,
+                parquet_value,
+                output_arg,
+                output_path_arg,
+            };
+
+            AppCommand feature_cmd{};
+            err.clear();
+            const bool feature_ok = parse_app_command(11, feature_argv, feature_cmd, err);
+            t.check(feature_ok, "feature-dump accepts parquet input and output flags");
+            t.check(err.empty(), "feature-dump parquet flag parse has no error");
+            t.check(feature_cmd.feature_dump.input_format == sugar::TabularFileFormat::Parquet,
+                "feature-dump records parquet input format");
+            t.check(feature_cmd.feature_dump.output_format == sugar::TabularFileFormat::Parquet,
+                "feature-dump records parquet output format");
+            t.check(feature_cmd.feature_dump.output_path.find("features.parquet") != std::string::npos,
+                "feature-dump records output path");
+
+            char bad_value[] = "json";
+            char* bad_argv[] = {
+                arg0,
+                feature_arg,
+                layout_arg,
+                logic_arg,
+                parquet_data_arg,
+                output_format_arg,
+                bad_value,
+            };
+            AppCommand bad_cmd{};
+            err.clear();
+            const bool bad_ok = parse_app_command(7, bad_argv, bad_cmd, err);
+            t.check(!bad_ok, "feature-dump rejects invalid output format");
+            t.check(err == "--output-format must be one of auto | csv | parquet",
+                "invalid output-format error is explicit");
+
+            return t.failed == 0;
+        }
+
+        bool test_parquet_loader_requires_enabled_build(TestContext& t) {
+            t.out << "[app_cli] parquet disabled-build diagnostic\n";
+#if !defined(SUGAR_ENABLE_PARQUET)
+            bool had_header = false;
+            std::string err;
+            const auto table = sugar::load_tabular_table(
+                "missing_fixture.parquet",
+                sugar::TabularFileFormat::Parquet,
+                sugar::CsvHeaderPolicy::Required,
+                had_header,
+                err);
+            t.check(table.headers.empty() && table.rows.empty(),
+                "disabled Parquet load returns an empty table");
+            t.check(!had_header, "disabled Parquet load reports no header");
+            t.check(err.find("SUGAR_ENABLE_PARQUET=ON") != std::string::npos,
+                "disabled Parquet load explains the required build flag");
+#else
+            t.check(true, "Parquet-enabled build skips disabled-build diagnostic");
+#endif
+            return t.failed == 0;
+        }
+
         bool test_parse_dump_layout_command(TestContext& t) {
             t.out << "[app_cli] dump-layout parsing\n";
             char arg0[] = "prog";
@@ -530,6 +630,8 @@ namespace sugar::app::tests {
         tests.push_back(test_parse_obs_report_command);
         tests.push_back(test_parse_plan_report_command);
         tests.push_back(test_parse_feature_dump_command);
+        tests.push_back(test_parse_tabular_format_flags);
+        tests.push_back(test_parquet_loader_requires_enabled_build);
         tests.push_back(test_parse_scaffold_command);
         tests.push_back(test_parse_dump_layout_command);
         tests.push_back(test_parse_dump_plan_aliases);

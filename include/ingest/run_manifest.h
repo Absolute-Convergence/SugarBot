@@ -74,6 +74,8 @@ namespace sugar {
         std::vector<std::string> series_keys;
         bool produced_frameset{ false };
         bool has_entity_axis{ false };
+        TabularFileFormat input_format{ TabularFileFormat::Csv };
+        std::size_t input_row_count{ 0 };
         bool csv_had_header{ false };
         std::vector<std::string> parsed_columns{};
         std::size_t csv_physical_line_count{ 0 };

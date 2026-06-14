@@ -36,7 +36,8 @@ namespace sugar::app {
         PreprocessReport& out_report,
         std::string& err,
         const std::optional<align::AlignConfig>& align_cfg = std::nullopt,
-        std::shared_ptr<FrameSchema> schema = {});
+        std::shared_ptr<FrameSchema> schema = {},
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool align_frameset(const FrameSet& fs,
         const align::AlignConfig& cfg,
@@ -50,7 +51,8 @@ namespace sugar::app {
         const std::string& primary_col_name,
         const align::AlignConfig& cfg,
         AlignedRuntimeInput& out,
-        std::string& err);
+        std::string& err,
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool build_interactive_runtime_session(const InteractiveCommand& cmd,
         const std::string& csv_path,

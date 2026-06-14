@@ -29,7 +29,8 @@ namespace sugar {
         PreprocessReport& out_report,
         std::string& err,
         const std::optional<align::AlignConfig>& align_cfg = std::nullopt,
-        std::shared_ptr<FrameSchema> schema = {});
+        std::shared_ptr<FrameSchema> schema = {},
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool align_frameset(const FrameSet& fs,
         const align::AlignConfig& cfg,
@@ -101,13 +102,15 @@ namespace sugar {
         const align::AlignConfig& cfg,
         const std::vector<TopologySpec>& declared_topologies,
         ResolvedObservationWorld& out,
-        std::string& err);
+        std::string& err,
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool build_resolved_observation_world(
         const LayoutSpec& layout,
         const std::string& csv_path,
         ResolvedObservationWorld& out,
-        std::string& err);
+        std::string& err,
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool bind_resolved_runtime_target(
         const ResolvedObservationWorld& world,
@@ -122,7 +125,8 @@ namespace sugar {
         const std::string& primary_col_name,
         const RuntimeBuildOptions& options,
         ResolvedRuntimeInput& out,
-        std::string& err);
+        std::string& err,
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     bool build_resolved_runtime_input(
         const DataSpec& spec,
@@ -130,7 +134,8 @@ namespace sugar {
         const std::string& primary_col_name,
         const align::AlignConfig& cfg,
         ResolvedRuntimeInput& out,
-        std::string& err);
+        std::string& err,
+        TabularFileFormat input_format = TabularFileFormat::Auto);
 
     // Compatibility adapter only: resolve legacy embedded observation inputs
     // (for example older `series_inputs` JSON) into canonical DataView runtime

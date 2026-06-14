@@ -1,6 +1,7 @@
 #include "commands/app_commands.h"
 
 #include <algorithm>
+#include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -13,6 +14,7 @@
 
 #include "app_support/feature_dump.h"
 #include "contracts/contract_suite.h"
+#include "ingest/raw_table.h"
 #include "ingest/utils.h"
 #include "sweep/evaluation_report.h"
 #include "sweep/dynamic_execution.h"
@@ -113,6 +115,7 @@ namespace {
     bool load_layout_and_world(
         const std::string& layout_path,
         const std::string& csv_path,
+        sugar::TabularFileFormat input_format,
         sugar::LayoutSpec& layout,
         sugar::ResolvedObservationWorld& world,
         std::string& err) {
@@ -123,7 +126,7 @@ namespace {
         }
 
         std::string world_err;
-        if (!sugar::build_resolved_observation_world(layout, csv_path, world, world_err)) {
+        if (!sugar::build_resolved_observation_world(layout, csv_path, world, world_err, input_format)) {
             err = world_err;
             return false;
         }
@@ -204,7 +207,7 @@ namespace {
         const sugar::app::AppCommand& cmd) {
         err << "Next step: run `sugarbot --obs-report "
             << cmd.run.layout_path << " " << cmd.run.csv_path
-            << "` to isolate CSV/layout ingest and observation-world issues.\n";
+            << "` to isolate data/layout ingest and observation-world issues.\n";
     }
 
     void print_plan_report_next_step(
@@ -315,7 +318,8 @@ namespace sugar::app {
                     layout,
                     cmd.obs_report.csv_path,
                     world,
-                    world_err)) {
+                    world_err,
+                    cmd.obs_report.input_format)) {
                 const auto code = classify_observation_world_error(world, world_err);
                 const auto* report =
                     !world.run_manifest.preprocess.preprocess_error_code.empty() ||
@@ -337,6 +341,7 @@ namespace sugar::app {
         if (!load_layout_and_world(
                 cmd.obs_report.layout_path,
                 cmd.obs_report.csv_path,
+                cmd.obs_report.input_format,
                 layout,
                 world,
                 load_err)) {
@@ -353,7 +358,13 @@ namespace sugar::app {
         sugar::LayoutSpec layout{};
         sugar::ResolvedObservationWorld world{};
         std::string load_err;
-        if (!load_layout_and_world(cmd.plan_report.layout_path, cmd.plan_report.csv_path, layout, world, load_err)) {
+        if (!load_layout_and_world(
+                cmd.plan_report.layout_path,
+                cmd.plan_report.csv_path,
+                cmd.plan_report.input_format,
+                layout,
+                world,
+                load_err)) {
             err << "Error: " << load_err << "\n";
             return 1;
         }
@@ -519,7 +530,13 @@ namespace sugar::app {
         sugar::LayoutSpec layout{};
         sugar::ResolvedObservationWorld world{};
         std::string load_err;
-        if (!load_layout_and_world(cmd.feature_dump.layout_path, cmd.feature_dump.csv_path, layout, world, load_err)) {
+        if (!load_layout_and_world(
+                cmd.feature_dump.layout_path,
+                cmd.feature_dump.csv_path,
+                cmd.feature_dump.input_format,
+                layout,
+                world,
+                load_err)) {
             err << "Error: " << load_err << "\n";
             return 1;
         }
@@ -530,6 +547,44 @@ namespace sugar::app {
             err << "Error: " << logic_err << "\n";
             return 1;
         }
+
+        auto emit_feature_dump = [&](const sugar::ResolvedRuntimeInput& runtime) -> int {
+            sugar::TabularFileFormat output_format = cmd.feature_dump.output_format;
+            if (output_format == sugar::TabularFileFormat::Auto) {
+                output_format = cmd.feature_dump.output_path.empty()
+                    ? sugar::TabularFileFormat::Csv
+                    : sugar::infer_tabular_file_format_from_path(cmd.feature_dump.output_path);
+            }
+
+            std::string dump_err;
+            if (output_format == sugar::TabularFileFormat::Parquet) {
+                if (!dump_feature_table_parquet(runtime, spec, cmd.feature_dump.output_path, dump_err)) {
+                    err << "Error: " << dump_err << "\n";
+                    return 1;
+                }
+                return 0;
+            }
+
+            if (cmd.feature_dump.output_path.empty()) {
+                if (!dump_feature_table(runtime, spec, out, dump_err)) {
+                    err << "Error: " << dump_err << "\n";
+                    return 1;
+                }
+                return 0;
+            }
+
+            std::ofstream file(cmd.feature_dump.output_path, std::ios::binary | std::ios::trunc);
+            if (!file) {
+                err << "Error: failed to open feature-dump output path: "
+                    << cmd.feature_dump.output_path << "\n";
+                return 1;
+            }
+            if (!dump_feature_table(runtime, spec, file, dump_err)) {
+                err << "Error: " << dump_err << "\n";
+                return 1;
+            }
+            return 0;
+        };
 
         const bool multi_series = observation_world_is_multi_series(world);
 
@@ -551,12 +606,7 @@ namespace sugar::app {
                 return 1;
             }
 
-            std::string dump_err;
-            if (!dump_feature_table(runtime, spec, out, dump_err)) {
-                err << "Error: " << dump_err << "\n";
-                return 1;
-            }
-            return 0;
+            return emit_feature_dump(runtime);
         }
 
         const sugar::PlanRunSpec& run = *spec.run;
@@ -606,12 +656,7 @@ namespace sugar::app {
             return 1;
         }
 
-        std::string dump_err;
-        if (!dump_feature_table(runtime, spec, out, dump_err)) {
-            err << "Error: " << dump_err << "\n";
-            return 1;
-        }
-        return 0;
+        return emit_feature_dump(runtime);
     }
 
     bool planspec_has_sweep(const sugar::PlanSpec& spec) {
@@ -714,7 +759,12 @@ namespace sugar::app {
 
         sugar::ResolvedObservationWorld world{};
         std::string world_err;
-        if (!sugar::build_resolved_observation_world(layout, cmd.run.csv_path, world, world_err)) {
+        if (!sugar::build_resolved_observation_world(
+                layout,
+                cmd.run.csv_path,
+                world,
+                world_err,
+                cmd.run.input_format)) {
             err << "Error: " << world_err << "\n";
             print_obs_report_next_step(err, cmd);
             return 1;
@@ -981,7 +1031,15 @@ namespace sugar::app {
         sugar::FrameSet fs{};
         sugar::PreprocessReport report{};
         std::string runtime_err;
-        if (!sugar::app::preprocess_to_frameset(ds, cmd.prep_dump.csv_path, fs, report, runtime_err)) {
+        if (!sugar::app::preprocess_to_frameset(
+                ds,
+                cmd.prep_dump.csv_path,
+                fs,
+                report,
+                runtime_err,
+                std::nullopt,
+                {},
+                cmd.prep_dump.input_format)) {
             err << "Error: " << runtime_err << "\n";
             return 1;
         }
@@ -1054,7 +1112,15 @@ namespace sugar::app {
         sugar::FrameSet fs{};
         sugar::PreprocessReport report{};
         std::string runtime_err;
-        if (!sugar::app::preprocess_to_frameset(ds, cmd.align_dump.csv_path, fs, report, runtime_err)) {
+        if (!sugar::app::preprocess_to_frameset(
+                ds,
+                cmd.align_dump.csv_path,
+                fs,
+                report,
+                runtime_err,
+                std::nullopt,
+                {},
+                cmd.align_dump.input_format)) {
             err << "Error: " << runtime_err << "\n";
             return 1;
         }

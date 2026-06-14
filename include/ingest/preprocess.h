@@ -44,6 +44,8 @@ namespace sugar {
         std::string err;
         std::string error_code{};
         std::vector<PreprocessIssueAggregate> error_aggregates{};
+        TabularFileFormat input_format{ TabularFileFormat::Csv };
+        std::size_t input_row_count{ 0 };
         CsvLoadDiagnostics csv_load{};
         bool csv_had_header{ false };
         std::vector<std::string> parsed_columns{};
@@ -54,6 +56,11 @@ namespace sugar {
 
     PreprocessResult preprocess_csv(const DataSpec& spec,
         const std::string& csv_path,
+        std::shared_ptr<FrameSchema> schema);
+
+    PreprocessResult preprocess_tabular(const DataSpec& spec,
+        const std::string& input_path,
+        TabularFileFormat input_format,
         std::shared_ptr<FrameSchema> schema);
 
 } // namespace sugar

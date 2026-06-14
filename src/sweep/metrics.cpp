@@ -57,6 +57,8 @@ namespace sugar {
                 provenance.has_entity_axis ||
                 provenance.has_spatial_axis ||
                 provenance.input_warning_count > 0 ||
+                !provenance.input_format.empty() ||
+                provenance.input_row_count > 0 ||
                 provenance.csv_had_header ||
                 provenance.csv_physical_line_count > 0 ||
                 provenance.csv_blank_line_count > 0 ||
@@ -469,6 +471,8 @@ namespace sugar {
         }
         summary.series_count = manifest.preprocess.series_keys.size();
         summary.input_warning_count = manifest.preprocess.input_warnings.size();
+        summary.input_format = std::string(tabular_file_format_name(manifest.preprocess.input_format));
+        summary.input_row_count = manifest.preprocess.input_row_count;
         summary.csv_had_header = manifest.preprocess.csv_had_header;
         summary.csv_physical_line_count = manifest.preprocess.csv_physical_line_count;
         summary.csv_blank_line_count = manifest.preprocess.csv_blank_line_count;
@@ -754,6 +758,9 @@ namespace sugar {
             << (provenance.primary_selection_mode.empty() ? "<unknown>" : provenance.primary_selection_mode) << "\n"
             << indent << "  series_count: " << provenance.series_count << "\n"
             << indent << "  input_warnings: " << provenance.input_warning_count << "\n"
+            << indent << "  input_format: "
+            << (provenance.input_format.empty() ? "csv" : provenance.input_format) << "\n"
+            << indent << "  input_rows: " << provenance.input_row_count << "\n"
             << indent << "  csv_had_header: " << (provenance.csv_had_header ? "true" : "false") << "\n"
             << indent << "  csv_physical_lines: " << provenance.csv_physical_line_count << "\n"
             << indent << "  csv_blank_lines: " << provenance.csv_blank_line_count << "\n"

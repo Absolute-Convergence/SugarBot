@@ -14,4 +14,10 @@ namespace sugar::app {
         std::ostream& out,
         std::string& err);
 
+    bool dump_feature_table_parquet(
+        const sugar::ResolvedRuntimeInput& runtime,
+        const sugar::PlanSpec& spec,
+        const std::string& output_path,
+        std::string& err);
+
 } // namespace sugar::app

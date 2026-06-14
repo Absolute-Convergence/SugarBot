@@ -233,9 +233,10 @@ namespace sugar::app {
     int run_scaffold_layout_command(const AppCommand& cmd, std::ostream& out, std::ostream& err) {
         bool had_header = false;
         std::string load_err;
-        sugar::CsvLoadDiagnostics diagnostics{};
-        sugar::RawTable table = sugar::load_csv_table(
+        sugar::TabularLoadDiagnostics diagnostics{};
+        sugar::RawTable table = sugar::load_tabular_table(
             cmd.scaffold_layout.csv_path,
+            cmd.scaffold_layout.input_format,
             sugar::CsvHeaderPolicy::AutoDetect,
             had_header,
             load_err,
@@ -245,7 +246,7 @@ namespace sugar::app {
             return 1;
         }
         if (!had_header || table.headers.empty()) {
-            err << "Error: --scaffold expects a CSV header row so it can name layout fields from real columns.\n";
+            err << "Error: --scaffold expects a tabular header row so it can name layout fields from real columns.\n";
             return 1;
         }
 
@@ -295,7 +296,7 @@ namespace sugar::app {
         }
 
         if (value_cols.empty()) {
-            err << "Error: --scaffold could not infer numeric value columns from the CSV sample rows.\n";
+            err << "Error: --scaffold could not infer numeric value columns from the tabular sample rows.\n";
             return 1;
         }
 
@@ -313,7 +314,7 @@ namespace sugar::app {
             scaffold_time_kind = infer_scaffold_time_kind(first_non_missing_cell(table, time_index));
         }
 
-        err << "Scaffolded an explicit LayoutSpec from CSV headers. Review the field names, then validate with `sugarbot --obs-report <layout.json> "
+        err << "Scaffolded an explicit LayoutSpec from tabular headers. Review the field names, then validate with `sugarbot --obs-report <layout.json> "
             << cmd.scaffold_layout.csv_path << "`.\n";
         err << "Scaffold assumptions:\n";
         if (time_index < table.headers.size()) {

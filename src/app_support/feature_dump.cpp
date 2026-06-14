@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -22,9 +23,30 @@
 #include "ops/op_registry.h"
 #include "ingest/data_view.h"
 
+#if defined(SUGAR_ENABLE_PARQUET)
+#include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <parquet/arrow/writer.h>
+#include <parquet/properties.h>
+#endif
+
 namespace sugar::app {
 
     namespace {
+
+        struct FeatureDumpRow {
+            std::string series_key{};
+            std::string entity_key{};
+            std::size_t row_index{ 0 };
+            TimeKey time_key{ 0 };
+            std::vector<double> values{};
+        };
+
+        struct FeatureDumpTable {
+            bool has_time_axis{ false };
+            std::vector<std::string> feature_labels{};
+            std::vector<FeatureDumpRow> rows{};
+        };
 
         std::string format_numeric_cell(double value) {
             if (!std::isfinite(value)) {
@@ -343,6 +365,278 @@ namespace sugar::app {
             return labels;
         }
 
+        bool build_feature_table(
+            const sugar::ResolvedRuntimeInput& runtime,
+            const sugar::PlanSpec& spec,
+            FeatureDumpTable& table,
+            std::string& err) {
+            table = FeatureDumpTable{};
+            if (!runtime.aligned_bundle) {
+                err = "feature-dump requires an aligned runtime bundle";
+                return false;
+            }
+            if (runtime.primary_series_index == static_cast<std::size_t>(-1) ||
+                runtime.primary_series_index >= runtime.aligned_bundle->frames.size()) {
+                err = "feature-dump primary series index is invalid";
+                return false;
+            }
+
+            const sugar::DataView dv(*runtime.aligned_bundle);
+
+            sugar::PlanSpec compile_spec{};
+            sugar::CompileEnv compile_env{};
+            std::string adapt_err;
+            if (!build_feature_dump_compile_spec(
+                    spec,
+                    dv,
+                    runtime.primary_ref.series,
+                    compile_spec,
+                    compile_env,
+                    adapt_err)) {
+                err = "feature-dump compile failed: " + adapt_err;
+                return false;
+            }
+
+            const auto registry = sugar::make_default_registry();
+            sugar::CompiledPlanTemplate plan_template{};
+            std::vector<sugar::NamedNumericOutput> numeric_outputs;
+            std::string compile_err;
+            if (!sugar::compile_feature_dump_template(
+                    compile_spec,
+                    registry,
+                    compile_env,
+                    plan_template,
+                    numeric_outputs,
+                    compile_err)) {
+                err = "feature-dump compile failed: " + compile_err;
+                return false;
+            }
+
+            sugar::CompileResult compiled{};
+            std::string instantiate_err;
+            if (!sugar::instantiate_compiled_plan(plan_template, nullptr, compiled, instantiate_err)) {
+                err = "feature-dump instantiate failed: " + instantiate_err;
+                return false;
+            }
+
+            sugar::ProgramEvaluationBuffers buffers{};
+            std::string eval_err;
+            if (!sugar::evaluate_strategy_plan_program_buffers(
+                    dv,
+                    runtime.primary_ref,
+                    compiled.plan,
+                    buffers,
+                    eval_err)) {
+                err = "feature-dump evaluation failed: " + eval_err;
+                return false;
+            }
+
+            const auto& frame = runtime.aligned_bundle->frames[runtime.primary_series_index];
+            const bool has_time_axis = frame.has_time_axis();
+            const auto time_axis = frame.time();
+            const std::string entity_key =
+                runtime.primary_entity_key.empty() ? runtime.primary_ref.series : runtime.primary_entity_key;
+            table.has_time_axis = has_time_axis;
+            table.feature_labels =
+                build_feature_header_labels(spec, numeric_outputs, runtime, dv, has_time_axis);
+            table.rows.reserve(frame.row_count());
+
+            for (std::size_t row = 0; row < frame.row_count(); ++row) {
+                FeatureDumpRow out_row{};
+                out_row.series_key = runtime.primary_ref.series;
+                out_row.entity_key = entity_key;
+                out_row.row_index = row;
+                if (has_time_axis) {
+                    out_row.time_key = time_axis[row];
+                }
+                out_row.values.reserve(numeric_outputs.size());
+                for (const auto& feature : numeric_outputs) {
+                    if (feature.output_slot >= buffers.numeric_slots.size() ||
+                        row >= buffers.numeric_slots[feature.output_slot].size()) {
+                        err = "feature-dump numeric output slot is out of range";
+                        return false;
+                    }
+                    out_row.values.push_back(buffers.numeric_slots[feature.output_slot][row]);
+                }
+                table.rows.push_back(std::move(out_row));
+            }
+
+            return true;
+        }
+
+        void write_feature_table_csv(const FeatureDumpTable& table, std::ostream& out) {
+            out << "series_key,entity_key,row_index";
+            if (table.has_time_axis) {
+                out << ",time_key";
+            }
+            for (const auto& label : table.feature_labels) {
+                out << "," << label;
+            }
+            out << "\n";
+
+            for (const auto& row : table.rows) {
+                out << row.series_key
+                    << "," << row.entity_key
+                    << "," << row.row_index;
+                if (table.has_time_axis) {
+                    out << "," << row.time_key;
+                }
+                for (const double value : row.values) {
+                    out << "," << format_numeric_cell(value);
+                }
+                out << "\n";
+            }
+        }
+
+#if defined(SUGAR_ENABLE_PARQUET)
+        template <typename Builder, typename Value>
+        bool append_arrow_value(Builder& builder, const Value& value, std::string& err) {
+            const arrow::Status status = builder.Append(value);
+            if (!status.ok()) {
+                err = status.ToString();
+                return false;
+            }
+            return true;
+        }
+
+        template <typename Builder>
+        bool finish_arrow_array(
+            Builder& builder,
+            std::shared_ptr<arrow::Array>& out,
+            std::string& err) {
+            arrow::Status status = builder.Finish(&out);
+            if (!status.ok()) {
+                err = status.ToString();
+                return false;
+            }
+            return true;
+        }
+
+        bool write_feature_table_parquet_file(
+            const FeatureDumpTable& table,
+            const std::string& output_path,
+            std::string& err) {
+            arrow::StringBuilder series_builder;
+            arrow::StringBuilder entity_builder;
+            arrow::Int64Builder row_builder;
+            arrow::Int64Builder time_builder;
+            std::vector<std::unique_ptr<arrow::DoubleBuilder>> feature_builders;
+            feature_builders.reserve(table.feature_labels.size());
+            for (std::size_t i = 0; i < table.feature_labels.size(); ++i) {
+                feature_builders.push_back(std::make_unique<arrow::DoubleBuilder>());
+            }
+
+            for (const auto& row : table.rows) {
+                if (!append_arrow_value(series_builder, row.series_key, err) ||
+                    !append_arrow_value(entity_builder, row.entity_key, err) ||
+                    !append_arrow_value(row_builder, static_cast<std::int64_t>(row.row_index), err)) {
+                    err = "failed to build feature-dump Parquet array: " + err;
+                    return false;
+                }
+                if (table.has_time_axis &&
+                    !append_arrow_value(time_builder, static_cast<std::int64_t>(row.time_key), err)) {
+                    err = "failed to build feature-dump Parquet time array: " + err;
+                    return false;
+                }
+                if (row.values.size() != feature_builders.size()) {
+                    err = "feature-dump row width does not match feature header count";
+                    return false;
+                }
+                for (std::size_t i = 0; i < row.values.size(); ++i) {
+                    const double value = row.values[i];
+                    const arrow::Status status = std::isfinite(value)
+                        ? feature_builders[i]->Append(value)
+                        : feature_builders[i]->AppendNull();
+                    if (!status.ok()) {
+                        err = "failed to build feature-dump Parquet feature array: " + status.ToString();
+                        return false;
+                    }
+                }
+            }
+
+            std::vector<std::shared_ptr<arrow::Field>> fields;
+            std::vector<std::shared_ptr<arrow::Array>> arrays;
+            fields.reserve(3 + (table.has_time_axis ? 1 : 0) + table.feature_labels.size());
+            arrays.reserve(fields.capacity());
+
+            std::shared_ptr<arrow::Array> series_array;
+            std::shared_ptr<arrow::Array> entity_array;
+            std::shared_ptr<arrow::Array> row_array;
+            if (!finish_arrow_array(series_builder, series_array, err) ||
+                !finish_arrow_array(entity_builder, entity_array, err) ||
+                !finish_arrow_array(row_builder, row_array, err)) {
+                err = "failed to finish feature-dump Parquet base arrays: " + err;
+                return false;
+            }
+
+            fields.push_back(arrow::field("series_key", arrow::utf8()));
+            arrays.push_back(std::move(series_array));
+            fields.push_back(arrow::field("entity_key", arrow::utf8()));
+            arrays.push_back(std::move(entity_array));
+            fields.push_back(arrow::field("row_index", arrow::int64()));
+            arrays.push_back(std::move(row_array));
+
+            if (table.has_time_axis) {
+                std::shared_ptr<arrow::Array> time_array;
+                if (!finish_arrow_array(time_builder, time_array, err)) {
+                    err = "failed to finish feature-dump Parquet time array: " + err;
+                    return false;
+                }
+                fields.push_back(arrow::field("time_key", arrow::int64()));
+                arrays.push_back(std::move(time_array));
+            }
+
+            for (std::size_t i = 0; i < table.feature_labels.size(); ++i) {
+                std::shared_ptr<arrow::Array> feature_array;
+                if (!finish_arrow_array(*feature_builders[i], feature_array, err)) {
+                    err = "failed to finish feature-dump Parquet feature array: " + err;
+                    return false;
+                }
+                fields.push_back(arrow::field(table.feature_labels[i], arrow::float64()));
+                arrays.push_back(std::move(feature_array));
+            }
+
+            const auto schema = arrow::schema(std::move(fields));
+            const auto arrow_table = arrow::Table::Make(schema, std::move(arrays));
+
+            auto output_result = arrow::io::FileOutputStream::Open(output_path);
+            if (!output_result.ok()) {
+                err = "failed to open feature-dump Parquet output: " + output_result.status().ToString();
+                return false;
+            }
+
+            const auto writer_props =
+                parquet::WriterProperties::Builder()
+                    .compression(arrow::Compression::SNAPPY)
+                    ->build();
+            const auto arrow_props =
+                parquet::ArrowWriterProperties::Builder()
+                    .store_schema()
+                    ->build();
+            constexpr std::int64_t kRowGroupSize = 64 * 1024;
+            const arrow::Status status = parquet::arrow::WriteTable(
+                *arrow_table,
+                arrow::default_memory_pool(),
+                *output_result,
+                kRowGroupSize,
+                writer_props,
+                arrow_props);
+            if (!status.ok()) {
+                err = "failed to write feature-dump Parquet output: " + status.ToString();
+                return false;
+            }
+            return true;
+        }
+#else
+        bool write_feature_table_parquet_file(
+            const FeatureDumpTable&,
+            const std::string&,
+            std::string& err) {
+            err = "Parquet feature-dump output requires a build configured with SUGAR_ENABLE_PARQUET=ON";
+            return false;
+        }
+#endif
+
     } // namespace
 
     bool dump_feature_table(
@@ -350,102 +644,28 @@ namespace sugar::app {
         const sugar::PlanSpec& spec,
         std::ostream& out,
         std::string& err) {
-        if (!runtime.aligned_bundle) {
-            err = "feature-dump requires an aligned runtime bundle";
+        FeatureDumpTable table{};
+        if (!build_feature_table(runtime, spec, table, err)) {
             return false;
         }
-        if (runtime.primary_series_index == static_cast<std::size_t>(-1) ||
-            runtime.primary_series_index >= runtime.aligned_bundle->frames.size()) {
-            err = "feature-dump primary series index is invalid";
-            return false;
-        }
-
-        const sugar::DataView dv(*runtime.aligned_bundle);
-
-        sugar::PlanSpec compile_spec{};
-        sugar::CompileEnv compile_env{};
-        std::string adapt_err;
-        if (!build_feature_dump_compile_spec(
-                spec,
-                dv,
-                runtime.primary_ref.series,
-                compile_spec,
-                compile_env,
-                adapt_err)) {
-            err = "feature-dump compile failed: " + adapt_err;
-            return false;
-        }
-
-        const auto registry = sugar::make_default_registry();
-        sugar::CompiledPlanTemplate plan_template{};
-        std::vector<sugar::NamedNumericOutput> numeric_outputs;
-        std::string compile_err;
-        if (!sugar::compile_feature_dump_template(
-                compile_spec,
-                registry,
-                compile_env,
-                plan_template,
-                numeric_outputs,
-                compile_err)) {
-            err = "feature-dump compile failed: " + compile_err;
-            return false;
-        }
-
-        sugar::CompileResult compiled{};
-        std::string instantiate_err;
-        if (!sugar::instantiate_compiled_plan(plan_template, nullptr, compiled, instantiate_err)) {
-            err = "feature-dump instantiate failed: " + instantiate_err;
-            return false;
-        }
-
-        sugar::ProgramEvaluationBuffers buffers{};
-        std::string eval_err;
-        if (!sugar::evaluate_strategy_plan_program_buffers(
-                dv,
-                runtime.primary_ref,
-                compiled.plan,
-                buffers,
-                eval_err)) {
-            err = "feature-dump evaluation failed: " + eval_err;
-            return false;
-        }
-
-        const auto& frame = runtime.aligned_bundle->frames[runtime.primary_series_index];
-        const bool has_time_axis = frame.has_time_axis();
-        const auto time_axis = frame.time();
-        const std::string entity_key =
-            runtime.primary_entity_key.empty() ? runtime.primary_ref.series : runtime.primary_entity_key;
-        const std::vector<std::string> header_labels =
-            build_feature_header_labels(spec, numeric_outputs, runtime, dv, has_time_axis);
-
-        out << "series_key,entity_key,row_index";
-        if (has_time_axis) {
-            out << ",time_key";
-        }
-        for (const auto& label : header_labels) {
-            out << "," << label;
-        }
-        out << "\n";
-
-        for (std::size_t row = 0; row < frame.row_count(); ++row) {
-            out << runtime.primary_ref.series
-                << "," << entity_key
-                << "," << row;
-            if (has_time_axis) {
-                out << "," << time_axis[row];
-            }
-            for (const auto& feature : numeric_outputs) {
-                if (feature.output_slot >= buffers.numeric_slots.size() ||
-                    row >= buffers.numeric_slots[feature.output_slot].size()) {
-                    err = "feature-dump numeric output slot is out of range";
-                    return false;
-                }
-                out << "," << format_numeric_cell(buffers.numeric_slots[feature.output_slot][row]);
-            }
-            out << "\n";
-        }
-
+        write_feature_table_csv(table, out);
         return true;
+    }
+
+    bool dump_feature_table_parquet(
+        const sugar::ResolvedRuntimeInput& runtime,
+        const sugar::PlanSpec& spec,
+        const std::string& output_path,
+        std::string& err) {
+        if (output_path.empty()) {
+            err = "feature-dump Parquet output requires --output <features.parquet>";
+            return false;
+        }
+        FeatureDumpTable table{};
+        if (!build_feature_table(runtime, spec, table, err)) {
+            return false;
+        }
+        return write_feature_table_parquet_file(table, output_path, err);
     }
 
 } // namespace sugar::app

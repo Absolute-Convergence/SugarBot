@@ -69,14 +69,16 @@ namespace {
     }
 
     bool detect_runtime_format_from_csv(const std::string& csv_path,
+        sugar::TabularFileFormat input_format,
         sugar::InputProfile& out,
         std::string& reason,
         std::string& err)
     {
         bool had_header = false;
         std::string load_err;
-        const sugar::RawTable tbl = sugar::load_csv_table(
+        const sugar::RawTable tbl = sugar::load_tabular_table(
             csv_path,
+            input_format,
             sugar::CsvHeaderPolicy::AutoDetect,
             had_header,
             load_err);
@@ -187,9 +189,18 @@ namespace sugar::app {
         PreprocessReport& out_report,
         std::string& err,
         const std::optional<align::AlignConfig>& align_cfg,
-        std::shared_ptr<FrameSchema> schema)
+        std::shared_ptr<FrameSchema> schema,
+        TabularFileFormat input_format)
     {
-        return sugar::preprocess_to_frameset(spec, csv_path, out, out_report, err, align_cfg, std::move(schema));
+        return sugar::preprocess_to_frameset(
+            spec,
+            csv_path,
+            out,
+            out_report,
+            err,
+            align_cfg,
+            std::move(schema),
+            input_format);
     }
 
     bool align_frameset(const FrameSet& fs,
@@ -209,11 +220,19 @@ namespace sugar::app {
         const std::string& primary_col_name,
         const align::AlignConfig& cfg,
         AlignedRuntimeInput& out,
-        std::string& err)
+        std::string& err,
+        TabularFileFormat input_format)
     {
         auto options = sugar::make_compatibility_runtime_build_options(spec);
         options.align_config = cfg;
-        return sugar::build_resolved_runtime_input(spec, csv_path, primary_col_name, options, out, err);
+        return sugar::build_resolved_runtime_input(
+            spec,
+            csv_path,
+            primary_col_name,
+            options,
+            out,
+            err,
+            input_format);
     }
 
     bool build_interactive_runtime_session(const InteractiveCommand& cmd,
@@ -225,7 +244,7 @@ namespace sugar::app {
         const std::string normalized_csv_path = sugar::normalize_path_for_runtime(csv_path);
 
         if (normalized_csv_path.empty()) {
-            err = "csv path is empty";
+            err = "data path is empty";
             return false;
         }
 
@@ -244,7 +263,12 @@ namespace sugar::app {
             std::string detect_reason;
             if (resolved == InputProfile::Auto) {
                 std::string detect_err;
-                if (!detect_runtime_format_from_csv(normalized_csv_path, resolved, detect_reason, detect_err)) {
+                if (!detect_runtime_format_from_csv(
+                        normalized_csv_path,
+                        cmd.input_format,
+                        resolved,
+                        detect_reason,
+                        detect_err)) {
                     err = detect_err;
                     return false;
                 }
@@ -280,7 +304,8 @@ namespace sugar::app {
                 ingest_spec.primary_value_col,
                 options,
                 out.runtime,
-                err))
+                err,
+                cmd.input_format))
         {
             return false;
         }
@@ -304,7 +329,14 @@ namespace sugar::app {
             cmd.primary_col;
 
         const auto options = sugar::make_compatibility_runtime_build_options(ds);
-        return sugar::build_resolved_runtime_input(ds, cmd.csv_path, primary_name, options, out, err);
+        return sugar::build_resolved_runtime_input(
+            ds,
+            cmd.csv_path,
+            primary_name,
+            options,
+            out,
+            err,
+            cmd.input_format);
     }
 
     bool build_embedded_observation_runtime(const PlanSpec& spec,

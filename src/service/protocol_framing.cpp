@@ -285,6 +285,8 @@ namespace sugar::service {
                 provenance.has_entity_axis ||
                 provenance.has_spatial_axis ||
                 provenance.input_warning_count > 0 ||
+                !provenance.input_format.empty() ||
+                provenance.input_row_count > 0 ||
                 provenance.csv_had_header ||
                 provenance.csv_physical_line_count > 0 ||
                 provenance.csv_blank_line_count > 0 ||
@@ -311,6 +313,8 @@ namespace sugar::service {
             append_json_bool_field(out, "has_entity_axis", provenance.has_entity_axis, first);
             append_json_bool_field(out, "has_spatial_axis", provenance.has_spatial_axis, first);
             append_json_u64_field(out, "input_warning_count", static_cast<std::uint64_t>(provenance.input_warning_count), first);
+            append_json_string_field(out, "input_format", provenance.input_format.empty() ? "csv" : provenance.input_format, first);
+            append_json_u64_field(out, "input_row_count", static_cast<std::uint64_t>(provenance.input_row_count), first);
             append_json_bool_field(out, "csv_had_header", provenance.csv_had_header, first);
             append_json_u64_field(
                 out,

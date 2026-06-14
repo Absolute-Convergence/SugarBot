@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "ingest/raw_table.h"
 #include "sweep/plan_spec.h"
 
 namespace {
@@ -285,7 +286,10 @@ namespace {
         std::ostream& out,
         const sugar::PreprocessReport& report) {
         out << "{";
-        out << "\"header_present\":" << (report.csv_had_header ? "true" : "false");
+        out << "\"input_format\":";
+        append_json_string(out, sugar::tabular_file_format_name(report.input_format));
+        out << ",\"input_row_count\":" << report.input_row_count;
+        out << ",\"header_present\":" << (report.csv_had_header ? "true" : "false");
         out << ",\"csv_physical_lines\":" << report.csv_physical_line_count;
         out << ",\"csv_rows\":" << report.csv_data_row_count;
         out << ",\"blank_rows_skipped\":" << report.csv_blank_line_count;
@@ -508,7 +512,8 @@ namespace {
         const sugar::PreprocessReport& report,
         std::ostream& out) {
         out << "Parsed CSV/layout confirmation\n";
-        out << "  parsed_rows: " << report.csv_data_row_count << "\n";
+        out << "  input_format: " << sugar::tabular_file_format_name(report.input_format) << "\n";
+        out << "  parsed_rows: " << report.input_row_count << "\n";
         if (sugar::data_spec_has_time_axis(ds)) {
             out << "  time_column: " << ds.time_col
                 << " (" << friendly_time_kind(ds.time_kind)
@@ -901,6 +906,8 @@ namespace sugar::app {
         const sugar::PreprocessReport& report,
         std::ostream& out) {
         out << "Input diagnostics\n";
+        out << "  input_format: " << sugar::tabular_file_format_name(report.input_format) << "\n";
+        out << "  input_rows: " << report.input_row_count << "\n";
         out << "  header_present: " << (report.csv_had_header ? "true" : "false") << "\n";
         out << "  csv_physical_lines: " << report.csv_physical_line_count << "\n";
         out << "  csv_rows: " << report.csv_data_row_count << "\n";

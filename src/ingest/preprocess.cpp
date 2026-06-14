@@ -610,6 +610,14 @@ namespace sugar {
         const std::string& csv_path,
         std::shared_ptr<FrameSchema> schema)
     {
+        return preprocess_tabular(spec, csv_path, TabularFileFormat::Csv, std::move(schema));
+    }
+
+    PreprocessResult preprocess_tabular(const DataSpec& spec,
+        const std::string& input_path,
+        TabularFileFormat input_format,
+        std::shared_ptr<FrameSchema> schema)
+    {
         PreprocessResult r{};
         auto fail = [&](std::string code, std::string message) {
             r.error_code = std::move(code);
@@ -632,17 +640,24 @@ namespace sugar {
             raw_policy = CsvHeaderPolicy::AutoDetect;
             break;
         case HeaderPolicy::HeaderlessPositional:
-            raw_policy = CsvHeaderPolicy::None;
+                raw_policy = CsvHeaderPolicy::None;
             break;
         }
 
-        CsvLoadDiagnostics csv_load{};
-        RawTable tbl = load_csv_table(csv_path, raw_policy, had_header, load_err, &csv_load);
-        if (!load_err.empty()) {
-            return fail("csv.load_failed", load_err);
-        }
-        r.csv_load = csv_load;
+        TabularLoadDiagnostics input_load{};
+        RawTable tbl = load_tabular_table(input_path, input_format, raw_policy, had_header, load_err, &input_load);
+        r.input_format = input_load.resolved_format;
+        r.input_row_count = input_load.data_row_count;
+        r.csv_load.physical_line_count = input_load.physical_line_count;
+        r.csv_load.blank_line_count = input_load.blank_line_count;
+        r.csv_load.data_row_count = input_load.data_row_count;
         r.csv_had_header = had_header;
+        if (!load_err.empty()) {
+            const std::string code = input_load.resolved_format == TabularFileFormat::Parquet
+                ? "parquet.load_failed"
+                : "csv.load_failed";
+            return fail(code, load_err);
+        }
         if (spec.header_policy == HeaderPolicy::RequiredHeaders && !had_header) {
             return fail(
                 "preprocess.header_required",
@@ -650,9 +665,9 @@ namespace sugar {
         }
 
         const bool using_positional_columns = !had_header;
-        if (csv_load.blank_line_count > 0) {
+        if (input_load.blank_line_count > 0) {
             r.warnings.push_back(
-                "csv loader skipped " + std::to_string(csv_load.blank_line_count) + " blank row(s)");
+                "csv loader skipped " + std::to_string(input_load.blank_line_count) + " blank row(s)");
         }
         if (using_positional_columns && spec.header_policy != HeaderPolicy::RequiredHeaders) {
             r.warnings.push_back("csv input used headerless positional mapping");
